@@ -41,13 +41,14 @@ The Chrome bookmark manager is hard to use. Nesoi treats them as common tabs to 
 Nesoi is still under development. Here is progress or todo-list, sorted by developing priority.
 
 - Tab management
-  - Sort tabs by domain or title
-  - Sort tabs by custom rules
-  - Save tabs
-  - Bookmark tabs
-  - Reorganize tabs across windows
-- Migration
-  - Import/Export data
-  - Import from OneTab
-  - Import from Better OneTab
+  - [ ] Sort tabs by domain or title
+  - [ ] Sort tabs by custom rules
+  - [ ] Save tabs
+  - [ ] Bookmark tabs
+  - [ ] Reorganize tabs across windows
+- Data migration
+  - [ ] Import/Export data
+  - [ ] Import from OneTab
+  - [ ] Import from Better OneTab
 - Bookmark management
+  - [ ] Data source from bookmarks
