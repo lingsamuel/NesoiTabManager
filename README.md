@@ -18,7 +18,7 @@ With Nesoi, tabs can be selected and then save or bookmark them all.
 
 With Nesoi, tabs can be move from window to window, which is useful when you want to reorganize your tabs by topic.
 
-## All Features from OneTab/Better OneTab
+## All Features From OneTab/Better OneTab
 
 Nesoi will support all features OneTab/Better OneTab has.
 
