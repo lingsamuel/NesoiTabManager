@@ -1,6 +1,6 @@
 # Nesoi Tab Manager for Chrome
 
-Nesoi Tab Manager is a simple but powerful tab manager who aims to organize thousands of tabs and bookmarks.
+*Nesoi* Tab Manager is a simple but powerful tab manager which aims to organize thousands of tabs and bookmarks.
 
 # Main Features
 
