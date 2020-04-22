@@ -10,6 +10,10 @@ In the original Chrome task manager, click a tab group or double click to jump t
 
 With Nesoi, tabs can be sorted by domain, title, or custom rules. These sort options can be applied to each window, or a merged view which sort all tabs in all windows.
 
+## Mark Duplicates Tabs
+
+Duplicated tabs will be marked. With Nesoi, you can choose which one should be kept.
+
 ## Save or Bookmark Tabs
 
 With Nesoi, tabs can be selected and then save or bookmark them all.
@@ -17,6 +21,8 @@ With Nesoi, tabs can be selected and then save or bookmark them all.
 ## Reorganize Tabs Across Window
 
 With Nesoi, tabs can be move from window to window, which is useful when you want to reorganize your tabs by topic.
+
+Alternatively, group tabs by domain or any custom rules are supported.
 
 ## All Features From OneTab/Better OneTab
 
@@ -42,6 +48,7 @@ Nesoi is still under development. Here is progress or todo-list, sorted by devel
 
 - Tab management
   - [ ] Sort tabs by domain or title
+  - [ ] Mark duplicates tabs
   - [ ] Sort tabs by custom rules
   - [ ] Save tabs
   - [ ] Bookmark tabs
