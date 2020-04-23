@@ -7,17 +7,17 @@
             <span class="btn" v-on:click="sortByTitleMergeWindow()">sortByTitle(MergeWindow)</span>
         </div>
         <div class="container">
-            <div class="tab-list" v-for="(list, listIndex) in lists">
+            <div class="window-container" v-for="(list, listIndex) in lists">
                 <div class="window-header">
                     <div class="window-title">
-                        <span>{{ list.tabs.length }} tab(s) | id: {{ list.id }}</span>
+                        <span>Window {{ list.id }} | {{ list.tabs.length }} tab(s)</span>
                         <span class="title">{{ list.title }}</span>
                     </div>
                 </div>
                 <ul>
                     <li v-for="(tab, tabIndex) in list.tabs" draggable="true">
-                        <img class="tab-icon" v-if="tab && tab.favIconUrl" :src="tab.favIconUrl"/>
-                        <a :href="tab.url" target="_blank" v-on:click="activateTab(tab, tabIndex, list.id)">
+                        <img class="tab-icon" v-if="tab && tab.favIconUrl" :src="tab.favIconUrl" alt="FavIcon"/>
+                        <a :href="tab.url" target="_blank" v-on:click="activateTab(tab, tab.id, list.id, $event)">
                             {{ tab.title }}</a>
                         <span class="btn" v-on:click="activateTab(tab, tab.id, list.id)">GOTO</span>
                         <span class="btn" v-on:click="list.tabs.splice(tabIndex, 1)">X</span>
@@ -46,7 +46,10 @@
             // 'lists': 'storeLists',
         },
         methods: {
-            activateTab(tab, tabId, windowId) {
+            activateTab(tab, tabId, windowId, e) {
+                if (e) {
+                    e.preventDefault(); // 避免打开新标签页
+                }
                 console.log(tab);
                 console.log(tabId);
                 tab_manager.activateTab(tabId, windowId);
@@ -109,43 +112,52 @@
         border-radius: 0;
     }
 
-    .container .tab-list {
-        margin: 26px 0 42px;
+    .window-container {
+        margin: 26px 0;
+        border-width: thin;
+        border-style: solid;
     }
 
-    .container .tab-list ul {
+    .window-container ul {
         list-style: none;
         padding: 0;
     }
 
-    .container .tab-list ul li {
+    .window-container ul li {
         height: 40px;
         line-height: 40px;
     }
 
-    .container .tab-list ul li img {
+    .window-container ul li img {
         width: 16px;
         height: 16px;
         padding: 8px;
     }
 
-    .container .tab-list ul li a {
+    .window-container ul li a {
         text-decoration: none;
         color: black;
         height: 32px;
         position: absolute;
     }
 
-    .container .tab-list ul li a:hover {
+    .window-container ul li a:hover {
         text-decoration: underline;
         color: black;
         height: 32px;
         position: absolute;
     }
 
-    .container .tab-list ul li span {
+    .window-container ul li span {
         float: right;
         height: 32px;
+    }
+
+    .window-container .window-title {
+        padding: 16px;
+        background-color: gray;
+        font-size: 24px;
+        color: whitesmoke;
     }
 
 </style>

@@ -11,3 +11,7 @@ yarn-error.log
 *.njsproj
 *.sln
 .vscode
+
+# Output tarball(s)
+*.tar.gz
+*.zip

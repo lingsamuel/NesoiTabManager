@@ -12,8 +12,9 @@
     },
     "permissions": [
         "contextMenus",
-        "storage",
         "tabs",
+        "sessions",
+        "storage",
         "unlimitedStorage"
     ],
     "options_page": "index.html",

@@ -8,3 +8,6 @@ export function getDomainName(hostname) {
     return hostname.replace(TLDs, '').split('.').pop();
 }
 
+export function getDomainNameFromFullURL(url) {
+    return getDomainName((new URL(url)).hostname)
+}
