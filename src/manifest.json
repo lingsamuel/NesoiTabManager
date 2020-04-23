@@ -15,7 +15,8 @@
         "tabs",
         "sessions",
         "storage",
-        "unlimitedStorage"
+        "unlimitedStorage",
+        "system.memory"
     ],
     "options_page": "index.html",
     "options_ui": {

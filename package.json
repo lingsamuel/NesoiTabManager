@@ -11,7 +11,9 @@
   },
   "dependencies": {
     "copy-webpack-plugin": "^5.1.1",
+    "element-ui": "^2.13.1",
     "html-webpack-plugin": "^4.2.0",
+    "url-loader": "^4.1.0",
     "vue": "^2.5.11"
   },
   "browserslist": [

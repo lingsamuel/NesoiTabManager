@@ -1,37 +1,33 @@
 <template>
-    <div id="app">
-        <div class="toolbar">
-            <span class="btn" v-on:click="sortByDomainEachWindow()">sortByDomain(EachWindow)</span>
-            <span class="btn" v-on:click="sortByDomainMergeWindow()">sortByDomain(MergeWindow)</span>
-            <span class="btn" v-on:click="sortByTitleEachWindow()">sortByTitle(EachWindow)</span>
-            <span class="btn" v-on:click="sortByTitleMergeWindow()">sortByTitle(MergeWindow)</span>
-        </div>
-        <div class="container">
-            <div class="window-container" v-for="(list, listIndex) in lists">
-                <div class="window-header">
-                    <div class="window-title">
-                        <span>Window {{ list.id }} | {{ list.tabs.length }} tab(s)</span>
-                        <span class="title">{{ list.title }}</span>
+    <el-container>
+        <el-aside width="200px">Aside</el-aside>
+        <el-container>
+            <el-header>Header</el-header>
+            <el-main>
+                <div id="app">
+                    <div class="toolbar">
+                        <span class="btn" v-on:click="sortByDomainEachWindow()">sortByDomain(EachWindow)</span>
+                        <span class="btn" v-on:click="sortByDomainMergeWindow()">sortByDomain(MergeWindow)</span>
+                        <span class="btn" v-on:click="sortByTitleEachWindow()">sortByTitle(EachWindow)</span>
+                        <span class="btn" v-on:click="sortByTitleMergeWindow()">sortByTitle(MergeWindow)</span>
+                    </div>
+                    <div class="container">
+                        <chrome-window v-bind:chrome-window=chromeWindow v-for="(chromeWindow, windowIndex) in lists">
+                        </chrome-window>
                     </div>
                 </div>
-                <ul>
-                    <li v-for="(tab, tabIndex) in list.tabs" draggable="true">
-                        <img class="tab-icon" v-if="tab && tab.favIconUrl" :src="tab.favIconUrl" alt="FavIcon"/>
-                        <a :href="tab.url" target="_blank" v-on:click="activateTab(tab, tab.id, list.id, $event)">
-                            {{ tab.title }}</a>
-                        <span class="btn" v-on:click="activateTab(tab, tab.id, list.id)">GOTO</span>
-                        <span class="btn" v-on:click="list.tabs.splice(tabIndex, 1)">X</span>
-                    </li>
-                </ul>
-            </div>
-        </div>
-    </div>
+            </el-main>
+            <el-footer>Footer</el-footer>
+        </el-container>
+    </el-container>
+
 </template>
 <script>
     import tab_storage from './common/tab_storage'
     import browser from 'webextension-polyfill'
-    import tab_manager from "./common/tab_manager";
-    import {getDomainName} from "./common/url_utils"
+    import {getAllTabs, getAllWindows} from "./common/tab_manager";
+    import {getDomainName, getDomainNameFromFullURL} from "./common/url_utils"
+    import {activateTab, activateWindow} from "./common/navigation";
 
     export default {
         data() {
@@ -50,15 +46,16 @@
                 if (e) {
                     e.preventDefault(); // 避免打开新标签页
                 }
-                console.log(tab);
-                console.log(tabId);
-                tab_manager.activateTab(tabId, windowId);
+                activateTab(tabId, windowId);
+            },
+            activateWindow(windowId) {
+                activateWindow(windowId);
             },
             async init() {
-                this.lists = await tab_manager.getAllTabs();
+                this.lists = await getAllTabs();
             },
             async sortByDomainEachWindow() {
-                const lists = await tab_manager.getAllTabs();
+                const lists = await getAllTabs();
                 lists.forEach(list => list.tabs.sort((x, y) => {
                     let xURL = new URL(x.url);
                     let yURL = new URL(y.url);
@@ -75,7 +72,37 @@
                 this.lists = lists;
             },
             async sortByDomainMergeWindow() {
-
+                const lists = await getAllTabs();
+                const tabs = [];
+                for (let list of lists) {
+                    tabs.push(...list.tabs);
+                }
+                const domainWindows = {};
+                tabs.sort((x, y) => {
+                    let xURL = new URL(x.url);
+                    let yURL = new URL(y.url);
+                    let xDomain = getDomainName(xURL.hostname);
+                    let yDomain = getDomainName(yURL.hostname);
+                    if (xDomain < yDomain) {
+                        return -1;
+                    }
+                    if (xDomain > yDomain) {
+                        return 1;
+                    }
+                    return 0;
+                });
+                for (let tab of tabs) {
+                    const domain = getDomainNameFromFullURL(tab.url);
+                    if (!domainWindows[domain]) {
+                        domainWindows[domain] = {
+                            tabs: [],
+                            id: 1,
+                            title: domain + " (Merged Window)",
+                        }
+                    }
+                    domainWindows[domain].tabs.push(tab);
+                }
+                this.lists = Object.values(domainWindows);
             },
             async sortByTitleEachWindow() {
 
@@ -87,6 +114,10 @@
     }
 </script>
 <style>
+    body {
+        font-size: 0.85em;
+    }
+
     .title {
         display: inline-block;
         padding: 0 32px;
@@ -108,57 +139,35 @@
         border: 0;
     }
 
-    .container .tab-icon {
-        border-radius: 0;
+    .el-header, .el-footer {
+        color: #333;
+        text-align: center;
+        line-height: 60px;
     }
 
-    .window-container {
-        margin: 26px 0;
-        border-width: thin;
-        border-style: solid;
+    .el-aside {
+        color: #333;
+        text-align: center;
+        line-height: 200px;
     }
 
-    .window-container ul {
-        list-style: none;
-        padding: 0;
+    .el-main {
+        color: #333;
+        text-align: center;
+        line-height: 160px;
     }
 
-    .window-container ul li {
-        height: 40px;
-        line-height: 40px;
+    body > .el-container {
+        margin-bottom: 40px;
     }
 
-    .window-container ul li img {
-        width: 16px;
-        height: 16px;
-        padding: 8px;
+    .el-container:nth-child(5) .el-aside,
+    .el-container:nth-child(6) .el-aside {
+        line-height: 260px;
     }
 
-    .window-container ul li a {
-        text-decoration: none;
-        color: black;
-        height: 32px;
-        position: absolute;
+    .el-container:nth-child(7) .el-aside {
+        line-height: 320px;
     }
-
-    .window-container ul li a:hover {
-        text-decoration: underline;
-        color: black;
-        height: 32px;
-        position: absolute;
-    }
-
-    .window-container ul li span {
-        float: right;
-        height: 32px;
-    }
-
-    .window-container .window-title {
-        padding: 16px;
-        background-color: gray;
-        font-size: 24px;
-        color: whitesmoke;
-    }
-
 </style>
 
