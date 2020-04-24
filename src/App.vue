@@ -12,7 +12,8 @@
                         <span class="btn" v-on:click="sortByTitleMergeWindow()">sortByTitle(MergeWindow)</span>
                     </div>
                     <div class="container">
-                        <chrome-window v-bind:chrome-window=chromeWindow v-bind:key="chromeWindow.key" v-for="(chromeWindow, windowIndex) in lists">
+                        <chrome-window v-bind:chrome-window=chromeWindow v-bind:key="chromeWindow.vue_key"
+                                       v-for="(chromeWindow, windowIndex) in lists">
                         </chrome-window>
                     </div>
                 </div>
@@ -28,11 +29,14 @@
     import {getAllTabs, getAllWindows} from "./common/tab_manager";
     import {getDomainName, getDomainNameFromFullURL} from "./common/url_utils"
     import {activateTab, activateWindow} from "./common/navigation";
+    import {transformWindowList} from "./common/ds_transformer";
+    import {applySort, TabDomainSorter, TabTitleSorter} from "./common/sort";
 
     export default {
         data() {
             return {
                 lists: [],
+                asc_state: true,
             }
         },
         created() {
@@ -52,7 +56,7 @@
                 activateWindow(windowId);
             },
             async init() {
-                const lists = await getAllTabs();
+                const lists = transformWindowList(await getAllTabs());
 
                 for (let list of lists) {
                     list.key = list.id;
@@ -60,23 +64,11 @@
                 this.lists = lists;
             },
             async sortByDomainEachWindow() {
-                const lists = await getAllTabs();
-                lists.forEach(list => list.tabs.sort((x, y) => {
-                    let xURL = new URL(x.url);
-                    let yURL = new URL(y.url);
-                    let xDomain = getDomainName(xURL.hostname);
-                    let yDomain = getDomainName(yURL.hostname);
-                    if (xDomain < yDomain) {
-                        return -1;
-                    }
-                    if (xDomain > yDomain) {
-                        return 1;
-                    }
-                    return 0;
-                }));
-                for (let list of lists) {
-                    list.key = list.id;
-                }
+                const lists = transformWindowList(await getAllTabs());
+                applySort(lists, new TabDomainSorter(), {
+                    order: this.asc_state ? "asc" : "desc",
+                });
+                this.asc_state = !this.asc_state;
                 this.lists = lists;
             },
             async sortByDomainMergeWindow() {
@@ -114,7 +106,13 @@
                 this.lists = Object.values(domainWindows);
             },
             async sortByTitleEachWindow() {
-
+                const lists = transformWindowList(await getAllTabs());
+                applySort(lists, new TabTitleSorter(), {
+                    order: this.asc_state ? "asc" : "desc",
+                    reverse_title: false,
+                });
+                this.asc_state = !this.asc_state;
+                this.lists = lists;
             },
             async sortByTitleMergeWindow() {
 
@@ -125,6 +123,7 @@
 <style>
     body {
         font-size: 0.85em;
+        margin: 0;
     }
 
     .title {
@@ -140,6 +139,7 @@
 
     .btn:hover {
         text-decoration: underline;
+        user-select: none;
     }
 
     .container {
@@ -152,22 +152,27 @@
         color: #333;
         text-align: center;
         line-height: 60px;
+        background: aquamarine;
+
     }
 
     .el-aside {
         color: #333;
         text-align: center;
         line-height: 200px;
+        background: antiquewhite;
     }
 
     .el-main {
         color: #333;
         text-align: center;
         line-height: 160px;
+        background: aqua;
+
     }
 
     body > .el-container {
-        margin-bottom: 40px;
+        /*margin-bottom: 40px;*/
     }
 
     .el-container:nth-child(5) .el-aside,

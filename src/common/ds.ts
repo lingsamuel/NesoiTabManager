@@ -1,5 +1,7 @@
 // Vue Data Structues
 
+import {SorterOpts} from "./sort";
+
 type VueListItemAttr = {
     vue_key: string | number, // v-for v-bind:key
 }
@@ -23,7 +25,7 @@ export type NesoiTab = BrowserTab & VueListItemAttr & {
 export type SortOrder = "asc" | "desc";
 
 export interface Sorter<T> {
-    compare(a: T, b: T, order: SortOrder);
+    compare(a: T, b: T, opts: SorterOpts);
 }
 
 export type SortOptions<T> = {
@@ -44,7 +46,7 @@ export type BrowserWindow = {
     left?: number, // does not exists when queried in session API
     width?: number, // does not exists when queried in session API
     height?: number, // does not exists when queried in session API
-    tabs: Array<BrowserTab>,
+    tabs: Array<NesoiTab>,
     incognito: boolean,
     type?: WindowType, // does not exists when queried in session API
     state?: WindowState, // does not exists when queried in session API

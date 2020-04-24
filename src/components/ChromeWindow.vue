@@ -98,6 +98,10 @@
         -webkit-padding-end: 12px;
     }
 
+    .window-tab-list li:nth-child(odd) {
+        background-color: white;
+    }
+
     .window-tab-list li:nth-child(even) {
         background-color: #f5f5f5;
     }
