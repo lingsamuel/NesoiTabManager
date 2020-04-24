@@ -1,13 +1,15 @@
 {
-  "presets": [
-    [
-      "@babel/preset-env",
-      {
-        "modules": false
-      }
+    "presets": [
+        [
+            "@babel/preset-env",
+            {
+                "modules": false
+            }
+        ],
+        "@babel/typescript"
+    ],
+    "plugins": [
+        "@babel/proposal-class-properties",
+        "@babel/transform-regenerator"
     ]
-  ],
-  "plugins": [
-    "@babel/transform-regenerator"
-  ]
 }
