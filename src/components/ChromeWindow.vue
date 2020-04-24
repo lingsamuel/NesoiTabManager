@@ -23,8 +23,6 @@
                     <a class="nesoi-link" :href="tab.url" target="_blank"
                        v-on:click="activateTab(tab, tab.id, tab.windowId, $event)">
                         {{ tab.title }}</a>
-                    <span class="btn"
-                          v-on:click="activateTab(tab, tab.id, tab.windowId)">GOTO</span>
                     <span class="btn" v-on:click="closeTab(tab.id)">X</span>
                 </li>
             </ul>
