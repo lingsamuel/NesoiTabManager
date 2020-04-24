@@ -17,6 +17,7 @@
             <ul>
                 <li v-for="(tab, tabIndex) in chromeWindow.tabs" draggable="true">
                     <div class="tab-entry">
+                        <input type="checkbox"/>
                         <img class="tab-icon" v-if="tab && tab.favIconUrl" :src="tab.favIconUrl"
                              alt="FavIcon"/>
                         <a class="tab-title" :href="tab.url" target="_blank"
