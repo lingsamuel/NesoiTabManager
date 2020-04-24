@@ -14,16 +14,16 @@
             </div>
         </div>
         <div class="window-tab-list">
-            <div class="tab-entry">
-            </div>
             <ul>
                 <li v-for="(tab, tabIndex) in chromeWindow.tabs" draggable="true">
-                    <img class="tab-icon" v-if="tab && tab.favIconUrl" :src="tab.favIconUrl"
-                         alt="FavIcon"/>
-                    <a class="nesoi-link" :href="tab.url" target="_blank"
-                       v-on:click="activateTab(tab, tab.id, tab.windowId, $event)">
-                        {{ tab.title }}</a>
-                    <span class="btn" v-on:click="closeTab(tab.id)">X</span>
+                    <div class="tab-entry">
+                        <img class="tab-icon" v-if="tab && tab.favIconUrl" :src="tab.favIconUrl"
+                             alt="FavIcon"/>
+                        <a class="tab-title" :href="tab.url" target="_blank"
+                           v-on:click="activateTab(tab, tab.id, tab.windowId, $event)">
+                            {{ tab.title }}</a>
+                        <span class="window-tab-btn" v-on:click="closeTab(tab.id)">X</span>
+                    </div>
                 </li>
             </ul>
         </div>
@@ -52,7 +52,7 @@
             activateWindow(windowId) {
                 activateWindow(windowId);
             },
-            closeTab(tabId){
+            closeTab(tabId) {
                 closeTab(tabId);
             }
         }
@@ -61,18 +61,58 @@
 <style>
     .window-header {
         line-height: 50px;
+        background: rgb(240, 240, 240);
     }
 
     .container .tab-icon {
         border-radius: 0;
     }
 
+    .tab-entry .nesoi-center {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+    }
+
     .nesoi-link {
+        margin-right: 10px;
+        /*width: 100%;*/
         text-decoration: none;
         color: black;
+
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
 
     .nesoi-link:hover {
+        text-decoration: underline;
+    }
+
+    .tab-entry {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        -webkit-padding-start: 12px;
+        -webkit-padding-end: 12px;
+    }
+
+    .window-tab-list li:nth-child(even) {
+        background-color: #f5f5f5;
+    }
+
+    .tab-entry .tab-title {
+        margin-right: 10px;
+        width: 100%;
+        text-decoration: none;
+        color: black;
+
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .tab-entry .tab-title:hover {
         text-decoration: underline;
     }
 
@@ -81,7 +121,9 @@
         margin: 26px 0;
         /*border-width: thin;*/
         /*border-style: solid;*/
-        border: 1px solid rgba(27, 31, 35, 0.15)
+        border: 1px solid rgba(27, 31, 35, 0.15);
+        border-top-left-radius: 3px;
+        border-top-right-radius: 3px;
     }
 
     .window-container .window-tab-list {
@@ -91,6 +133,7 @@
     .window-container .window-tab-list ul {
         list-style: none;
         padding: 0;
+        margin: 0;
     }
 
     .window-container .window-tab-list ul li {
@@ -107,20 +150,17 @@
     .window-container .window-tab-list ul li a {
         text-decoration: none;
         color: black;
-        height: 32px;
-        position: absolute;
+        /*position: absolute;*/
     }
 
     .window-container .window-tab-list ul li a:hover {
         text-decoration: underline;
         color: black;
-        height: 32px;
-        position: absolute;
+        /*position: absolute;*/
     }
 
-    .window-container .window-tab-list ul li span {
+    .window-container .window-tab-list .window-tab-btn {
         float: right;
-        height: 32px;
     }
 
 

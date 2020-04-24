@@ -1,21 +1,50 @@
-// Functions
+// Vue Data Structues
 
-declare function getAllTabs();
+type VueListItemAttr = {
+    vue_key: string | number, // v-for v-bind:key
+}
 
-// DS-s
+// *Nesoi* Data Structures
 
-type WindowType = "normal" | "popup" | "devtools";
+export type NesoiValueType = "NesoiWindow" | "NesoiTab";
 
-type WindowState = "normal" | "minimized" | "maximized" | "fullscreen";
+export type NesoiWindow = BrowserWindow & VueListItemAttr & {
+    nesoi_window: "NesoiWindow",
+    title?: string,
+}
 
-type BrowserWindow = {
+export type NesoiTab = BrowserTab & VueListItemAttr & {
+    nesoi_type: "NesoiTab",
+    domain: string,
+    hostname: string,
+    url_obj: URL,
+}
+
+export type SortOrder = "asc" | "desc";
+
+export interface Sorter<T> {
+    compare(a: T, b: T, order: SortOrder);
+}
+
+export type SortOptions<T> = {
+    order: SortOrder,
+    rules: Sorter<T>[],
+}
+
+// Original Chrome Extension API Data Structures
+
+export type WindowType = "normal" | "popup" | "devtools";
+
+export type WindowState = "normal" | "minimized" | "maximized" | "fullscreen";
+
+export type BrowserWindow = {
     id?: number, // use sessionId when queried in session API
     focused: boolean,
     top?: number, // does not exists when queried in session API
     left?: number, // does not exists when queried in session API
     width?: number, // does not exists when queried in session API
     height?: number, // does not exists when queried in session API
-    tabs: Array<Tab>,
+    tabs: Array<BrowserTab>,
     incognito: boolean,
     type?: WindowType, // does not exists when queried in session API
     state?: WindowState, // does not exists when queried in session API
@@ -23,7 +52,7 @@ type BrowserWindow = {
     sessionId: string, // obtained from session API
 }
 
-type Tab = {
+export type BrowserTab = {
     id?: number, // chrome.tabs.TAB_ID_NONE for App and DevTool
     index: number,
     windowId: number,
@@ -45,9 +74,9 @@ type Tab = {
     height?: number, // pixel
     sessionId?: string
 }
-type TabStatus = "unloaded" | "loading" | "complete";
-type MutedInfoReason = "user" | "capture" | "extension";
-type MutedInfo = {
+export type TabStatus = "unloaded" | "loading" | "complete";
+export type MutedInfoReason = "user" | "capture" | "extension";
+export type MutedInfo = {
     muted: boolean,
     reason: MutedInfoReason, // Who changes the muted state
     extensionId: string, // If changed by extension, the ext id
