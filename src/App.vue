@@ -12,7 +12,7 @@
                         <span class="btn" v-on:click="sortByTitleMergeWindow()">sortByTitle(MergeWindow)</span>
                     </div>
                     <div class="container">
-                        <chrome-window v-bind:chrome-window=chromeWindow v-for="(chromeWindow, windowIndex) in lists">
+                        <chrome-window v-bind:chrome-window=chromeWindow v-bind:key="chromeWindow.key" v-for="(chromeWindow, windowIndex) in lists">
                         </chrome-window>
                     </div>
                 </div>
@@ -52,7 +52,12 @@
                 activateWindow(windowId);
             },
             async init() {
-                this.lists = await getAllTabs();
+                const lists = await getAllTabs();
+
+                for (let list of lists) {
+                    list.key = list.id;
+                }
+                this.lists = lists;
             },
             async sortByDomainEachWindow() {
                 const lists = await getAllTabs();
@@ -69,6 +74,9 @@
                     }
                     return 0;
                 }));
+                for (let list of lists) {
+                    list.key = list.id;
+                }
                 this.lists = lists;
             },
             async sortByDomainMergeWindow() {
@@ -97,6 +105,7 @@
                         domainWindows[domain] = {
                             tabs: [],
                             id: 1,
+                            key: domain,
                             title: domain + " (Merged Window)",
                         }
                     }

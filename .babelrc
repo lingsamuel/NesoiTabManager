@@ -1,14 +1,13 @@
 {
-    "presets": [
-        [
-            "env",
-            {
-                "modules": false
-            }
-        ],
-        "stage-3"
-    ],
-    "plugins": [
-        "transform-regenerator"
+  "presets": [
+    [
+      "@babel/preset-env",
+      {
+        "modules": false
+      }
     ]
+  ],
+  "plugins": [
+    "@babel/transform-regenerator"
+  ]
 }

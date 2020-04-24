@@ -5,12 +5,12 @@ const CopyWebpackPlugin = require('copy-webpack-plugin');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
 const { VueLoaderPlugin } = require('vue-loader');
 
-require("babel-polyfill");
+require("@babel/polyfill");
 
 module.exports = {
   mode: "development",
   entry: {
-    app: ['babel-polyfill'],
+    app: ['@babel/polyfill'],
     main: ['./src/main.js'],
     background: './src/background.js',
   },
@@ -96,7 +96,7 @@ module.exports = {
 
 if (process.env.NODE_ENV === 'production') {
   module.exports.devtool = '#source-map';
-  module.exports.mode = "development";
+  module.exports.mode = "production";
   // http://vue-loader.vuejs.org/en/workflow/production.html
   module.exports.plugins = (module.exports.plugins || []).concat([])
 }
