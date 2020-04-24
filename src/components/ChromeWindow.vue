@@ -137,8 +137,7 @@
     }
 
     .window-container .window-tab-list ul li {
-        height: 40px;
-        line-height: 40px;
+        line-height: 32px;
     }
 
     .window-container .window-tab-list ul li img {
@@ -154,15 +153,18 @@
     }
 
     .window-container .window-tab-list ul li a:hover {
-        text-decoration: underline;
         color: black;
         /*position: absolute;*/
     }
 
     .window-container .window-tab-list .window-tab-btn {
-        float: right;
+        padding: 5px;
+        cursor: pointer;
     }
 
+    .window-container .window-tab-list .window-tab-btn:hover {
+        text-decoration: underline;
+    }
 
     .window-container .window-header {
         align-items: center;
