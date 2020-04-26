@@ -3,7 +3,7 @@
 // Transformer functions: convert API DS to Nesoi DS
 // =====
 
-import {getDomainName} from "./url_utils";
+import {getDomainNameFromFullURL} from "./url_utils";
 import {BrowserTab, BrowserWindow, NesoiTab, NesoiWindow} from "./ds";
 
 export function transformWindowList(windows: (BrowserWindow | any)[]): NesoiWindow[] {
@@ -25,6 +25,6 @@ export function transformTab(tab: BrowserTab | any): NesoiTab {
     tab.vue_key = tab.id;
     tab.url_obj = new URL(tab.url);
     tab.hostname = tab.url_obj.hostname;
-    tab.domain = getDomainName(tab.hostname);
+    tab.domain = getDomainNameFromFullURL(tab.url_obj);
     return tab;
 }

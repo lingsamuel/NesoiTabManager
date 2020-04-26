@@ -126,13 +126,12 @@
         margin: 26px 0;
         /*border-width: thin;*/
         /*border-style: solid;*/
-        border: 1px solid rgba(27, 31, 35, 0.15);
-        border-top-left-radius: 3px;
-        border-top-right-radius: 3px;
     }
 
     .window-container .window-tab-list {
         text-align: left;
+        border: 1px solid #d1d5da;
+        border-top: none;
     }
 
     .window-container .window-tab-list ul {
@@ -175,6 +174,7 @@
         align-items: center;
         display: flex;
         min-height: 2.8em;
+        border: 1px solid rgba(27, 31, 35, 0.15);
         border-top-left-radius: 3px;
         border-top-right-radius: 3px;
 

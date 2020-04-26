@@ -27,7 +27,7 @@
     import tab_storage from './common/tab_storage'
     import browser from 'webextension-polyfill'
     import {getAllTabs, getAllWindows} from "./common/tab_manager";
-    import {getDomainName, getDomainNameFromFullURL} from "./common/url_utils"
+    import {getDomainNameFromFullURL} from "./common/url_utils"
     import {activateTab, activateWindow} from "./common/navigation";
     import {transformWindowList} from "./common/ds_transformer";
     import {applySort, TabDomainSorter, TabTitleSorter} from "./common/sort";
@@ -79,10 +79,8 @@
                 }
                 const domainWindows = {};
                 tabs.sort((x, y) => {
-                    let xURL = new URL(x.url);
-                    let yURL = new URL(y.url);
-                    let xDomain = getDomainName(xURL.hostname);
-                    let yDomain = getDomainName(yURL.hostname);
+                    let xDomain = getDomainNameFromFullURL(x.url);
+                    let yDomain = getDomainNameFromFullURL(y.url);
                     if (xDomain < yDomain) {
                         return -1;
                     }
@@ -96,7 +94,7 @@
                     if (!domainWindows[domain]) {
                         domainWindows[domain] = {
                             tabs: [],
-                            id: 1,
+                            id: domain,
                             key: domain,
                             title: domain + " (Merged Window)",
                         }
