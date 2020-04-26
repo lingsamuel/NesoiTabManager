@@ -1,5 +1,4 @@
 import browser from "webextension-polyfill";
-import {getAllWindows} from "./tab_manager";
 
 export function activateWindow(windowId) {
     browser.windows.update(windowId, {

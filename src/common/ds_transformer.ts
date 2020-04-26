@@ -24,7 +24,7 @@ export function transformWindow(window: BrowserWindow | any): NesoiWindow {
 export function transformTab(tab: BrowserTab | any): NesoiTab {
     tab.vue_key = tab.id;
     tab.url_obj = new URL(tab.url);
-    tab.hostname = tab.url_obj.hostname;
+    tab.hostname = tab.url_obj.host;
     tab.domain = getDomainNameFromFullURL(tab.url_obj);
     return tab;
 }

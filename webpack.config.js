@@ -38,7 +38,7 @@ module.exports = {
             {
                 test: /\.(js|ts)$/,
                 loader: 'babel-loader',
-                exclude: /node_modules/
+                exclude: /node_modules/,
             },
             {
                 test: /\.(png|jpg|gif|svg)$/,
@@ -50,14 +50,14 @@ module.exports = {
             {
                 test: /\.(eot|svg|ttf|woff|woff2)$/,
                 loader: 'url-loader'
-            }
-        ]
+            },
+        ],
     },
     resolve: {
         alias: {
             'vue$': 'vue/dist/vue.esm.js'
         },
-        extensions: ['*', '.js', '.vue', '.json', '.ts']
+        extensions: ['*', '.js', '.vue', '.json', '.ts'],
     },
     devServer: {
         historyApiFallback: true,

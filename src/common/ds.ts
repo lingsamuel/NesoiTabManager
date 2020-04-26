@@ -11,8 +11,11 @@ type VueListItemAttr = {
 export type NesoiValueType = "NesoiWindow" | "NesoiTab";
 
 export type NesoiWindow = BrowserWindow & VueListItemAttr & {
-    nesoi_window: "NesoiWindow",
+    nesoi_type: "NesoiWindow",
     title?: string,
+    windows?: {
+        [winId: number]: NesoiWindow
+    },
 }
 
 export type NesoiTab = BrowserTab & VueListItemAttr & {

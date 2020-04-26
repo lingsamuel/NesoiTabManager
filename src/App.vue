@@ -13,6 +13,9 @@
                     </div>
                     <div class="container">
                         <chrome-window v-bind:chrome-window=chromeWindow v-bind:key="chromeWindow.vue_key"
+                                       v-bind:chrome-title="chromeWindow.title"
+                                       v-bind:chrome-window-index="windowIndex"
+                                       v-bind:window-list="lists"
                                        v-for="(chromeWindow, windowIndex) in lists">
                         </chrome-window>
                     </div>
@@ -23,14 +26,15 @@
     </el-container>
 
 </template>
-<script>
+<script lang="ts">
     import tab_storage from './common/tab_storage'
     import browser from 'webextension-polyfill'
-    import {getAllTabs, getAllWindows} from "./common/tab_manager";
+    import {getAllTabs} from "./common/tab_manager";
     import {getDomainNameFromFullURL} from "./common/url_utils"
     import {activateTab, activateWindow} from "./common/navigation";
     import {transformWindowList} from "./common/ds_transformer";
     import {applySort, TabDomainSorter, TabTitleSorter} from "./common/sort";
+    import {NesoiTab, NesoiWindow} from "./common/ds";
 
     export default {
         data() {
@@ -59,7 +63,7 @@
                 const lists = transformWindowList(await getAllTabs());
 
                 for (let list of lists) {
-                    list.key = list.id;
+                    list.vue_key = list.id;
                 }
                 this.lists = lists;
             },
@@ -72,12 +76,21 @@
                 this.lists = lists;
             },
             async sortByDomainMergeWindow() {
-                const lists = await getAllTabs();
-                const tabs = [];
+                const lists: NesoiWindow[] = await getAllTabs();
+                const tabs: NesoiTab[] = [];
                 for (let list of lists) {
                     tabs.push(...list.tabs);
                 }
-                const domainWindows = {};
+                const winMap: {
+                    [id: number]: NesoiWindow,
+                } = {};
+                for (let win of lists) {
+                    win.tabs = [];
+                    winMap[win.id] = win;
+                }
+                const domainWindows: {
+                    [domain: string]: NesoiWindow
+                } = {};
                 tabs.sort((x, y) => {
                     let xDomain = getDomainNameFromFullURL(x.url);
                     let yDomain = getDomainNameFromFullURL(y.url);
@@ -92,14 +105,16 @@
                 for (let tab of tabs) {
                     const domain = getDomainNameFromFullURL(tab.url);
                     if (!domainWindows[domain]) {
-                        domainWindows[domain] = {
-                            tabs: [],
-                            id: domain,
-                            key: domain,
-                            title: domain + " (Merged Window)",
-                        }
+                        domainWindows[domain] = JSON.parse(JSON.stringify(winMap[tab.windowId]));
+                        domainWindows[domain].id = undefined;
+                        domainWindows[domain].vue_key = domain;
+                        domainWindows[domain].title = domain + " (Merged Window)";
+                        domainWindows[domain].windows = {};
                     }
-                    domainWindows[domain].tabs.push(tab);
+                    if (!domainWindows[domain].windows[tab.windowId]) {
+                        domainWindows[domain].windows[tab.windowId] = JSON.parse(JSON.stringify(winMap[tab.windowId]));
+                    }
+                    domainWindows[domain].windows[tab.windowId].tabs.push(tab);
                 }
                 this.lists = Object.values(domainWindows);
             },

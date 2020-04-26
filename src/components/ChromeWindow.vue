@@ -3,17 +3,23 @@
         <div class="window-header">
             <input type="checkbox"/>
             <img src="https://img.icons8.com/color/24/000000/chrome--v1.png"/>
-            <div class="window-title">
-                <a class="nesoi-link" :href="'chrome://windows/'+chromeWindow.id"
+            <div v-if="typeof chromeWindow.id === 'number'" class="window-title">
+                <a class="nesoi-link" v-bind:href="'chrome://windows/'+chromeWindow.id"
                    v-on:click="activateWindow(chromeWindow.id)">
-                    Window {{ chromeWindow.id }} | {{ chromeWindow.tabs.length }} tab(s)</a>
+                    {{ chromeWindow.title }} | {{ getTabDescribe(chromeWindow) }}</a>
                 <span class="title">{{ chromeWindow.title }}</span>
             </div>
+            <div v-else>
+                <span class="title">{{ chromeWindow.title }} | {{ getTabDescribe(chromeWindow) }}</span>
+            </div>
             <div class="window-operation-list">
-
+                <span v-if="typeof chromeWindow.id === 'number' && !isSub" class="window-tab-btn"
+                      v-on:click="closeWindow(chromeWindow.id, chromeWindowIndex)">X</span>
+                <span v-if="typeof chromeWindow.id === 'number' && isSub" class="window-tab-btn"
+                      v-on:click="closeSubWindow(chromeWindow.tabs, chromeWindow.id)">X</span>
             </div>
         </div>
-        <div class="window-tab-list">
+        <div v-if="chromeWindow.tabs && chromeWindow.tabs.length > 0" class="window-tab-list">
             <ul>
                 <li v-for="(tab, tabIndex) in chromeWindow.tabs" draggable="true">
                     <div class="tab-entry">
@@ -23,16 +29,25 @@
                         <a class="tab-title" :href="tab.url" target="_blank"
                            v-on:click="activateTab(tab, tab.id, tab.windowId, $event)">
                             {{ tab.title }}</a>
-                        <span class="window-tab-btn" v-on:click="closeTab(tab.id)">X</span>
+                        <span class="window-tab-btn" v-on:click="closeTab(tab.id, tabIndex)">X</span>
                     </div>
                 </li>
             </ul>
         </div>
+        <chrome-window v-bind:chrome-window=subWin
+                       v-bind:chrome-window-index="subWindowIndex"
+                       v-bind:is-sub=true
+                       v-bind:window-list="chromeWindow.windows"
+                       v-bind:key="subWin.vue_key"
+                       v-if="chromeWindow.windows" v-for="(subWin, subWindowIndex) in chromeWindow.windows">
+        </chrome-window>
     </div>
 </template>
-<script>
+<script lang="ts">
     import {activateTab, activateWindow} from "../common/navigation";
-    import {closeTab} from "../common/tab_manager";
+    import {closeTab, closeWindow, getTabsByWindow} from "../common/tab_manager";
+    import {NesoiTab, NesoiWindow} from "../common/ds";
+    import Vue from "vue";
 
     export default {
         // data() {
@@ -40,7 +55,7 @@
         //         chromeWindow: {},
         //     }
         // },
-        props: ["chromeWindow"],
+        props: ["chromeWindow", "isSub", "chromeWindowIndex", "windowList"],
         created() {
         },
         methods: {
@@ -53,8 +68,50 @@
             activateWindow(windowId) {
                 activateWindow(windowId);
             },
-            closeTab(tabId) {
+            closeWindow(tabId, winIndex) {
+                this.windowList.splice(winIndex, 1);
+                closeWindow(tabId);
+            },
+            closeTab(tabId, tabIndex) {
+                this.chromeWindow.tabs.splice(tabIndex, 1);
                 closeTab(tabId);
+            },
+            async closeSubWindow(tabs: NesoiTab[], windowId) {
+                const win = await getTabsByWindow(windowId);
+                const tabIds = tabs.map(x => x.id);
+                // 是否是整个窗口
+                if (win.tabs.length === tabs.length) {
+                    const winTabIds = win.tabs.map(t => t.id);
+                    let match = true;
+                    for (let id of tabIds) {
+                        if (!winTabIds.includes(id)) {
+                            match = false;
+                        }
+                    }
+                    if (match) {
+                        // TODO 需要一直上溯
+                        Vue.delete(this.windowList, windowId);
+                        closeWindow(windowId); // 使用 closeWindow，可以让 Ctrl-Shift-T 打开一整组标签页
+                    } else {
+                        Vue.delete(this.windowList, windowId);
+                        closeTab(tabIds);
+                    }
+                } else {
+                    Vue.delete(this.windowList, windowId);
+                    closeTab(tabIds);
+                }
+
+            },
+            getTabDescribe(win: NesoiWindow) {
+                if (win.tabs && win.tabs.length && win.tabs.length > 0) {
+                    return win.tabs.length + " tab(s)";
+                } else if (win.windows && typeof win.windows === "object") {
+                    const winArray = Object.values(win.windows);
+                    if (winArray.length > 0) {
+                        return winArray.length + " sub window(s)";
+                    }
+                }
+                return "UNKNOWN_LENGTH_ERROR"
             }
         }
     }
@@ -128,6 +185,10 @@
         /*border-style: solid;*/
     }
 
+    .window-container .window-container {
+        margin: 8px 0 8px 12px;
+    }
+
     .window-container .window-tab-list {
         text-align: left;
         border: 1px solid #d1d5da;
@@ -184,6 +245,19 @@
         -moz-padding-end: 12px;
         font-size: 0.85em;
         /*color: whitesmoke;*/
+    }
+
+    .window-container .window-header .window-title {
+        width: 100%;
+    }
+
+    .window-container .window-header .window-operation-list .window-tab-btn {
+        padding: 5px;
+        cursor: pointer;
+    }
+
+    .window-container .window-header .window-operation-list .window-tab-btn:hover {
+        text-decoration: underline;
     }
 
 </style>
