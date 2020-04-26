@@ -3,13 +3,15 @@
         <div class="window-header">
             <input type="checkbox"/>
             <img src="https://img.icons8.com/color/24/000000/chrome--v1.png"/>
-            <div v-if="typeof chromeWindow.id === 'number'" class="window-title">
+            <div v-if="typeof chromeWindow.id === 'number'"
+                 class="window-title">
                 <a class="nesoi-link" v-bind:href="'chrome://windows/'+chromeWindow.id"
                    v-on:click="activateWindow(chromeWindow.id)">
                     {{ chromeWindow.title }} | {{ getTabDescribe(chromeWindow) }}</a>
                 <span class="title">{{ chromeWindow.title }}</span>
             </div>
-            <div v-else>
+            <div v-else
+                 class="window-title">
                 <span class="title">{{ chromeWindow.title }} | {{ getTabDescribe(chromeWindow) }}</span>
             </div>
             <div class="window-operation-list">
@@ -117,6 +119,11 @@
     }
 </script>
 <style>
+    .title {
+        display: inline-block;
+        /*padding: 0 32px;*/
+    }
+
     .window-header {
         line-height: 50px;
         background: rgb(240, 240, 240);
@@ -189,6 +196,11 @@
         margin: 8px 0 8px 12px;
     }
 
+    .window-container .window-container .window-header {
+        line-height: 30px;
+        background: #eeefff;
+    }
+
     .window-container .window-tab-list {
         text-align: left;
         border: 1px solid #d1d5da;
@@ -249,6 +261,8 @@
 
     .window-container .window-header .window-title {
         width: 100%;
+        padding: 0 16px;
+        text-align: left;
     }
 
     .window-container .window-header .window-operation-list .window-tab-btn {

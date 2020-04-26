@@ -139,11 +139,6 @@
         margin: 0;
     }
 
-    .title {
-        display: inline-block;
-        padding: 0 32px;
-    }
-
     .btn {
         display: inline-block;
         padding: 4px 8px;
