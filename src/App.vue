@@ -27,8 +27,8 @@
 
 </template>
 <script lang="ts">
-    import tab_storage from './common/tab_storage'
-    import browser from 'webextension-polyfill'
+    import tab_storage from "./common/tab_storage"
+    import browser from "webextension-polyfill"
     import {getAllTabs} from "./common/tab_manager";
     import {getDomainNameFromFullURL} from "./common/url_utils"
     import {activateTab, activateWindow} from "./common/navigation";
@@ -160,23 +160,21 @@
         color: #333;
         text-align: center;
         line-height: 60px;
-        background: aquamarine;
-
+        /*background: aquamarine;*/
     }
 
     .el-aside {
         color: #333;
         text-align: center;
         line-height: 200px;
-        background: antiquewhite;
+        /*background: antiquewhite;*/
     }
 
     .el-main {
         color: #333;
         text-align: center;
         line-height: 160px;
-        background: aqua;
-
+        /*background: aqua;*/
     }
 
     body > .el-container {

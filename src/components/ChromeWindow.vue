@@ -7,12 +7,12 @@
                  class="window-title">
                 <a class="nesoi-link" v-bind:href="'chrome://windows/'+chromeWindow.id"
                    v-on:click="activateWindow(chromeWindow.id)">
-                    {{ chromeWindow.title }} | {{ getTabDescribe(chromeWindow) }}</a>
+                    {{ chromeWindow.title }} | {{ getWindowDescription(chromeWindow) }}</a>
                 <span class="title">{{ chromeWindow.title }}</span>
             </div>
             <div v-else
                  class="window-title">
-                <span class="title">{{ chromeWindow.title }} | {{ getTabDescribe(chromeWindow) }}</span>
+                <span class="title">{{ chromeWindow.title }} | {{ getWindowDescription(chromeWindow) }}</span>
             </div>
             <div class="window-operation-list">
                 <span v-if="typeof chromeWindow.id === 'number' && !isSub" class="window-tab-btn"
@@ -104,7 +104,7 @@
                 }
 
             },
-            getTabDescribe(win: NesoiWindow) {
+            getWindowDescription(win: NesoiWindow) {
                 if (win.tabs && win.tabs.length && win.tabs.length > 0) {
                     return win.tabs.length + " tab(s)";
                 } else if (win.windows && typeof win.windows === "object") {

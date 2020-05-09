@@ -19,15 +19,15 @@ const IPv6Reg = new RegExp('^(' +
     `(?::((?::${v6Seg}){0,5}:${v4Str}|(?::${v6Seg}){1,7}|:))` +
     ')(%[0-9a-zA-Z]{1,})?$');
 
-export function isIPv4(s) {
+export function isIPv4(s: string) {
     return IPv4Reg.test(s);
 }
 
-export function isIPv6(s) {
+export function isIPv6(s: string) {
     return IPv6Reg.test(s);
 }
 
-export function isIP(s) {
+export function isIP(s: string) {
     if (isIPv4(s)) return 4;
     if (isIPv6(s)) return 6;
     return 0;
