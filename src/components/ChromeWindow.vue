@@ -110,7 +110,8 @@
                 } else if (win.windows && typeof win.windows === "object") {
                     const winArray = Object.values(win.windows);
                     if (winArray.length > 0) {
-                        return winArray.length + " sub window(s)";
+                        const tabs = winArray.reduce((sum, x) => sum + x.tabs.length, 0);
+                        return `${winArray.length} sub window(s) | ${tabs} tabs`;
                     }
                 }
                 return "UNKNOWN_LENGTH_ERROR"
