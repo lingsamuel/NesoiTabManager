@@ -47,7 +47,7 @@ The Chrome bookmark manager is hard to use. Nesoi treats them as common tabs to 
 Nesoi is still under development. Here is progress or todo-list, sorted by developing priority.
 
 - Tab management
-  - [ ] Sort tabs by domain or title
+  - [x] Sort tabs by domain or title
   - [ ] Mark duplicates tabs
   - [ ] Sort tabs by custom rules
   - [ ] Save tabs
