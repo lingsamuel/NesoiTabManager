@@ -31,7 +31,7 @@
 - 使用 `chrome.tabs`、`chrome.storage`、`chrome.contextMenus`。
 - 列表数据存放在 `chrome.storage.local`。
 - UI 构建使用 Vite + Vue，输出到 `ui/` 目录。
-- AI 分组需要在“插件设置”里配置完整 API 端点、Key、模型、请求格式与单次上限。
+- AI 分组需要在“插件设置”里配置完整 API 端点、Key、模型、API 格式与单次上限。
 
 ## 开发与构建
 

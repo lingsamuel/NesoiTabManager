@@ -263,7 +263,8 @@
           <div class="form-row">
             <label for="ai-mode">API 格式</label>
             <select id="ai-mode" v-model="aiConfig.apiMode">
-              <option value="responses">Responses（推荐）</option>
+              <option value="responses">Responses</option>
+              <option value="codex">Codex CLI</option>
               <option value="chat">Chat Completions</option>
             </select>
           </div>
@@ -897,7 +898,8 @@ async function loadAiConfig() {
   aiConfig.endpoint = config.endpoint || "https://api.openai.com/v1/responses";
   aiConfig.apiKey = config.apiKey || "";
   aiConfig.model = config.model || "gpt-4.1-mini";
-  aiConfig.apiMode = config.apiMode === "chat" ? "chat" : "responses";
+  aiConfig.apiMode =
+    config.apiMode === "chat" || config.apiMode === "codex" ? config.apiMode : "responses";
   aiConfig.maxTabs = Number.isFinite(config.maxTabs) ? config.maxTabs : 120;
   aiConfig.includeListTitles =
     config.includeListTitles === undefined ? true : Boolean(config.includeListTitles);
