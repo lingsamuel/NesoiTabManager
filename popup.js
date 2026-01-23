@@ -328,6 +328,17 @@ function renderTabs() {
           }
         });
 
+        const icon = document.createElement("img");
+        icon.className = "tab-icon";
+        if (tab.favIconUrl) {
+          icon.src = tab.favIconUrl;
+        } else {
+          icon.classList.add("hidden");
+        }
+        icon.addEventListener("error", () => {
+          icon.classList.add("hidden");
+        });
+
         const text = document.createElement("div");
         const titleText = document.createElement("div");
         titleText.className = "tab-title";
@@ -345,6 +356,7 @@ function renderTabs() {
         tag.dataset.tabId = tabId;
 
         row.appendChild(checkbox);
+        row.appendChild(icon);
         row.appendChild(text);
         row.appendChild(tag);
         block.appendChild(row);
@@ -400,9 +412,26 @@ function renderListItems() {
     const card = document.createElement("div");
     card.className = "list-item";
 
+    const header = document.createElement("div");
+    header.className = "list-header";
+
+    const icon = document.createElement("img");
+    icon.className = "list-icon";
+    if (item.favIconUrl) {
+      icon.src = item.favIconUrl;
+    } else {
+      icon.classList.add("hidden");
+    }
+    icon.addEventListener("error", () => {
+      icon.classList.add("hidden");
+    });
+
     const title = document.createElement("div");
     title.className = "list-title";
     title.textContent = item.title || item.url || "未命名";
+
+    header.appendChild(icon);
+    header.appendChild(title);
 
     const url = document.createElement("div");
     url.className = "list-url";
@@ -412,7 +441,7 @@ function renderListItems() {
     meta.className = "list-meta";
     meta.textContent = item.savedAt ? `保存时间：${item.savedAt}` : "";
 
-    card.appendChild(title);
+    card.appendChild(header);
     card.appendChild(url);
     if (meta.textContent) {
       card.appendChild(meta);

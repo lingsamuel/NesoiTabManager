@@ -214,7 +214,7 @@ body {
 
 .tab-row {
   display: grid;
-  grid-template-columns: 18px 1fr auto;
+  grid-template-columns: 18px 20px minmax(0, 1fr) auto;
   gap: 8px;
   padding: 6px 6px;
   border-radius: 10px;
@@ -234,6 +234,19 @@ body {
   font-size: 11px;
   color: var(--muted);
   word-break: break-all;
+}
+
+.tab-icon {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  background: #efe7da;
+  object-fit: cover;
+}
+
+.tab-icon.hidden {
+  display: block;
+  visibility: hidden;
 }
 
 .tab-tag {
@@ -265,10 +278,29 @@ body {
   border: 1px solid #efe7da;
 }
 
+.list-header {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+
+.list-icon {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  background: #efe7da;
+  object-fit: cover;
+}
+
+.list-icon.hidden {
+  display: block;
+  visibility: hidden;
+}
+
 .list-title {
   font-size: 13px;
   font-weight: 600;
-  margin-bottom: 4px;
 }
 
 .list-url {

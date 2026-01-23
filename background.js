@@ -1,6 +1,12 @@
 const STORAGE_KEY = "lists";
 const MANAGER_PAGE = "popup.html";
 
+function clearActionPopup() {
+  if (chrome.action && chrome.action.setPopup) {
+    chrome.action.setPopup({ popup: "" });
+  }
+}
+
 function storageGet(key) {
   return new Promise((resolve) => {
     chrome.storage.local.get(key, (result) => resolve(result[key]));
@@ -386,10 +392,12 @@ async function rebuildContextMenus() {
 }
 
 chrome.runtime.onInstalled.addListener(() => {
+  clearActionPopup();
   rebuildContextMenus();
 });
 
 chrome.runtime.onStartup.addListener(() => {
+  clearActionPopup();
   rebuildContextMenus();
 });
 
