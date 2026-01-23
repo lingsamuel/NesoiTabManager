@@ -1,0 +1,72 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Nesoi Tab Manager</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="hero">
+      <div class="hero-title">Nesoi Tab Manager</div>
+      <div class="hero-subtitle">Save tabs into lists you can export or import.</div>
+    </header>
+
+    <main>
+      <section class="panel" id="open-tabs">
+        <div class="panel-header">
+          <h2>Open Tabs</h2>
+          <div class="panel-actions">
+            <button id="select-all" class="ghost">Select all</button>
+            <button id="clear-all" class="ghost">Clear</button>
+          </div>
+        </div>
+        <div id="tabs" class="tabs"></div>
+      </section>
+
+      <section class="panel" id="save-panel">
+        <div class="panel-header">
+          <h2>Save Selection</h2>
+        </div>
+        <div class="form-row">
+          <label for="list-select">Target list</label>
+          <select id="list-select"></select>
+        </div>
+        <div class="form-row" id="new-list-row">
+          <label for="new-list-name">New list name</label>
+          <input id="new-list-name" type="text" placeholder="e.g. Research set" />
+        </div>
+        <div class="form-row checkbox-row">
+          <label>
+            <input id="close-after" type="checkbox" />
+            Close tabs after saving
+          </label>
+        </div>
+        <div class="form-row">
+          <button id="save-tabs" class="primary">Save selected tabs</button>
+        </div>
+        <div id="status" class="status"></div>
+      </section>
+
+      <section class="panel" id="import-export">
+        <div class="panel-header">
+          <h2>Import / Export</h2>
+        </div>
+        <div class="form-row">
+          <button id="export-lists" class="ghost">Export lists</button>
+        </div>
+        <div class="form-row">
+          <label for="import-file">Import lists (JSON)</label>
+          <input id="import-file" type="file" accept="application/json" />
+        </div>
+        <div class="form-row checkbox-row">
+          <label>
+            <input id="import-replace" type="checkbox" />
+            Replace existing lists on import
+          </label>
+        </div>
+      </section>
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

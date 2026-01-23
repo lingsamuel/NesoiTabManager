@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Nesoi Tab Manager",
+  "version": "0.1.0",
+  "description": "Manage large volumes of tabs by saving them into lists.",
+  "permissions": ["tabs", "storage", "contextMenus"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Nesoi Tab Manager",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content_script.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
