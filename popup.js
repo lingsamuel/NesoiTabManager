@@ -15,10 +15,30 @@ const importReplace = document.getElementById("import-replace");
 const aiGroupButton = document.getElementById("ai-group");
 const aiApplyButton = document.getElementById("ai-apply");
 const aiStatusEl = document.getElementById("ai-status");
+const listItemsContainer = document.getElementById("list-items");
+const windowSubtitle = document.getElementById("window-subtitle");
+const listSubtitle = document.getElementById("list-subtitle");
+const listStatusEl = document.getElementById("list-status");
+const navButtons = document.querySelectorAll(".nav-item");
+const subSidebar = document.getElementById("sub-sidebar");
+const subTitle = document.getElementById("sub-title");
+const subItems = document.getElementById("sub-items");
+const viewWindows = document.getElementById("view-windows");
+const viewLists = document.getElementById("view-lists");
+const viewSettings = document.getElementById("view-settings");
 
-let tabInfoById = new Map();
-let tabTagElements = new Map();
-let aiGroups = [];
+const state = {
+  view: "windows",
+  windows: [],
+  lists: [],
+  selectedWindowId: "all",
+  selectedListId: "",
+  selectedTabIds: new Set(),
+  tabInfoById: new Map(),
+  tabTagElements: new Map(),
+  aiGroups: [],
+  visibleTabIds: [],
+};
 
 function setStatus(message, type) {
   statusEl.textContent = message;
@@ -28,6 +48,11 @@ function setStatus(message, type) {
 function setAiStatus(message, type) {
   aiStatusEl.textContent = message;
   aiStatusEl.className = `status${type ? ` ${type}` : ""}`;
+}
+
+function setListStatus(message, type) {
+  listStatusEl.textContent = message;
+  listStatusEl.className = `status${type ? ` ${type}` : ""}`;
 }
 
 function request(action, data) {
@@ -52,31 +77,228 @@ function clearTabsUI(message) {
   tabsContainer.appendChild(placeholder);
 }
 
+function clearListUI(message) {
+  listItemsContainer.innerHTML = "";
+  const placeholder = document.createElement("div");
+  placeholder.className = "empty-state";
+  placeholder.textContent = message;
+  listItemsContainer.appendChild(placeholder);
+}
+
 function resetTabState() {
-  tabInfoById = new Map();
-  tabTagElements = new Map();
-  aiGroups = [];
+  state.tabInfoById = new Map();
+  state.tabTagElements = new Map();
+  state.aiGroups = [];
+  state.visibleTabIds = [];
   setAiStatus("", "");
 }
 
-async function loadTabs() {
-  const windows = await getAllWindows();
-  tabsContainer.innerHTML = "";
-  resetTabState();
+function syncSelectedTabIds() {
+  const validIds = new Set();
+  state.windows.forEach((win) => {
+    (win.tabs || []).forEach((tab) => {
+      if (tab && tab.id) {
+        validIds.add(tab.id);
+      }
+    });
+  });
+  state.selectedTabIds = new Set(
+    Array.from(state.selectedTabIds).filter((tabId) => validIds.has(tabId))
+  );
+}
 
-  if (windows.length === 0) {
-    clearTabsUI("未找到打开的标签页。");
+function updateListSelect() {
+  listSelect.innerHTML = "";
+  if (state.lists.length === 0) {
+    const option = document.createElement("option");
+    option.value = NEW_LIST_VALUE;
+    option.textContent = "新建列表";
+    listSelect.appendChild(option);
+  } else {
+    state.lists.forEach((list) => {
+      const option = document.createElement("option");
+      option.value = list.id;
+      option.textContent = `${list.name} (${list.items ? list.items.length : 0})`;
+      listSelect.appendChild(option);
+    });
+    const createOption = document.createElement("option");
+    createOption.value = NEW_LIST_VALUE;
+    createOption.textContent = "新建列表";
+    listSelect.appendChild(createOption);
+  }
+
+  updateNewListVisibility();
+}
+
+function updateNewListVisibility() {
+  const isNew = listSelect.value === NEW_LIST_VALUE;
+  newListRow.classList.toggle("hidden", !isNew);
+}
+
+function setView(view) {
+  state.view = view;
+  navButtons.forEach((button) => {
+    button.classList.toggle("active", button.dataset.view === view);
+  });
+  viewWindows.classList.toggle("active", view === "windows");
+  viewLists.classList.toggle("active", view === "lists");
+  viewSettings.classList.toggle("active", view === "settings");
+  updateSubSidebar();
+  if (view === "windows") {
+    renderTabs();
+  }
+  if (view === "lists") {
+    renderListItems();
+  }
+}
+
+function updateSubSidebar() {
+  if (state.view === "windows") {
+    subSidebar.classList.remove("hidden");
+    subTitle.textContent = "窗口";
+    renderWindowSubItems();
+    return;
+  }
+  if (state.view === "lists") {
+    subSidebar.classList.remove("hidden");
+    subTitle.textContent = "列表";
+    renderListSubItems();
+    return;
+  }
+  subSidebar.classList.add("hidden");
+  subItems.innerHTML = "";
+}
+
+function renderWindowSubItems() {
+  subItems.innerHTML = "";
+  if (state.windows.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "暂无窗口";
+    subItems.appendChild(empty);
     return;
   }
 
+  const totalTabs = state.windows.reduce(
+    (sum, win) => sum + (win.tabs ? win.tabs.length : 0),
+    0
+  );
+
+  const allItem = document.createElement("button");
+  allItem.className = "sub-item";
+  allItem.dataset.windowId = "all";
+  allItem.innerHTML = `<span>全部窗口</span><small>${totalTabs}</small>`;
+  if (state.selectedWindowId === "all") {
+    allItem.classList.add("active");
+  }
+  allItem.addEventListener("click", () => setSelectedWindow("all"));
+  subItems.appendChild(allItem);
+
+  state.windows.forEach((win, index) => {
+    const item = document.createElement("button");
+    item.className = "sub-item";
+    item.dataset.windowId = String(win.id);
+    const count = win.tabs ? win.tabs.length : 0;
+    item.innerHTML = `<span>窗口 ${index + 1}</span><small>${count}</small>`;
+    if (String(state.selectedWindowId) === String(win.id)) {
+      item.classList.add("active");
+    }
+    item.addEventListener("click", () => setSelectedWindow(String(win.id)));
+    subItems.appendChild(item);
+  });
+}
+
+function renderListSubItems() {
+  subItems.innerHTML = "";
+  if (state.lists.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "暂无列表";
+    subItems.appendChild(empty);
+    return;
+  }
+
+  state.lists.forEach((list) => {
+    const item = document.createElement("button");
+    item.className = "sub-item";
+    item.dataset.listId = list.id;
+    const count = list.items ? list.items.length : 0;
+    item.innerHTML = `<span>${list.name}</span><small>${count}</small>`;
+    if (state.selectedListId === list.id) {
+      item.classList.add("active");
+    }
+    item.addEventListener("click", () => setSelectedList(list.id));
+    subItems.appendChild(item);
+  });
+}
+
+function setSelectedWindow(windowId) {
+  state.selectedWindowId = windowId;
+  state.selectedTabIds.clear();
+  resetTabState();
+  renderTabs();
+  renderWindowSubItems();
+}
+
+function setSelectedList(listId) {
+  state.selectedListId = listId;
+  renderListItems();
+  renderListSubItems();
+}
+
+function getWindowsToRender() {
+  if (state.selectedWindowId === "all") {
+    return state.windows;
+  }
+  return state.windows.filter(
+    (win) => String(win.id) === String(state.selectedWindowId)
+  );
+}
+
+function updateWindowSubtitle(windowsToRender) {
+  const tabCount = windowsToRender.reduce(
+    (sum, win) => sum + (win.tabs ? win.tabs.length : 0),
+    0
+  );
+  if (state.selectedWindowId === "all") {
+    windowSubtitle.textContent = `当前：全部窗口（共 ${tabCount} 个标签页）`;
+    return;
+  }
+  const index = state.windows.findIndex(
+    (win) => String(win.id) === String(state.selectedWindowId)
+  );
+  const label = index >= 0 ? `窗口 ${index + 1}` : "当前窗口";
+  windowSubtitle.textContent = `当前：${label}（共 ${tabCount} 个标签页）`;
+}
+
+function renderTabs() {
+  if (state.view !== "windows") {
+    return;
+  }
+  const windowsToRender = getWindowsToRender();
+  tabsContainer.innerHTML = "";
+  resetTabState();
+
+  if (windowsToRender.length === 0) {
+    clearTabsUI("未找到打开的标签页。");
+    windowSubtitle.textContent = "暂无窗口";
+    return;
+  }
+
+  updateWindowSubtitle(windowsToRender);
+
   let globalIndex = 0;
-  windows.forEach((win, index) => {
+  windowsToRender.forEach((win) => {
+    const actualIndex = state.windows.findIndex(
+      (item) => String(item.id) === String(win.id)
+    );
     const block = document.createElement("div");
     block.className = "window-block";
 
     const title = document.createElement("div");
     title.className = "window-title";
-    title.textContent = `窗口 ${index + 1}（${win.tabs ? win.tabs.length : 0}）`;
+    const labelIndex = actualIndex >= 0 ? actualIndex + 1 : 1;
+    title.textContent = `窗口 ${labelIndex}（${win.tabs ? win.tabs.length : 0}）`;
     block.appendChild(title);
 
     const tabs = Array.isArray(win.tabs) ? win.tabs : [];
@@ -90,12 +312,21 @@ async function loadTabs() {
         const tabId = tab.id;
         const tabOrderIndex = globalIndex;
         globalIndex += 1;
+
         const row = document.createElement("div");
         row.className = "tab-row";
 
         const checkbox = document.createElement("input");
         checkbox.type = "checkbox";
         checkbox.dataset.tabId = tabId;
+        checkbox.checked = state.selectedTabIds.has(tabId);
+        checkbox.addEventListener("change", () => {
+          if (checkbox.checked) {
+            state.selectedTabIds.add(tabId);
+          } else {
+            state.selectedTabIds.delete(tabId);
+          }
+        });
 
         const text = document.createElement("div");
         const titleText = document.createElement("div");
@@ -119,13 +350,14 @@ async function loadTabs() {
         block.appendChild(row);
 
         if (tabId) {
-          tabInfoById.set(tabId, {
+          state.tabInfoById.set(tabId, {
             id: tabId,
             title: titleText.textContent,
             url: tab.url || "",
             index: tabOrderIndex,
           });
-          tabTagElements.set(tabId, tag);
+          state.tabTagElements.set(tabId, tag);
+          state.visibleTabIds.push(tabId);
         }
       });
     }
@@ -134,53 +366,68 @@ async function loadTabs() {
   });
 }
 
-async function loadLists() {
-  const response = await request("getLists");
-  if (!response.ok) {
-    setStatus(response.error || "列表加载失败。", "error");
+function renderListItems() {
+  if (state.view !== "lists") {
     return;
   }
-  const lists = response.lists || [];
-  listSelect.innerHTML = "";
-
-  if (lists.length === 0) {
-    const option = document.createElement("option");
-    option.value = NEW_LIST_VALUE;
-    option.textContent = "新建列表";
-    listSelect.appendChild(option);
-  } else {
-    lists.forEach((list) => {
-      const option = document.createElement("option");
-      option.value = list.id;
-      option.textContent = `${list.name} (${list.items ? list.items.length : 0})`;
-      listSelect.appendChild(option);
-    });
-    const createOption = document.createElement("option");
-    createOption.value = NEW_LIST_VALUE;
-    createOption.textContent = "新建列表";
-    listSelect.appendChild(createOption);
+  if (state.lists.length === 0) {
+    listSubtitle.textContent = "暂无列表";
+    clearListUI("暂无已保存的列表。");
+    return;
   }
 
-  updateNewListVisibility();
-}
+  if (!state.selectedListId) {
+    state.selectedListId = state.lists[0].id;
+  }
 
-function updateNewListVisibility() {
-  const isNew = listSelect.value === NEW_LIST_VALUE;
-  newListRow.classList.toggle("hidden", !isNew);
+  const list = state.lists.find((item) => item.id === state.selectedListId);
+  if (!list) {
+    listSubtitle.textContent = "请选择列表";
+    clearListUI("请选择一个列表查看。");
+    return;
+  }
+
+  const items = list.items || [];
+  listSubtitle.textContent = `${list.name}（${items.length}）`;
+  listItemsContainer.innerHTML = "";
+
+  if (items.length === 0) {
+    clearListUI("该列表暂无内容。");
+    return;
+  }
+
+  items.forEach((item) => {
+    const card = document.createElement("div");
+    card.className = "list-item";
+
+    const title = document.createElement("div");
+    title.className = "list-title";
+    title.textContent = item.title || item.url || "未命名";
+
+    const url = document.createElement("div");
+    url.className = "list-url";
+    url.textContent = item.url || "";
+
+    const meta = document.createElement("div");
+    meta.className = "list-meta";
+    meta.textContent = item.savedAt ? `保存时间：${item.savedAt}` : "";
+
+    card.appendChild(title);
+    card.appendChild(url);
+    if (meta.textContent) {
+      card.appendChild(meta);
+    }
+    listItemsContainer.appendChild(card);
+  });
 }
 
 function getSelectedTabIds() {
-  return Array.from(
-    tabsContainer.querySelectorAll("input[type=checkbox][data-tab-id]")
-  )
-    .filter((checkbox) => checkbox.checked)
-    .map((checkbox) => Number(checkbox.dataset.tabId))
-    .filter((id) => Number.isFinite(id));
+  return Array.from(state.selectedTabIds);
 }
 
 function getSelectedTabs() {
   return getSelectedTabIds()
-    .map((tabId) => tabInfoById.get(tabId))
+    .map((tabId) => state.tabInfoById.get(tabId))
     .filter(Boolean);
 }
 
@@ -195,8 +442,7 @@ function getBaseDomain(url) {
     if (parts.length <= 2) {
       return cleaned;
     }
-    const lastTwo = parts.slice(-2).join(".");
-    return lastTwo;
+    return parts.slice(-2).join(".");
   } catch (error) {
     return "";
   }
@@ -212,7 +458,7 @@ function buildAiItems(tabs) {
 }
 
 function applyTags(groups) {
-  tabTagElements.forEach((tagEl) => {
+  state.tabTagElements.forEach((tagEl) => {
     tagEl.textContent = "";
     tagEl.classList.add("hidden");
   });
@@ -220,7 +466,7 @@ function applyTags(groups) {
   groups.forEach((group) => {
     const label = group.label || "未分组";
     (group.tabIds || []).forEach((tabId) => {
-      const tagEl = tabTagElements.get(tabId);
+      const tagEl = state.tabTagElements.get(tabId);
       if (!tagEl) {
         return;
       }
@@ -243,22 +489,22 @@ async function runAiGrouping() {
     setAiStatus(response.error || "AI 分组失败。", "error");
     return;
   }
-  aiGroups = response.result ? response.result.groups || [] : [];
-  if (aiGroups.length === 0) {
+  state.aiGroups = response.result ? response.result.groups || [] : [];
+  if (state.aiGroups.length === 0) {
     setAiStatus("未生成有效分组。", "error");
     return;
   }
-  applyTags(aiGroups);
-  setAiStatus(`已生成 ${aiGroups.length} 组标签。`, "ok");
+  applyTags(state.aiGroups);
+  setAiStatus(`已生成 ${state.aiGroups.length} 组标签。`, "ok");
 }
 
 async function applyAiGrouping() {
-  if (aiGroups.length === 0) {
+  if (state.aiGroups.length === 0) {
     setAiStatus("请先执行 AI 分组。", "error");
     return;
   }
   setAiStatus("正在生成新列表...", "");
-  const response = await request("saveGroupedTabs", { groups: aiGroups });
+  const response = await request("saveGroupedTabs", { groups: state.aiGroups });
   if (!response.ok) {
     setAiStatus(response.error || "生成新列表失败。", "error");
     return;
@@ -304,14 +550,14 @@ async function saveSelectedTabs() {
   await loadLists();
 
   if (closeAfter.checked) {
-    await loadTabs();
+    await loadWindows();
   }
 }
 
 async function exportLists() {
   const response = await request("getLists");
   if (!response.ok) {
-    setStatus(response.error || "导出失败。", "error");
+    setListStatus(response.error || "导出失败。", "error");
     return;
   }
   const payload = JSON.stringify({ lists: response.lists || [] }, null, 2);
@@ -322,6 +568,7 @@ async function exportLists() {
   link.download = `nesoi-标签列表-${new Date().toISOString().slice(0, 10)}.json`;
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+  setListStatus("已导出列表文件。", "ok");
 }
 
 async function importLists(event) {
@@ -336,33 +583,74 @@ async function importLists(event) {
     const mode = importReplace.checked ? "replace" : "merge";
     const response = await request("importLists", { lists, mode });
     if (!response.ok) {
-      setStatus(response.error || "导入失败。", "error");
+      setListStatus(response.error || "导入失败。", "error");
       return;
     }
-    setStatus(`已导入 ${response.result.imported} 个列表。`, "ok");
+    setListStatus(`已导入 ${response.result.imported} 个列表。`, "ok");
     await loadLists();
   } catch (error) {
-    setStatus("JSON 文件无效。", "error");
+    setListStatus("JSON 文件无效。", "error");
   } finally {
     importFile.value = "";
   }
 }
 
-selectAllButton.addEventListener("click", () => {
+function setVisibleSelection(checked) {
+  state.visibleTabIds.forEach((tabId) => {
+    if (checked) {
+      state.selectedTabIds.add(tabId);
+    } else {
+      state.selectedTabIds.delete(tabId);
+    }
+  });
   tabsContainer
     .querySelectorAll("input[type=checkbox][data-tab-id]")
     .forEach((checkbox) => {
-      checkbox.checked = true;
+      const tabId = Number(checkbox.dataset.tabId);
+      checkbox.checked = state.selectedTabIds.has(tabId);
     });
-});
+}
 
-clearAllButton.addEventListener("click", () => {
-  tabsContainer
-    .querySelectorAll("input[type=checkbox][data-tab-id]")
-    .forEach((checkbox) => {
-      checkbox.checked = false;
-    });
-});
+async function loadWindows() {
+  state.windows = await getAllWindows();
+  syncSelectedTabIds();
+  if (
+    state.selectedWindowId !== "all" &&
+    !state.windows.some((win) => String(win.id) === String(state.selectedWindowId))
+  ) {
+    state.selectedWindowId = "all";
+  }
+  updateSubSidebar();
+  if (state.view === "windows") {
+    renderTabs();
+  }
+}
+
+async function loadLists() {
+  const response = await request("getLists");
+  if (!response.ok) {
+    setStatus(response.error || "列表加载失败。", "error");
+    setListStatus(response.error || "列表加载失败。", "error");
+    return;
+  }
+  state.lists = response.lists || [];
+  if (state.lists.length === 0) {
+    state.selectedListId = "";
+  } else if (!state.selectedListId) {
+    state.selectedListId = state.lists[0].id;
+  } else if (!state.lists.some((list) => list.id === state.selectedListId)) {
+    state.selectedListId = state.lists[0].id;
+  }
+  updateListSelect();
+  updateSubSidebar();
+  if (state.view === "lists") {
+    renderListItems();
+  }
+}
+
+selectAllButton.addEventListener("click", () => setVisibleSelection(true));
+
+clearAllButton.addEventListener("click", () => setVisibleSelection(false));
 
 listSelect.addEventListener("change", updateNewListVisibility);
 
@@ -376,7 +664,17 @@ exportButton.addEventListener("click", exportLists);
 
 importFile.addEventListener("change", importLists);
 
+navButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    const view = button.dataset.view;
+    if (view) {
+      setView(view);
+    }
+  });
+});
+
 (async () => {
-  await loadTabs();
+  await loadWindows();
   await loadLists();
+  setView("windows");
 })();

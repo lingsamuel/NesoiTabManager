@@ -394,11 +394,19 @@ chrome.runtime.onStartup.addListener(() => {
 });
 
 chrome.action.onClicked.addListener(() => {
-  chrome.windows.create({
-    url: chrome.runtime.getURL(MANAGER_PAGE),
-    type: "popup",
-    width: 980,
-    height: 760,
+  const url = chrome.runtime.getURL(MANAGER_PAGE);
+  chrome.tabs.query({ url }, (tabs) => {
+    if (tabs && tabs.length > 0) {
+      const target = tabs[0];
+      if (target.windowId) {
+        chrome.windows.update(target.windowId, { focused: true });
+      }
+      if (target.id) {
+        chrome.tabs.update(target.id, { active: true });
+      }
+      return;
+    }
+    chrome.tabs.create({ url });
   });
 });
 

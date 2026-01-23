@@ -6,80 +6,126 @@
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
-    <header class="hero">
-      <div class="hero-title">Nesoi 标签管理器</div>
-      <div class="hero-subtitle">将标签页保存到列表，支持导入导出。</div>
-    </header>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-title">Nesoi 标签管理器</div>
+          <div class="brand-subtitle">管理海量标签页</div>
+        </div>
+        <nav class="nav">
+          <button class="nav-item active" data-view="windows">打开的窗口</button>
+          <button class="nav-item" data-view="lists">保存的列表</button>
+          <button class="nav-item" data-view="settings">插件设置</button>
+        </nav>
+      </aside>
 
-    <main>
-      <section class="panel" id="open-tabs">
-        <div class="panel-header">
-          <h2>打开的标签页</h2>
-          <div class="panel-actions">
-            <button id="select-all" class="ghost">全选</button>
-            <button id="clear-all" class="ghost">清空</button>
+      <aside class="sub-sidebar" id="sub-sidebar">
+        <div class="sub-title" id="sub-title">窗口</div>
+        <div class="sub-items" id="sub-items"></div>
+      </aside>
+
+      <main class="content">
+        <section id="view-windows" class="view active">
+          <div class="content-header">
+            <div>
+              <h1>打开的窗口</h1>
+              <div class="content-subtitle" id="window-subtitle"></div>
+            </div>
+            <div class="content-actions">
+              <button id="select-all" class="ghost">全选</button>
+              <button id="clear-all" class="ghost">清空</button>
+            </div>
           </div>
-        </div>
-        <div id="tabs" class="tabs"></div>
-      </section>
 
-      <section class="panel" id="ai-panel">
-        <div class="panel-header">
-          <h2>AI 分组</h2>
-        </div>
-        <div class="form-row">
-          <div class="hint">仅使用标题与基础域名，并结合打开顺序生成标签。</div>
-        </div>
-        <div class="form-row ai-actions">
-          <button id="ai-group" class="ghost">AI 分组</button>
-          <button id="ai-apply" class="primary">应用分组生成新列表</button>
-        </div>
-        <div id="ai-status" class="status"></div>
-      </section>
+          <div class="panel" id="open-tabs">
+            <div id="tabs" class="tabs"></div>
+          </div>
 
-      <section class="panel" id="save-panel">
-        <div class="panel-header">
-          <h2>保存选择</h2>
-        </div>
-        <div class="form-row">
-          <label for="list-select">目标列表</label>
-          <select id="list-select"></select>
-        </div>
-        <div class="form-row" id="new-list-row">
-          <label for="new-list-name">新建列表名称</label>
-          <input id="new-list-name" type="text" placeholder="例如：研究资料" />
-        </div>
-        <div class="form-row checkbox-row">
-          <label>
-            <input id="close-after" type="checkbox" />
-            保存后关闭标签页
-          </label>
-        </div>
-        <div class="form-row">
-          <button id="save-tabs" class="primary">保存所选标签页</button>
-        </div>
-        <div id="status" class="status"></div>
-      </section>
+          <div class="panel-grid">
+            <section class="panel" id="ai-panel">
+              <div class="panel-header">
+                <h2>AI 分组</h2>
+              </div>
+              <div class="form-row">
+                <div class="hint">仅使用标题与基础域名，并结合打开顺序生成标签。</div>
+              </div>
+              <div class="form-row ai-actions">
+                <button id="ai-group" class="ghost">AI 分组</button>
+                <button id="ai-apply" class="primary">应用分组生成新列表</button>
+              </div>
+              <div id="ai-status" class="status"></div>
+            </section>
 
-      <section class="panel" id="import-export">
-        <div class="panel-header">
-          <h2>导入 / 导出</h2>
-        </div>
-        <div class="form-row">
-          <button id="export-lists" class="ghost">导出列表</button>
-        </div>
-        <div class="form-row">
-          <label for="import-file">导入列表（JSON）</label>
-          <input id="import-file" type="file" accept="application/json" />
-        </div>
-        <div class="form-row checkbox-row">
-          <label>
-            <input id="import-replace" type="checkbox" />
-            导入时替换现有列表
-          </label>
-        </div>
-      </section>
-    </main>
+            <section class="panel" id="save-panel">
+              <div class="panel-header">
+                <h2>保存选择</h2>
+              </div>
+              <div class="form-row">
+                <label for="list-select">目标列表</label>
+                <select id="list-select"></select>
+              </div>
+              <div class="form-row" id="new-list-row">
+                <label for="new-list-name">新建列表名称</label>
+                <input id="new-list-name" type="text" placeholder="例如：研究资料" />
+              </div>
+              <div class="form-row checkbox-row">
+                <label>
+                  <input id="close-after" type="checkbox" />
+                  保存后关闭标签页
+                </label>
+              </div>
+              <div class="form-row">
+                <button id="save-tabs" class="primary">保存所选标签页</button>
+              </div>
+              <div id="status" class="status"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="view-lists" class="view">
+          <div class="content-header">
+            <div>
+              <h1>保存的列表</h1>
+              <div class="content-subtitle" id="list-subtitle"></div>
+            </div>
+            <div class="content-actions">
+              <button id="export-lists" class="ghost">导出列表</button>
+              <label class="ghost import-label" for="import-file">导入列表</label>
+              <input id="import-file" type="file" accept="application/json" />
+            </div>
+          </div>
+
+          <div class="panel" id="list-items-panel">
+            <div id="list-items" class="list-items"></div>
+          </div>
+
+          <section class="panel" id="import-export">
+            <div class="panel-header">
+              <h2>导入选项</h2>
+            </div>
+            <div class="form-row checkbox-row">
+              <label>
+                <input id="import-replace" type="checkbox" />
+                导入时替换现有列表
+              </label>
+            </div>
+            <div id="list-status" class="status"></div>
+          </section>
+        </section>
+
+        <section id="view-settings" class="view">
+          <div class="content-header">
+            <div>
+              <h1>插件设置</h1>
+              <div class="content-subtitle">配置与偏好设置</div>
+            </div>
+          </div>
+          <section class="panel">
+            <div class="empty-state">暂无设置项，后续版本开放配置。</div>
+          </section>
+        </section>
+      </main>
+    </div>
 
     <script src="popup.js"></script>
   </body>
