@@ -1,4 +1,5 @@
 const STORAGE_KEY = "lists";
+const MANAGER_PAGE = "popup.html";
 
 function storageGet(key) {
   return new Promise((resolve) => {
@@ -390,6 +391,15 @@ chrome.runtime.onInstalled.addListener(() => {
 
 chrome.runtime.onStartup.addListener(() => {
   rebuildContextMenus();
+});
+
+chrome.action.onClicked.addListener(() => {
+  chrome.windows.create({
+    url: chrome.runtime.getURL(MANAGER_PAGE),
+    type: "popup",
+    width: 980,
+    height: 760,
+  });
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {

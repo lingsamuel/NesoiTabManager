@@ -9,31 +9,53 @@
   style.textContent = `
     #${WIDGET_ID} {
       position: fixed;
-      bottom: 18px;
-      left: 18px;
+      bottom: 14px;
+      left: -56px;
       z-index: 2147483647;
       font-family: "Space Grotesk", "Segoe UI", Tahoma, sans-serif;
       color: #1e1b16;
       pointer-events: auto;
+      width: 72px;
+      height: 72px;
+      transform: translateX(0);
+      transition: transform 0.18s ease;
+    }
+
+    #${WIDGET_ID}.open {
+      transform: translateX(56px);
+    }
+
+    #${WIDGET_ID} .ntm-hotzone {
+      width: 72px;
+      height: 72px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.01);
     }
 
     #${WIDGET_ID} .ntm-handle {
-      padding: 8px 14px;
+      width: 38px;
+      height: 38px;
       background: linear-gradient(135deg, #0f766e 0%, #2b9a86 55%, #f6c453 100%);
       color: #fffdf7;
-      border-radius: 999px;
+      border-radius: 50%;
       font-size: 12px;
       font-weight: 600;
       letter-spacing: 0.3px;
       box-shadow: 0 10px 24px rgba(15, 118, 110, 0.35);
       cursor: default;
       user-select: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
 
     #${WIDGET_ID} .ntm-panel {
       position: absolute;
       left: 0;
-      bottom: 46px;
+      bottom: 78px;
       width: 220px;
       max-height: 280px;
       overflow: hidden;
@@ -112,7 +134,9 @@
   const widget = document.createElement("div");
   widget.id = WIDGET_ID;
   widget.innerHTML = `
-    <div class="ntm-handle">保存标签页</div>
+    <div class="ntm-hotzone">
+      <div class="ntm-handle">存</div>
+    </div>
     <div class="ntm-panel">
       <div class="ntm-panel-header">快捷保存</div>
       <div class="ntm-lists"></div>
@@ -123,6 +147,14 @@
   const panel = widget.querySelector(".ntm-panel");
   const listsContainer = widget.querySelector(".ntm-lists");
   const handle = widget.querySelector(".ntm-handle");
+  const hotzone = widget.querySelector(".ntm-hotzone");
+
+  let isOpen = false;
+  let rafId = null;
+  let lastPointer = { x: 0, y: 0 };
+  const OPEN_DISTANCE = 110;
+  const EDGE_REVEAL_DISTANCE = 26;
+  const VERTICAL_PADDING = 120;
 
   function request(action, data) {
     return new Promise((resolve) => {
@@ -186,13 +218,51 @@
     }, 1200);
   }
 
-  widget.addEventListener("mouseenter", () => {
-    widget.classList.add("open");
-    loadLists();
-  });
+  function setOpen(nextOpen) {
+    if (isOpen === nextOpen) {
+      return;
+    }
+    isOpen = nextOpen;
+    widget.classList.toggle("open", nextOpen);
+    if (nextOpen) {
+      loadLists();
+    }
+  }
 
-  widget.addEventListener("mouseleave", () => {
-    widget.classList.remove("open");
+  function isPointerNearHandle(pointer) {
+    const rect = hotzone.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    const dx = pointer.x - centerX;
+    const dy = pointer.y - centerY;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    return distance <= OPEN_DISTANCE;
+  }
+
+  function isPointerNearEdge(pointer) {
+    const rect = hotzone.getBoundingClientRect();
+    const centerY = rect.top + rect.height / 2;
+    return pointer.x <= EDGE_REVEAL_DISTANCE && Math.abs(pointer.y - centerY) <= VERTICAL_PADDING;
+  }
+
+  function scheduleCheck(pointer) {
+    lastPointer = pointer;
+    if (rafId) {
+      return;
+    }
+    rafId = requestAnimationFrame(() => {
+      rafId = null;
+      const hoveringWidget = widget.matches(":hover") || panel.matches(":hover");
+      if (hoveringWidget || isPointerNearHandle(lastPointer) || isPointerNearEdge(lastPointer)) {
+        setOpen(true);
+      } else {
+        setOpen(false);
+      }
+    });
+  }
+
+  document.addEventListener("mousemove", (event) => {
+    scheduleCheck({ x: event.clientX, y: event.clientY });
   });
 
   panel.addEventListener("click", async (event) => {

@@ -17,7 +17,8 @@
 body {
   margin: 0;
   padding: 0 16px 18px;
-  width: 420px;
+  width: 100%;
+  min-width: 720px;
   font-family: "IBM Plex Sans", "Segoe UI", Tahoma, sans-serif;
   color: var(--ink);
   background: radial-gradient(circle at top, #fff8ea 0%, var(--bg) 55%, #efe7da 100%);
@@ -48,6 +49,8 @@ main {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  max-width: 980px;
+  margin: 0 auto;
 }
 
 .panel {
@@ -78,7 +81,7 @@ main {
 }
 
 .tabs {
-  max-height: 230px;
+  max-height: 420px;
   overflow-y: auto;
   padding-right: 4px;
 }

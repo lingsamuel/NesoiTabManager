@@ -9,8 +9,7 @@
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "Nesoi 标签管理器",
-    "default_popup": "popup.html"
+    "default_title": "Nesoi 标签管理器"
   },
   "content_scripts": [
     {
