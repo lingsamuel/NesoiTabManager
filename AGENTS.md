@@ -2,13 +2,15 @@
 
 ## 项目结构与模块组织
 
-- 扩展源码位于根目录：`manifest.json`、`background.js`、`popup.html`、`popup.css`、`popup.js`、`content_script.js`。
+- 扩展核心源码位于根目录：`manifest.json`、`background.js`、`content_script.js`。
+- 管理界面（Vue）源码位于 `src/manager/`，构建产物输出到 `ui/`。
 - `README.md` 记录产品需求与行为说明。
-- 当前无独立的 `src/` 或 `tests/` 目录，相关逻辑就近放在对应入口文件中。
+- 未配置测试目录，相关逻辑就近放在对应入口文件中。
 
 ## 构建、测试与开发命令
 
-- 无需构建步骤，可在 Chrome/Edge 里“加载已解压扩展程序”，选择仓库根目录。
+- 先构建 UI：`npm install`，`npm run build`（生成 `ui/`）。
+- 在 Chrome/Edge 里“加载已解压扩展程序”，选择仓库根目录（需包含 `ui/`）。
 - 未配置自动化测试，需手动验证。
 - 示例检查：`rg --files` 用于确认文件清单。
 

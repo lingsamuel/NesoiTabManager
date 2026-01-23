@@ -131,7 +131,8 @@ body {
   display: none;
 }
 
-.view.active {
+.view.active,
+.view[style*="display: block"] {
   display: block;
 }
 
@@ -190,15 +191,26 @@ body {
   margin-top: 12px;
 }
 
-.tabs {
+.virtual-scroller {
   max-height: 520px;
   overflow-y: auto;
   padding-right: 4px;
   position: relative;
 }
 
+.virtual-content {
+  position: relative;
+  width: 100%;
+}
+
+.virtual-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+}
+
 .window-title-row {
-  height: 28px;
+  height: 54px;
   display: flex;
   align-items: center;
   padding: 0 6px;
@@ -209,7 +221,7 @@ body {
 }
 
 .empty-row {
-  height: 36px;
+  height: 54px;
   display: flex;
   align-items: center;
   padding: 0 6px;
@@ -275,9 +287,6 @@ body {
 }
 
 .list-items {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
   max-height: 520px;
   overflow-y: auto;
   padding-right: 4px;
@@ -285,7 +294,7 @@ body {
 }
 
 .list-item {
-  height: 74px;
+  height: 94px;
   padding: 10px 12px;
   border-radius: 12px;
   background: #fdf7ec;
@@ -319,6 +328,7 @@ body {
 .list-title {
   font-size: 13px;
   font-weight: 600;
+  line-height: 1.25;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -327,6 +337,7 @@ body {
 .list-url {
   font-size: 11px;
   color: var(--muted);
+  line-height: 1.35;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -335,7 +346,7 @@ body {
 .list-meta {
   font-size: 10px;
   color: var(--muted);
-  margin-top: 4px;
+  line-height: 1.35;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -445,11 +456,6 @@ button.ghost:hover,
   font-size: 13px;
   color: var(--muted);
   padding: 6px 2px;
-}
-
-.virtual-content {
-  position: relative;
-  width: 100%;
 }
 
 .virtual-empty {

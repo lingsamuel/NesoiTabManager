@@ -1,5 +1,5 @@
 const STORAGE_KEY = "lists";
-const MANAGER_PAGE = "popup.html";
+const MANAGER_PAGE_CANDIDATES = ["ui/manager.html", "ui/index.html", "popup.html"];
 
 function clearActionPopup() {
   if (chrome.action && chrome.action.setPopup) {
@@ -401,20 +401,37 @@ chrome.runtime.onStartup.addListener(() => {
   rebuildContextMenus();
 });
 
-chrome.action.onClicked.addListener(() => {
-  const url = chrome.runtime.getURL(MANAGER_PAGE);
-  chrome.tabs.query({ url }, (tabs) => {
-    if (tabs && tabs.length > 0) {
-      const target = tabs[0];
-      if (target.windowId) {
-        chrome.windows.update(target.windowId, { focused: true });
+async function resolveManagerUrl() {
+  for (let i = 0; i < MANAGER_PAGE_CANDIDATES.length; i += 1) {
+    const candidate = MANAGER_PAGE_CANDIDATES[i];
+    const url = chrome.runtime.getURL(candidate);
+    try {
+      const response = await fetch(url, { method: "HEAD" });
+      if (response.ok) {
+        return url;
       }
-      if (target.id) {
-        chrome.tabs.update(target.id, { active: true });
-      }
-      return;
+    } catch (error) {
+      // 忽略异常，尝试下一个候选。
     }
-    chrome.tabs.create({ url });
+  }
+  return chrome.runtime.getURL(MANAGER_PAGE_CANDIDATES[0]);
+}
+
+chrome.action.onClicked.addListener(() => {
+  resolveManagerUrl().then((url) => {
+    chrome.tabs.query({ url }, (tabs) => {
+      if (tabs && tabs.length > 0) {
+        const target = tabs[0];
+        if (target.windowId) {
+          chrome.windows.update(target.windowId, { focused: true });
+        }
+        if (target.id) {
+          chrome.tabs.update(target.id, { active: true });
+        }
+        return;
+      }
+      chrome.tabs.create({ url });
+    });
   });
 });
 

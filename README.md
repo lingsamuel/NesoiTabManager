@@ -20,6 +20,7 @@
   - 发送标签页标题与基础域名，结合打开顺序生成标签
   - 标签展示在标签页列表旁，可一键应用生成新列表（不影响原列表）
 - 管理界面采用侧边栏分区：打开的窗口、保存的列表、插件设置；前两者提供子侧边栏快速切换。
+- 管理界面使用 Vue 渲染，并使用虚拟列表支撑海量标签页与列表。
 - 交互文案统一使用中文。
 
 ## 实现说明
@@ -27,3 +28,10 @@
 - Manifest V3，后台使用 service worker。
 - 使用 `chrome.tabs`、`chrome.storage`、`chrome.contextMenus`。
 - 列表数据存放在 `chrome.storage.local`。
+- UI 构建使用 Vite + Vue，输出到 `ui/` 目录。
+
+## 开发与构建
+
+- 安装依赖：`npm install`
+- 构建 UI：`npm run build`（生成 `ui/manager.html` 与静态资源）
+- 加载扩展时需包含 `ui/` 输出目录。
