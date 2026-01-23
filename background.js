@@ -22,7 +22,7 @@ function normalizeListName(name) {
 
 function tabToItem(tab) {
   const url = tab && tab.url ? tab.url : "";
-  const title = tab && tab.title ? tab.title : url || "Untitled";
+  const title = tab && tab.title ? tab.title : url || "未命名";
   return {
     url,
     title,
@@ -90,7 +90,7 @@ async function saveTabs({ tabIds, listId, newListName, closeTabs }) {
   if (!targetList) {
     const name = normalizeListName(newListName);
     if (!name) {
-      throw new Error("List name is required.");
+      throw new Error("需要列表名称。");
     }
     targetList = { id: generateId(), name, items: [] };
     lists.push(targetList);
@@ -100,7 +100,7 @@ async function saveTabs({ tabIds, listId, newListName, closeTabs }) {
   const items = tabs.map(tabToItem).filter((item) => item.url);
 
   if (items.length === 0) {
-    throw new Error("No valid tabs to save.");
+    throw new Error("没有可保存的标签页。");
   }
 
   targetList.items.push(...items);
@@ -118,7 +118,7 @@ async function saveTabs({ tabIds, listId, newListName, closeTabs }) {
 
 async function saveCurrentTab({ tab, listId, newListName, closeTab }) {
   if (!tab || !tab.id) {
-    throw new Error("No active tab.");
+    throw new Error("没有活动标签页。");
   }
   const result = await saveTabs({
     tabIds: [tab.id],
@@ -134,26 +134,26 @@ async function rebuildContextMenus() {
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({
       id: "saveTo",
-      title: "Save to list",
+      title: "保存到列表",
       contexts: ["page"],
     });
     chrome.contextMenus.create({
       id: "saveCloseTo",
-      title: "Close and save to list",
+      title: "关闭并保存到列表",
       contexts: ["page"],
     });
 
     if (lists.length === 0) {
       chrome.contextMenus.create({
         id: "saveTo-empty",
-        title: "No lists yet",
+        title: "暂无列表",
         parentId: "saveTo",
         contexts: ["page"],
         enabled: false,
       });
       chrome.contextMenus.create({
         id: "saveCloseTo-empty",
-        title: "No lists yet",
+        title: "暂无列表",
         parentId: "saveCloseTo",
         contexts: ["page"],
         enabled: false,
@@ -208,7 +208,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   try {
     await saveCurrentTab({ tab, listId, closeTab });
   } catch (error) {
-    console.warn("Failed to save tab from context menu:", error);
+    console.warn("右键菜单保存失败：", error);
   }
 });
 
@@ -252,13 +252,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const mode = message.mode === "replace" ? "replace" : "merge";
     const rawLists = message.lists;
     if (!Array.isArray(rawLists)) {
-      sendResponse({ ok: false, error: "Invalid import format." });
+      sendResponse({ ok: false, error: "导入格式无效。" });
       return false;
     }
     (async () => {
       const incoming = rawLists.map(sanitizeImportedList).filter(Boolean);
       if (incoming.length === 0) {
-        sendResponse({ ok: false, error: "No valid lists to import." });
+        sendResponse({ ok: false, error: "没有可导入的有效列表。" });
         return;
       }
       if (mode === "replace") {

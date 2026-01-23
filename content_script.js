@@ -112,9 +112,9 @@
   const widget = document.createElement("div");
   widget.id = WIDGET_ID;
   widget.innerHTML = `
-    <div class="ntm-handle">Save tab</div>
+    <div class="ntm-handle">保存标签页</div>
     <div class="ntm-panel">
-      <div class="ntm-panel-header">Quick save</div>
+      <div class="ntm-panel-header">快捷保存</div>
       <div class="ntm-lists"></div>
     </div>
   `;
@@ -127,7 +127,7 @@
   function request(action, data) {
     return new Promise((resolve) => {
       chrome.runtime.sendMessage({ action, ...data }, (response) => {
-        resolve(response || { ok: false, error: "No response" });
+        resolve(response || { ok: false, error: "无响应" });
       });
     });
   }
@@ -137,7 +137,7 @@
     if (!lists.length) {
       const empty = document.createElement("div");
       empty.className = "ntm-empty";
-      empty.textContent = "No lists yet. Use the popup to create one.";
+      empty.textContent = "暂无列表，请先在弹窗中创建。";
       listsContainer.appendChild(empty);
       return;
     }
@@ -152,13 +152,13 @@
 
       const saveButton = document.createElement("button");
       saveButton.className = "ntm-action primary";
-      saveButton.textContent = "Save";
+      saveButton.textContent = "保存";
       saveButton.dataset.listId = list.id;
       saveButton.dataset.action = "save";
 
       const saveCloseButton = document.createElement("button");
       saveCloseButton.className = "ntm-action";
-      saveCloseButton.textContent = "Save+Close";
+      saveCloseButton.textContent = "保存并关闭";
       saveCloseButton.dataset.listId = list.id;
       saveCloseButton.dataset.action = "save-close";
 
@@ -205,9 +205,9 @@
     const closeTab = action === "save-close";
     const response = await request("saveCurrentTab", { listId, closeTab });
     if (response.ok) {
-      flashHandle(closeTab ? "Saved + closed" : "Saved");
+      flashHandle(closeTab ? "已保存并关闭" : "已保存");
     } else {
-      flashHandle("Save failed");
+      flashHandle("保存失败");
     }
   });
 })();

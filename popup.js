@@ -21,7 +21,7 @@ function setStatus(message, type) {
 function request(action, data) {
   return new Promise((resolve) => {
     chrome.runtime.sendMessage({ action, ...data }, (response) => {
-      resolve(response || { ok: false, error: "No response" });
+      resolve(response || { ok: false, error: "无响应" });
     });
   });
 }
@@ -45,7 +45,7 @@ async function loadTabs() {
   tabsContainer.innerHTML = "";
 
   if (windows.length === 0) {
-    clearTabsUI("No open tabs found.");
+    clearTabsUI("未找到打开的标签页。");
     return;
   }
 
@@ -55,14 +55,14 @@ async function loadTabs() {
 
     const title = document.createElement("div");
     title.className = "window-title";
-    title.textContent = `Window ${index + 1} (${win.tabs ? win.tabs.length : 0})`;
+    title.textContent = `窗口 ${index + 1}（${win.tabs ? win.tabs.length : 0}）`;
     block.appendChild(title);
 
     const tabs = Array.isArray(win.tabs) ? win.tabs : [];
     if (tabs.length === 0) {
       const empty = document.createElement("div");
       empty.className = "tab-row";
-      empty.textContent = "No tabs in this window.";
+      empty.textContent = "此窗口没有标签页。";
       block.appendChild(empty);
     } else {
       tabs.forEach((tab) => {
@@ -76,7 +76,7 @@ async function loadTabs() {
         const text = document.createElement("div");
         const titleText = document.createElement("div");
         titleText.className = "tab-title";
-        titleText.textContent = tab.title || tab.url || "Untitled";
+        titleText.textContent = tab.title || tab.url || "未命名";
 
         const urlText = document.createElement("div");
         urlText.className = "tab-url";
@@ -98,7 +98,7 @@ async function loadTabs() {
 async function loadLists() {
   const response = await request("getLists");
   if (!response.ok) {
-    setStatus(response.error || "Failed to load lists.", "error");
+    setStatus(response.error || "列表加载失败。", "error");
     return;
   }
   const lists = response.lists || [];
@@ -107,7 +107,7 @@ async function loadLists() {
   if (lists.length === 0) {
     const option = document.createElement("option");
     option.value = NEW_LIST_VALUE;
-    option.textContent = "Create a new list";
+    option.textContent = "新建列表";
     listSelect.appendChild(option);
   } else {
     lists.forEach((list) => {
@@ -118,7 +118,7 @@ async function loadLists() {
     });
     const createOption = document.createElement("option");
     createOption.value = NEW_LIST_VALUE;
-    createOption.textContent = "Create a new list";
+    createOption.textContent = "新建列表";
     listSelect.appendChild(createOption);
   }
 
@@ -142,7 +142,7 @@ function getSelectedTabIds() {
 async function saveSelectedTabs() {
   const selectedTabIds = getSelectedTabIds();
   if (selectedTabIds.length === 0) {
-    setStatus("Select at least one tab.", "error");
+    setStatus("请至少选择一个标签页。", "error");
     return;
   }
 
@@ -152,11 +152,11 @@ async function saveSelectedTabs() {
   const listName = isNewList ? newListName.value.trim() : "";
 
   if (isNewList && !listName) {
-    setStatus("Enter a new list name.", "error");
+    setStatus("请输入新列表名称。", "error");
     return;
   }
 
-  setStatus("Saving...", "");
+  setStatus("保存中...", "");
   const response = await request("saveTabs", {
     tabIds: selectedTabIds,
     listId,
@@ -165,12 +165,12 @@ async function saveSelectedTabs() {
   });
 
   if (!response.ok) {
-    setStatus(response.error || "Failed to save tabs.", "error");
+    setStatus(response.error || "保存失败。", "error");
     return;
   }
 
   const savedCount = response.result ? response.result.savedCount : 0;
-  setStatus(`Saved ${savedCount} tabs.`, "ok");
+  setStatus(`已保存 ${savedCount} 个标签页。`, "ok");
   newListName.value = "";
   await loadLists();
 
@@ -182,7 +182,7 @@ async function saveSelectedTabs() {
 async function exportLists() {
   const response = await request("getLists");
   if (!response.ok) {
-    setStatus(response.error || "Failed to export lists.", "error");
+    setStatus(response.error || "导出失败。", "error");
     return;
   }
   const payload = JSON.stringify({ lists: response.lists || [] }, null, 2);
@@ -190,7 +190,7 @@ async function exportLists() {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `nesoi-tab-lists-${new Date().toISOString().slice(0, 10)}.json`;
+  link.download = `nesoi-标签列表-${new Date().toISOString().slice(0, 10)}.json`;
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
@@ -207,13 +207,13 @@ async function importLists(event) {
     const mode = importReplace.checked ? "replace" : "merge";
     const response = await request("importLists", { lists, mode });
     if (!response.ok) {
-      setStatus(response.error || "Failed to import lists.", "error");
+      setStatus(response.error || "导入失败。", "error");
       return;
     }
-    setStatus(`Imported ${response.result.imported} lists.`, "ok");
+    setStatus(`已导入 ${response.result.imported} 个列表。`, "ok");
     await loadLists();
   } catch (error) {
-    setStatus("Invalid JSON file.", "error");
+    setStatus("JSON 文件无效。", "error");
   } finally {
     importFile.value = "";
   }

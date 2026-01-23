@@ -1,15 +1,15 @@
 {
   "manifest_version": 3,
-  "name": "Nesoi Tab Manager",
+  "name": "Nesoi 标签管理器",
   "version": "0.1.0",
-  "description": "Manage large volumes of tabs by saving them into lists.",
+  "description": "管理海量标签页，将其保存到列表中。",
   "permissions": ["tabs", "storage", "contextMenus"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "Nesoi Tab Manager",
+    "default_title": "Nesoi 标签管理器",
     "default_popup": "popup.html"
   },
   "content_scripts": [

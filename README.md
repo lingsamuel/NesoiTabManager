@@ -1,25 +1,24 @@
-# Nesoi Tab Manager
+# Nesoi 标签管理器
 
-A Chrome/Edge extension to manage large volumes of tabs.
+一个用于管理海量标签页的 Chrome/Edge 扩展。
 
-帮我写个Chrome/Edge的浏览器插件，用于管理我的海量标签页。它需要能读取所有窗口和标签页。然后我可以勾选一些，将它们保存到一个列表里（可以是已有的或者新建列表），并且可以勾选保存时关闭。还需要有导入、导出已保存的标签页功能。此外，还需要给网页的右键菜单添加一个选项：保存到（某个列表）和关闭并保存到某个列表。同时给网页的左下角添加一个悬浮框，鼠标划过时向上展开已有的列表，然后可以快捷将当前网页保存（或者关闭并保存）到选中的列表。将这个需求记作README，然后逐步实现。
+## 需求
 
-## Requirements
+- 读取所有窗口与标签页。
+- 可勾选多个标签页保存到列表。
+- 支持保存到已有列表或新建列表。
+- 保存时可选择关闭标签页。
+- 支持导入、导出已保存的标签页。
+- 网页右键菜单提供：
+  - 保存到某个列表
+  - 关闭并保存到某个列表
+- 网页左下角悬浮组件：
+  - 鼠标划过向上展开已有列表
+  - 一键保存或关闭并保存当前页面
+- 交互文案统一使用中文。
 
-- Read all windows and tabs.
-- Allow selecting multiple tabs and saving them into a list.
-- Support saving into an existing list or a new list.
-- Optional checkbox to close tabs after saving.
-- Import and export saved tab lists.
-- Add right-click menu items on web pages:
-  - Save to <list>
-  - Close and save to <list>
-- Add a bottom-left floating widget on web pages:
-  - On hover, expand upward to show existing lists.
-  - Allow quick save (or close + save) of the current page to a selected list.
+## 实现说明
 
-## Implementation Notes
-
-- Manifest V3 extension with a service worker.
-- Use chrome.tabs, chrome.storage, chrome.contextMenus.
-- Lists stored in chrome.storage.local as JSON.
+- Manifest V3，后台使用 service worker。
+- 使用 `chrome.tabs`、`chrome.storage`、`chrome.contextMenus`。
+- 列表数据存放在 `chrome.storage.local`。
