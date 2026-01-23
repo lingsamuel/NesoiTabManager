@@ -68,6 +68,7 @@
           <div class="content-actions">
             <button class="ghost" @click="setVisibleSelection(true)">全选</button>
             <button class="ghost" @click="setVisibleSelection(false)">清空</button>
+            <button class="ghost danger" @click="closeSelectedTabs">关闭所选</button>
           </div>
         </div>
 
@@ -90,6 +91,7 @@
                 <input
                   type="checkbox"
                   :checked="Boolean(selectedTabIds[item.tab.id])"
+                  @click.stop
                   @change="toggleTab(item.tab.id, $event.target.checked)"
                 />
                 <img
@@ -97,14 +99,20 @@
                   :class="{ hidden: !item.tab.favIconUrl }"
                   :src="item.tab.favIconUrl || ''"
                   @error="handleIconError($event)"
+                  @click.stop
                 />
-                <div>
+                <div class="tab-body" @click="activateTab(item.tab)">
                   <div class="tab-title">{{ item.tab.title || item.tab.url || "未命名" }}</div>
                   <div class="tab-url">{{ item.tab.url || "" }}</div>
                 </div>
-                <span class="tab-tag" :class="{ hidden: !aiTags[item.tab.id] }">
-                  {{ aiTags[item.tab.id] || "" }}
-                </span>
+                <div class="tab-actions">
+                  <span class="tab-tag" :class="{ hidden: !aiTags[item.tab.id] }">
+                    {{ aiTags[item.tab.id] || "" }}
+                  </span>
+                  <button class="ghost tab-action danger" @click.stop="closeTab(item.tab)">
+                    关闭
+                  </button>
+                </div>
               </div>
             </template>
           </VirtualList>
@@ -171,6 +179,11 @@
             <div class="content-subtitle">{{ listSubtitle }}</div>
           </div>
           <div class="content-actions">
+            <button class="ghost" @click="selectAllListItems">全选</button>
+            <button class="ghost" @click="clearListSelection">清空</button>
+            <button class="ghost danger" @click="deleteSelectedListItems">删除所选</button>
+            <button class="ghost" @click="renameList">重命名列表</button>
+            <button class="ghost danger" @click="deleteList">删除列表</button>
             <button class="ghost" @click="exportLists">导出列表</button>
             <label class="ghost import-label" for="import-file">导入列表</label>
             <input id="import-file" type="file" accept="application/json" @change="importLists" />
@@ -183,18 +196,28 @@
             v-else
             class="list-items"
             :items="listItems"
-            :item-height="82"
+            :item-height="120"
           >
             <template #default="{ item }">
               <div class="list-item">
-                <div class="list-header">
-                  <img
-                    class="list-icon"
-                    :class="{ hidden: !item.favIconUrl }"
-                    :src="item.favIconUrl || ''"
-                    @error="handleIconError($event)"
+                <div class="list-top">
+                  <input
+                    type="checkbox"
+                    :checked="Boolean(selectedListItemKeys[item.key])"
+                    @change="toggleListItem(item.key, $event.target.checked)"
                   />
-                  <div class="list-title">{{ item.title || item.url || "未命名" }}</div>
+                  <div class="list-header">
+                    <img
+                      class="list-icon"
+                      :class="{ hidden: !item.favIconUrl }"
+                      :src="item.favIconUrl || ''"
+                      @error="handleIconError($event)"
+                    />
+                    <div class="list-title">{{ item.title || item.url || "未命名" }}</div>
+                  </div>
+                  <button class="ghost list-action danger" @click="deleteListItem(item)">
+                    删除
+                  </button>
                 </div>
                 <div class="list-url">{{ item.url || "" }}</div>
                 <div v-if="item.savedAt" class="list-meta">保存时间：{{ item.savedAt }}</div>
@@ -225,7 +248,58 @@
           </div>
         </div>
         <section class="panel">
-          <div class="empty-state">暂无设置项，后续版本开放配置。</div>
+          <div class="panel-header">
+            <h2>AI 配置</h2>
+          </div>
+          <div class="form-row">
+            <label for="ai-endpoint">API 端点</label>
+            <input
+              id="ai-endpoint"
+              type="text"
+              v-model="aiConfig.endpoint"
+              placeholder="填写完整请求地址（如 https://api.openai.com/v1/responses）"
+            />
+          </div>
+          <div class="form-row">
+            <label for="ai-mode">API 格式</label>
+            <select id="ai-mode" v-model="aiConfig.apiMode">
+              <option value="responses">Responses（推荐）</option>
+              <option value="chat">Chat Completions</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label for="ai-key">API Key</label>
+            <input
+              id="ai-key"
+              type="password"
+              v-model="aiConfig.apiKey"
+              placeholder="sk-..."
+            />
+          </div>
+          <div class="form-row">
+            <label for="ai-model">模型名称</label>
+            <input id="ai-model" type="text" v-model="aiConfig.model" placeholder="gpt-4.1-mini" />
+          </div>
+          <div class="form-row">
+            <label for="ai-max-tabs">单次最多标签数</label>
+            <input
+              id="ai-max-tabs"
+              type="number"
+              min="10"
+              max="500"
+              v-model.number="aiConfig.maxTabs"
+            />
+          </div>
+          <div class="form-row checkbox-row">
+            <label>
+              <input type="checkbox" v-model="aiConfig.includeListTitles" />
+              发送已有列表标题作为参考
+            </label>
+          </div>
+          <div class="form-row">
+            <button class="primary" @click="saveAiConfig">保存配置</button>
+          </div>
+          <div class="status" :class="settingsStatus.type">{{ settingsStatus.message }}</div>
         </section>
       </section>
     </main>
@@ -250,12 +324,23 @@ const lists = ref([]);
 const selectedWindowId = ref("all");
 const selectedListId = ref("");
 const selectedTabIds = reactive({});
+const selectedListItemKeys = reactive({});
 const aiTags = reactive({});
 const aiGroups = ref([]);
 
 const status = reactive({ message: "", type: "" });
 const aiStatus = reactive({ message: "", type: "" });
 const listStatus = reactive({ message: "", type: "" });
+const settingsStatus = reactive({ message: "", type: "" });
+
+const aiConfig = reactive({
+  endpoint: "",
+  apiKey: "",
+  model: "gpt-4.1-mini",
+  apiMode: "responses",
+  maxTabs: 120,
+  includeListTitles: true,
+});
 
 const selectedListTarget = ref(NEW_LIST_VALUE);
 const newListName = ref("");
@@ -336,6 +421,7 @@ const windowRows = computed(() => {
         key: `tab-${tab.id}`,
         tab: {
           id: tab.id,
+          windowId: tab.windowId,
           title: tab.title,
           url: tab.url,
           favIconUrl: tab.favIconUrl,
@@ -357,7 +443,9 @@ const listSubtitle = computed(() => {
     return "请选择列表";
   }
   const count = list.items ? list.items.length : 0;
-  return `${list.name}（${count}）`;
+  const selectedCount = Object.keys(selectedListItemKeys).length;
+  const suffix = selectedCount > 0 ? `，已选 ${selectedCount}` : "";
+  return `${list.name}（${count}）${suffix}`;
 });
 
 const listItems = computed(() => {
@@ -371,6 +459,7 @@ const listItems = computed(() => {
   return list.items.map((item, index) => ({
     ...item,
     key: `list-${list.id}-${index}`,
+    index,
   }));
 });
 
@@ -397,6 +486,7 @@ function setSelectedWindow(windowId) {
 
 function setSelectedList(listId) {
   selectedListId.value = listId;
+  clearListSelection();
 }
 
 function setVisibleSelection(checked) {
@@ -411,6 +501,24 @@ function setVisibleSelection(checked) {
   });
 }
 
+function selectAllListItems() {
+  listItems.value.forEach((item) => {
+    selectedListItemKeys[item.key] = true;
+  });
+}
+
+function clearListSelection() {
+  Object.keys(selectedListItemKeys).forEach((key) => delete selectedListItemKeys[key]);
+}
+
+function toggleListItem(key, checked) {
+  if (checked) {
+    selectedListItemKeys[key] = true;
+  } else {
+    delete selectedListItemKeys[key];
+  }
+}
+
 function toggleTab(tabId, checked) {
   if (checked) {
     selectedTabIds[tabId] = true;
@@ -421,6 +529,16 @@ function toggleTab(tabId, checked) {
 
 function handleIconError(event) {
   event.target.classList.add("hidden");
+}
+
+function activateTab(tab) {
+  if (!tab || !tab.id) {
+    return;
+  }
+  if (tab.windowId) {
+    chrome.windows.update(tab.windowId, { focused: true });
+  }
+  chrome.tabs.update(tab.id, { active: true });
 }
 
 function getSelectedTabs() {
@@ -485,10 +603,36 @@ async function request(action, payload) {
   });
 }
 
+async function closeTab(tab) {
+  if (!tab || !tab.id) {
+    return;
+  }
+  chrome.tabs.remove(tab.id, () => {
+    loadWindows();
+  });
+}
+
+async function closeSelectedTabs() {
+  const selectedTabs = getSelectedTabs();
+  if (selectedTabs.length === 0) {
+    setStatus(status, "请先选择要关闭的标签页。", "error");
+    return;
+  }
+  const ids = selectedTabs.map((tab) => tab.id).filter(Boolean);
+  chrome.tabs.remove(ids, () => {
+    setStatus(status, `已关闭 ${ids.length} 个标签页。`, "ok");
+    loadWindows();
+  });
+}
+
 async function runAiGrouping() {
   const selectedTabs = getSelectedTabs();
   if (selectedTabs.length === 0) {
     setStatus(aiStatus, "请先选择需要分组的标签页。", "error");
+    return;
+  }
+  if (!aiConfig.endpoint || !aiConfig.apiKey || !aiConfig.model) {
+    setStatus(aiStatus, "请先在设置中配置 AI 端点、Key 和模型。", "error");
     return;
   }
   const items = buildAiItems(selectedTabs);
@@ -504,7 +648,9 @@ async function runAiGrouping() {
     return;
   }
   applyTags(aiGroups.value);
-  setStatus(aiStatus, `已生成 ${aiGroups.value.length} 组标签。`, "ok");
+  const truncated = response.result && response.result.truncated ? response.result.truncated : 0;
+  const suffix = truncated > 0 ? `（已截断 ${truncated} 个标签页）` : "";
+  setStatus(aiStatus, `已生成 ${aiGroups.value.length} 组标签。${suffix}`, "ok");
 }
 
 async function applyAiGrouping() {
@@ -603,11 +749,110 @@ async function importLists(event) {
   }
 }
 
+async function renameList() {
+  if (!selectedListId.value) {
+    setStatus(listStatus, "请先选择一个列表。", "error");
+    return;
+  }
+  const current = lists.value.find((item) => item.id === selectedListId.value);
+  const nextName = window.prompt("请输入新的列表名称：", current ? current.name : "");
+  if (!nextName) {
+    return;
+  }
+  const response = await request("renameList", {
+    listId: selectedListId.value,
+    name: nextName,
+  });
+  if (!response.ok) {
+    setStatus(listStatus, response.error || "重命名失败。", "error");
+    return;
+  }
+  setStatus(listStatus, "列表已重命名。", "ok");
+  await loadLists();
+}
+
+async function deleteList() {
+  if (!selectedListId.value) {
+    setStatus(listStatus, "请先选择一个列表。", "error");
+    return;
+  }
+  const confirmed = window.confirm("确定要删除该列表吗？此操作不可撤销。");
+  if (!confirmed) {
+    return;
+  }
+  const response = await request("deleteList", { listId: selectedListId.value });
+  if (!response.ok) {
+    setStatus(listStatus, response.error || "删除列表失败。", "error");
+    return;
+  }
+  setStatus(listStatus, "列表已删除。", "ok");
+  clearListSelection();
+  await loadLists();
+}
+
+async function deleteListItem(item) {
+  if (!item || item.index === undefined) {
+    return;
+  }
+  const response = await request("deleteListItems", {
+    listId: selectedListId.value,
+    indices: [item.index],
+  });
+  if (!response.ok) {
+    setStatus(listStatus, response.error || "删除失败。", "error");
+    return;
+  }
+  setStatus(listStatus, "已删除标签。", "ok");
+  await loadLists();
+}
+
+async function deleteSelectedListItems() {
+  if (!selectedListId.value) {
+    setStatus(listStatus, "请先选择一个列表。", "error");
+    return;
+  }
+  const indices = listItems.value
+    .filter((item) => selectedListItemKeys[item.key])
+    .map((item) => item.index);
+  if (indices.length === 0) {
+    setStatus(listStatus, "请先选择要删除的标签。", "error");
+    return;
+  }
+  const confirmed = window.confirm(`确定删除选中的 ${indices.length} 个标签吗？`);
+  if (!confirmed) {
+    return;
+  }
+  const response = await request("deleteListItems", {
+    listId: selectedListId.value,
+    indices,
+  });
+  if (!response.ok) {
+    setStatus(listStatus, response.error || "删除失败。", "error");
+    return;
+  }
+  setStatus(listStatus, `已删除 ${indices.length} 个标签。`, "ok");
+  clearListSelection();
+  await loadLists();
+}
+
 async function loadWindows() {
   const data = await new Promise((resolve) => {
     chrome.windows.getAll({ populate: true }, (result) => resolve(result || []));
   });
   windows.value = data;
+  const existing = new Set();
+  windows.value.forEach((win) => {
+    (win.tabs || []).forEach((tab) => {
+      if (tab && tab.id) {
+        existing.add(String(tab.id));
+      }
+    });
+  });
+  Object.keys(selectedTabIds).forEach((tabId) => {
+    if (!existing.has(String(tabId))) {
+      delete selectedTabIds[tabId];
+    }
+  });
   if (
     selectedWindowId.value !== "all" &&
     !windows.value.some((win) => String(win.id) === String(selectedWindowId.value))
@@ -632,6 +877,7 @@ async function loadLists() {
   } else if (!lists.value.some((list) => list.id === selectedListId.value)) {
     selectedListId.value = lists.value[0].id;
   }
+  clearListSelection();
 
   if (selectedListTarget.value !== NEW_LIST_VALUE) {
     const exists = lists.value.some((list) => list.id === selectedListTarget.value);
@@ -641,8 +887,38 @@ async function loadLists() {
   }
 }
 
+async function loadAiConfig() {
+  const response = await request("getAiConfig");
+  if (!response.ok) {
+    setStatus(settingsStatus, response.error || "AI 配置加载失败。", "error");
+    return;
+  }
+  const config = response.config || {};
+  aiConfig.endpoint = config.endpoint || "https://api.openai.com/v1/responses";
+  aiConfig.apiKey = config.apiKey || "";
+  aiConfig.model = config.model || "gpt-4.1-mini";
+  aiConfig.apiMode = config.apiMode === "chat" ? "chat" : "responses";
+  aiConfig.maxTabs = Number.isFinite(config.maxTabs) ? config.maxTabs : 120;
+  aiConfig.includeListTitles =
+    config.includeListTitles === undefined ? true : Boolean(config.includeListTitles);
+}
+
+async function saveAiConfig() {
+  if (!aiConfig.endpoint || !aiConfig.apiKey) {
+    setStatus(settingsStatus, "请填写 API 端点与 Key。", "error");
+    return;
+  }
+  const response = await request("saveAiConfig", { config: aiConfig });
+  if (!response.ok) {
+    setStatus(settingsStatus, response.error || "保存失败。", "error");
+    return;
+  }
+  setStatus(settingsStatus, "AI 配置已保存。", "ok");
+}
+
 onMounted(async () => {
   await loadWindows();
   await loadLists();
+  await loadAiConfig();
 });
 </script>

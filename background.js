@@ -1,5 +1,6 @@
 const STORAGE_KEY = "lists";
-const MANAGER_PAGE_CANDIDATES = ["ui/manager.html", "ui/index.html", "popup.html"];
+const AI_CONFIG_KEY = "aiConfig";
+const MANAGER_PAGE = "ui/manager.html";
 
 function clearActionPopup() {
   if (chrome.action && chrome.action.setPopup) {
@@ -27,6 +28,38 @@ function normalizeListName(name) {
   return (name || "").trim();
 }
 
+function sanitizeAiConfig(raw) {
+  const config = raw && typeof raw === "object" ? raw : {};
+  const endpoint = String(config.endpoint || "https://api.openai.com/v1/responses").trim();
+  const apiKey = String(config.apiKey || "").trim();
+  const model = String(config.model || "gpt-4.1-mini").trim();
+  const apiMode = config.apiMode === "chat" ? "chat" : "responses";
+  const maxTabs = Number.isFinite(Number(config.maxTabs))
+    ? Math.max(10, Math.min(500, Number(config.maxTabs)))
+    : 120;
+  const includeListTitles =
+    config.includeListTitles === undefined ? true : Boolean(config.includeListTitles);
+  return {
+    endpoint,
+    apiKey,
+    model,
+    apiMode,
+    maxTabs,
+    includeListTitles,
+  };
+}
+
+async function getAiConfig() {
+  const stored = await storageGet(AI_CONFIG_KEY);
+  return sanitizeAiConfig(stored || {});
+}
+
+async function setAiConfig(config) {
+  const sanitized = sanitizeAiConfig(config);
+  await storageSet({ [AI_CONFIG_KEY]: sanitized });
+  return sanitized;
+}
+
 function ensureUniqueListName(existingNames, baseName) {
   let name = baseName;
   let counter = 2;
@@ -37,173 +70,176 @@ function ensureUniqueListName(existingNames, baseName) {
   return name;
 }
 
-function extractKeywords(title) {
-  if (!title) {
-    return [];
-  }
-  const stopwords = new Set([
-    "the",
-    "and",
-    "for",
-    "with",
-    "from",
-    "this",
-    "that",
-    "into",
-    "your",
-    "about",
-    "guide",
-    "docs",
-    "news",
-    "home",
-    "index",
-    "登录",
-    "注册",
-    "首页",
-    "官网",
-    "官方",
-    "文档",
-    "教程",
-    "指南",
-    "下载",
-    "专题",
-  ]);
-  const tokens = title
-    .toLowerCase()
-    .split(/[^a-z0-9\u4e00-\u9fa5]+/)
-    .filter((token) => token.length >= 2 && !stopwords.has(token));
-  const unique = [];
-  tokens.forEach((token) => {
-    if (!unique.includes(token)) {
-      unique.push(token);
-    }
-  });
-  return unique;
-}
-
-function countKeywordOverlap(keywordSet, keywords) {
-  let count = 0;
-  keywords.forEach((keyword) => {
-    if (keywordSet.has(keyword)) {
-      count += 1;
-    }
-  });
-  return count;
-}
-
-function getDominantDomain(domainCounts) {
-  let topDomain = "";
-  let topCount = 0;
-  Object.entries(domainCounts).forEach(([domain, count]) => {
-    if (count > topCount) {
-      topDomain = domain;
-      topCount = count;
-    }
-  });
-  return topDomain;
-}
-
-function createGroupFromItem(item) {
-  const domainCounts = {};
-  if (item.domain) {
-    domainCounts[item.domain] = 1;
-  }
-  return {
-    tabIds: [item.tabId],
-    domainCounts,
-    dominantDomain: item.domain || "",
-    keywords: new Set(item.keywords),
-  };
-}
-
-function addItemToGroup(group, item) {
-  group.tabIds.push(item.tabId);
-  if (item.domain) {
-    group.domainCounts[item.domain] = (group.domainCounts[item.domain] || 0) + 1;
-    group.dominantDomain = getDominantDomain(group.domainCounts);
-  }
-  item.keywords.forEach((keyword) => group.keywords.add(keyword));
-}
-
-function shouldJoinGroup(group, item) {
-  const domainMatch = item.domain && item.domain === group.dominantDomain;
-  const keywordOverlap = countKeywordOverlap(group.keywords, item.keywords);
-  if (domainMatch) {
-    return true;
-  }
-  if (keywordOverlap >= 2) {
-    return true;
-  }
-  if (keywordOverlap >= 1 && group.tabIds.length <= 2) {
-    return true;
-  }
-  return false;
-}
-
-function mergeAdjacentGroups(groups) {
-  const merged = [];
-  groups.forEach((group) => {
-    const last = merged[merged.length - 1];
-    if (
-      last &&
-      last.dominantDomain &&
-      last.dominantDomain === group.dominantDomain &&
-      (last.tabIds.length <= 2 || group.tabIds.length <= 2)
-    ) {
-      group.tabIds.forEach((tabId) => last.tabIds.push(tabId));
-      Object.entries(group.domainCounts).forEach(([domain, count]) => {
-        last.domainCounts[domain] = (last.domainCounts[domain] || 0) + count;
-      });
-      last.dominantDomain = getDominantDomain(last.domainCounts);
-      group.keywords.forEach((keyword) => last.keywords.add(keyword));
-      return;
-    }
-    merged.push(group);
-  });
-  return merged;
-}
-
-function pickGroupLabel(group, fallbackIndex) {
-  const domain = group.dominantDomain;
-  if (domain) {
-    return domain;
-  }
-  const keyword = group.keywords.values().next().value;
-  if (keyword) {
-    return keyword;
-  }
-  return `分组 ${fallbackIndex + 1}`;
-}
-
-function aiGroupTabs(items) {
-  const normalized = items
+function normalizeTabItems(items) {
+  return items
     .map((item) => ({
-      tabId: item.tabId,
-      title: item.title || "",
-      domain: item.domain || "",
-      index: Number.isFinite(item.index) ? item.index : 0,
-      keywords: extractKeywords(item.title || ""),
+      tabId: String(item.tabId || "").trim(),
+      title: String(item.title || "").trim(),
+      domain: String(item.domain || "").trim(),
+      index: Number.isFinite(Number(item.index)) ? Number(item.index) : 0,
     }))
     .filter((item) => item.tabId);
+}
 
-  normalized.sort((a, b) => a.index - b.index);
+function buildAiPrompt(items, listTitles) {
+  const limitedLists = Array.isArray(listTitles) ? listTitles.slice(0, 100) : [];
+  const payload = {
+    tabs: items.map((item) => ({
+      tabId: item.tabId,
+      title: item.title,
+      domain: item.domain,
+      index: item.index,
+    })),
+    listTitles: limitedLists,
+  };
 
-  const groups = [];
-  normalized.forEach((item) => {
-    const lastGroup = groups[groups.length - 1];
-    if (lastGroup && shouldJoinGroup(lastGroup, item)) {
-      addItemToGroup(lastGroup, item);
-      return;
+  const system = [
+    "你是浏览器标签页分组助手。",
+    "请根据标题、基础域名、以及打开顺序（index 越小越靠前）进行分组。",
+    "分组需考虑主题相关性与“相邻打开”的连续性。",
+    "输出必须是严格 JSON，不要输出多余文字。",
+  ].join("\n");
+
+  const user = [
+    "请把输入的标签页分成若干组，每组给出简短中文标签。",
+    "规则：",
+    "1) 主题相近优先。",
+    "2) 连续打开的标签更容易归到同一组。",
+    "3) 组数不要过多，优先合并相关内容。",
+    "4) tabIds 必须来自输入，禁止编造。",
+    "输出格式：",
+    "{",
+    '  "groups": [',
+    '    { "label": "分组名", "tabIds": ["id1", "id2"] }',
+    "  ]",
+    "}",
+    "输入数据：",
+    JSON.stringify(payload),
+  ].join("\n");
+
+  return { system, user };
+}
+
+function extractResponseText(data, isChat) {
+  if (!data) {
+    return "";
+  }
+  if (isChat) {
+    return String(data.choices?.[0]?.message?.content || "").trim();
+  }
+  if (typeof data.output_text === "string") {
+    return data.output_text.trim();
+  }
+  if (Array.isArray(data.output)) {
+    const parts = [];
+    data.output.forEach((item) => {
+      if (Array.isArray(item.content)) {
+        item.content.forEach((content) => {
+          if (content.type === "output_text" && content.text) {
+            parts.push(content.text);
+          }
+        });
+      }
+    });
+    return parts.join("\n").trim();
+  }
+  return "";
+}
+
+function parseAiGroups(text, allowedIds) {
+  if (!text) {
+    throw new Error("AI 返回内容为空。");
+  }
+  let content = text.trim();
+  const fenceMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenceMatch) {
+    content = fenceMatch[1].trim();
+  }
+  const firstBrace = content.indexOf("{");
+  const lastBrace = content.lastIndexOf("}");
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    content = content.slice(firstBrace, lastBrace + 1);
+  }
+  let parsed = null;
+  try {
+    parsed = JSON.parse(content);
+  } catch (error) {
+    throw new Error("无法解析 AI 返回的 JSON。");
+  }
+  const groups = Array.isArray(parsed.groups) ? parsed.groups : [];
+  if (groups.length === 0) {
+    throw new Error("AI 未返回有效分组。");
+  }
+
+  const allowedSet = new Set(allowedIds);
+  const assigned = new Set();
+  const normalized = [];
+  groups.forEach((group, index) => {
+    const rawLabel = String(group.label || "").trim();
+    const label = rawLabel || `分组 ${index + 1}`;
+    const tabIds = Array.isArray(group.tabIds) ? group.tabIds : [];
+    const filtered = tabIds
+      .map((tabId) => String(tabId))
+      .filter((tabId) => allowedSet.has(tabId) && !assigned.has(tabId));
+    filtered.forEach((tabId) => assigned.add(tabId));
+    if (filtered.length > 0) {
+      normalized.push({ label, tabIds: filtered });
     }
-    groups.push(createGroupFromItem(item));
   });
 
-  const merged = mergeAdjacentGroups(groups);
+  const remaining = Array.from(allowedSet).filter((tabId) => !assigned.has(tabId));
+  if (remaining.length > 0) {
+    normalized.push({ label: "未分组", tabIds: remaining });
+  }
 
-  return merged.map((group, index) => ({
-    label: pickGroupLabel(group, index),
-    tabIds: group.tabIds,
-  }));
+  return normalized;
+}
+
+async function requestAiGrouping(config, items, listTitles) {
+  const endpoint = config.endpoint;
+  const isChat = config.apiMode === "chat";
+  const prompt = buildAiPrompt(items, listTitles);
+  const payload = isChat
+    ? {
+        model: config.model,
+        temperature: 0.2,
+        messages: [
+          { role: "system", content: prompt.system },
+          { role: "user", content: prompt.user },
+        ],
+      }
+    : {
+        model: config.model,
+        temperature: 0.2,
+        max_output_tokens: 1200,
+        input: [
+          { role: "system", content: [{ type: "text", text: prompt.system }] },
+          { role: "user", content: [{ type: "text", text: prompt.user }] },
+        ],
+      };
+
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${config.apiKey}`,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const responseText = await response.text();
+  if (!response.ok) {
+    throw new Error(`AI 请求失败：${response.status} ${responseText}`);
+  }
+  let data = null;
+  try {
+    data = JSON.parse(responseText);
+  } catch (error) {
+    throw new Error("AI 返回的响应不是 JSON。");
+  }
+  const text = extractResponseText(data, isChat);
+  const allowedIds = items.map((item) => item.tabId);
+  return parseAiGroups(text, allowedIds);
 }
 
 async function saveGroupedTabs(groups) {
@@ -251,6 +287,51 @@ async function getLists() {
 
 async function setLists(lists) {
   await storageSet({ [STORAGE_KEY]: lists });
+}
+
+async function renameList(listId, name) {
+  const trimmed = normalizeListName(name);
+  if (!trimmed) {
+    throw new Error("列表名称不能为空。");
+  }
+  const lists = await getLists();
+  const target = lists.find((list) => list.id === listId);
+  if (!target) {
+    throw new Error("未找到对应列表。");
+  }
+  target.name = trimmed;
+  await setLists(lists);
+  return { listId, name: trimmed };
+}
+
+async function deleteList(listId) {
+  const lists = await getLists();
+  const next = lists.filter((list) => list.id !== listId);
+  if (next.length === lists.length) {
+    throw new Error("未找到对应列表。");
+  }
+  await setLists(next);
+  return { listId };
+}
+
+async function deleteListItems(listId, indices) {
+  const lists = await getLists();
+  const target = lists.find((list) => list.id === listId);
+  if (!target) {
+    throw new Error("未找到对应列表。");
+  }
+  const indexSet = new Set(
+    (Array.isArray(indices) ? indices : [])
+      .map((item) => Number(item))
+      .filter((num) => Number.isFinite(num))
+  );
+  if (indexSet.size === 0) {
+    throw new Error("没有有效的删除索引。");
+  }
+  const originalCount = target.items.length;
+  target.items = target.items.filter((_, index) => !indexSet.has(index));
+  await setLists(lists);
+  return { removed: originalCount - target.items.length };
 }
 
 function sanitizeImportedList(rawList) {
@@ -401,37 +482,20 @@ chrome.runtime.onStartup.addListener(() => {
   rebuildContextMenus();
 });
 
-async function resolveManagerUrl() {
-  for (let i = 0; i < MANAGER_PAGE_CANDIDATES.length; i += 1) {
-    const candidate = MANAGER_PAGE_CANDIDATES[i];
-    const url = chrome.runtime.getURL(candidate);
-    try {
-      const response = await fetch(url, { method: "HEAD" });
-      if (response.ok) {
-        return url;
-      }
-    } catch (error) {
-      // 忽略异常，尝试下一个候选。
-    }
-  }
-  return chrome.runtime.getURL(MANAGER_PAGE_CANDIDATES[0]);
-}
-
 chrome.action.onClicked.addListener(() => {
-  resolveManagerUrl().then((url) => {
-    chrome.tabs.query({ url }, (tabs) => {
-      if (tabs && tabs.length > 0) {
-        const target = tabs[0];
-        if (target.windowId) {
-          chrome.windows.update(target.windowId, { focused: true });
-        }
-        if (target.id) {
-          chrome.tabs.update(target.id, { active: true });
-        }
-        return;
+  const url = chrome.runtime.getURL(MANAGER_PAGE);
+  chrome.tabs.query({ url }, (tabs) => {
+    if (tabs && tabs.length > 0) {
+      const target = tabs[0];
+      if (target.windowId) {
+        chrome.windows.update(target.windowId, { focused: true });
       }
-      chrome.tabs.create({ url });
-    });
+      if (target.id) {
+        chrome.tabs.update(target.id, { active: true });
+      }
+      return;
+    }
+    chrome.tabs.create({ url });
   });
 });
 
@@ -497,23 +561,71 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (action === "renameList") {
+    const listId = message.listId || "";
+    const name = message.name || "";
+    renameList(listId, name)
+      .then((result) => sendResponse({ ok: true, result }))
+      .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
+    return true;
+  }
+
+  if (action === "deleteList") {
+    const listId = message.listId || "";
+    deleteList(listId)
+      .then((result) => sendResponse({ ok: true, result }))
+      .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
+    return true;
+  }
+
+  if (action === "deleteListItems") {
+    const listId = message.listId || "";
+    const indices = message.indices || [];
+    deleteListItems(listId, indices)
+      .then((result) => sendResponse({ ok: true, result }))
+      .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
+    return true;
+  }
+
+  if (action === "getAiConfig") {
+    getAiConfig()
+      .then((config) => sendResponse({ ok: true, config }))
+      .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
+    return true;
+  }
+
+  if (action === "saveAiConfig") {
+    setAiConfig(message.config || {})
+      .then((config) => sendResponse({ ok: true, config }))
+      .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
+    return true;
+  }
+
   if (action === "aiGroupTabs") {
-    const items = Array.isArray(message.items) ? message.items : [];
-    if (items.length === 0) {
+    const rawItems = Array.isArray(message.items) ? message.items : [];
+    if (rawItems.length === 0) {
       sendResponse({ ok: false, error: "没有可分组的标签页。" });
       return false;
     }
-    try {
-      const groups = aiGroupTabs(items);
+    (async () => {
+      const config = await getAiConfig();
+      if (!config.endpoint || !config.apiKey || !config.model) {
+        sendResponse({ ok: false, error: "请先在设置中配置 AI 端点与 Key。" });
+        return;
+      }
+      const normalized = normalizeTabItems(rawItems).sort((a, b) => a.index - b.index);
+      const maxTabs = config.maxTabs || 120;
+      const limited = normalized.slice(0, maxTabs);
+      const truncated = normalized.length > limited.length ? normalized.length - limited.length : 0;
+      const listTitles = config.includeListTitles ? (await getLists()).map((list) => list.name) : [];
+      const groups = await requestAiGrouping(config, limited, listTitles);
       if (!groups.length) {
         sendResponse({ ok: false, error: "未生成有效分组。" });
-        return false;
+        return;
       }
-      sendResponse({ ok: true, result: { groups } });
-    } catch (error) {
-      sendResponse({ ok: false, error: String(error.message || error) });
-    }
-    return false;
+      sendResponse({ ok: true, result: { groups, truncated, used: limited.length } });
+    })().catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
+    return true;
   }
 
   if (action === "saveGroupedTabs") {
