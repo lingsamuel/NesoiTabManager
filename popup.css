@@ -101,11 +101,11 @@ main {
 
 .tab-row {
   display: grid;
-  grid-template-columns: 18px 1fr;
+  grid-template-columns: 18px 1fr auto;
   gap: 8px;
   padding: 6px 6px;
   border-radius: 10px;
-  align-items: start;
+  align-items: center;
 }
 
 .tab-row:hover {
@@ -123,6 +123,20 @@ main {
   word-break: break-all;
 }
 
+.tab-tag {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #f0e7d9;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.tab-tag.hidden {
+  display: none;
+}
+
 .form-row {
   display: flex;
   flex-direction: column;
@@ -131,6 +145,11 @@ main {
 }
 
 .form-row label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.hint {
   font-size: 12px;
   color: var(--muted);
 }
@@ -187,6 +206,11 @@ button.ghost {
 
 button.ghost:hover {
   transform: translateY(-1px);
+}
+
+.ai-actions {
+  flex-direction: row;
+  gap: 8px;
 }
 
 .status {

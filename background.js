@@ -20,6 +20,212 @@ function normalizeListName(name) {
   return (name || "").trim();
 }
 
+function ensureUniqueListName(existingNames, baseName) {
+  let name = baseName;
+  let counter = 2;
+  while (existingNames.has(name)) {
+    name = `${baseName}（${counter}）`;
+    counter += 1;
+  }
+  return name;
+}
+
+function extractKeywords(title) {
+  if (!title) {
+    return [];
+  }
+  const stopwords = new Set([
+    "the",
+    "and",
+    "for",
+    "with",
+    "from",
+    "this",
+    "that",
+    "into",
+    "your",
+    "about",
+    "guide",
+    "docs",
+    "news",
+    "home",
+    "index",
+    "登录",
+    "注册",
+    "首页",
+    "官网",
+    "官方",
+    "文档",
+    "教程",
+    "指南",
+    "下载",
+    "专题",
+  ]);
+  const tokens = title
+    .toLowerCase()
+    .split(/[^a-z0-9\u4e00-\u9fa5]+/)
+    .filter((token) => token.length >= 2 && !stopwords.has(token));
+  const unique = [];
+  tokens.forEach((token) => {
+    if (!unique.includes(token)) {
+      unique.push(token);
+    }
+  });
+  return unique;
+}
+
+function countKeywordOverlap(keywordSet, keywords) {
+  let count = 0;
+  keywords.forEach((keyword) => {
+    if (keywordSet.has(keyword)) {
+      count += 1;
+    }
+  });
+  return count;
+}
+
+function getDominantDomain(domainCounts) {
+  let topDomain = "";
+  let topCount = 0;
+  Object.entries(domainCounts).forEach(([domain, count]) => {
+    if (count > topCount) {
+      topDomain = domain;
+      topCount = count;
+    }
+  });
+  return topDomain;
+}
+
+function createGroupFromItem(item) {
+  const domainCounts = {};
+  if (item.domain) {
+    domainCounts[item.domain] = 1;
+  }
+  return {
+    tabIds: [item.tabId],
+    domainCounts,
+    dominantDomain: item.domain || "",
+    keywords: new Set(item.keywords),
+  };
+}
+
+function addItemToGroup(group, item) {
+  group.tabIds.push(item.tabId);
+  if (item.domain) {
+    group.domainCounts[item.domain] = (group.domainCounts[item.domain] || 0) + 1;
+    group.dominantDomain = getDominantDomain(group.domainCounts);
+  }
+  item.keywords.forEach((keyword) => group.keywords.add(keyword));
+}
+
+function shouldJoinGroup(group, item) {
+  const domainMatch = item.domain && item.domain === group.dominantDomain;
+  const keywordOverlap = countKeywordOverlap(group.keywords, item.keywords);
+  if (domainMatch) {
+    return true;
+  }
+  if (keywordOverlap >= 2) {
+    return true;
+  }
+  if (keywordOverlap >= 1 && group.tabIds.length <= 2) {
+    return true;
+  }
+  return false;
+}
+
+function mergeAdjacentGroups(groups) {
+  const merged = [];
+  groups.forEach((group) => {
+    const last = merged[merged.length - 1];
+    if (
+      last &&
+      last.dominantDomain &&
+      last.dominantDomain === group.dominantDomain &&
+      (last.tabIds.length <= 2 || group.tabIds.length <= 2)
+    ) {
+      group.tabIds.forEach((tabId) => last.tabIds.push(tabId));
+      Object.entries(group.domainCounts).forEach(([domain, count]) => {
+        last.domainCounts[domain] = (last.domainCounts[domain] || 0) + count;
+      });
+      last.dominantDomain = getDominantDomain(last.domainCounts);
+      group.keywords.forEach((keyword) => last.keywords.add(keyword));
+      return;
+    }
+    merged.push(group);
+  });
+  return merged;
+}
+
+function pickGroupLabel(group, fallbackIndex) {
+  const domain = group.dominantDomain;
+  if (domain) {
+    return domain;
+  }
+  const keyword = group.keywords.values().next().value;
+  if (keyword) {
+    return keyword;
+  }
+  return `分组 ${fallbackIndex + 1}`;
+}
+
+function aiGroupTabs(items) {
+  const normalized = items
+    .map((item) => ({
+      tabId: item.tabId,
+      title: item.title || "",
+      domain: item.domain || "",
+      index: Number.isFinite(item.index) ? item.index : 0,
+      keywords: extractKeywords(item.title || ""),
+    }))
+    .filter((item) => item.tabId);
+
+  normalized.sort((a, b) => a.index - b.index);
+
+  const groups = [];
+  normalized.forEach((item) => {
+    const lastGroup = groups[groups.length - 1];
+    if (lastGroup && shouldJoinGroup(lastGroup, item)) {
+      addItemToGroup(lastGroup, item);
+      return;
+    }
+    groups.push(createGroupFromItem(item));
+  });
+
+  const merged = mergeAdjacentGroups(groups);
+
+  return merged.map((group, index) => ({
+    label: pickGroupLabel(group, index),
+    tabIds: group.tabIds,
+  }));
+}
+
+async function saveGroupedTabs(groups) {
+  const lists = await getLists();
+  const existingNames = new Set(lists.map((list) => list.name));
+  const createdLists = [];
+
+  for (let i = 0; i < groups.length; i += 1) {
+    const group = groups[i];
+    const label = normalizeListName(group.label) || `分组 ${i + 1}`;
+    const baseName = `AI 分组：${label}`;
+    const name = ensureUniqueListName(existingNames, baseName);
+    existingNames.add(name);
+    const tabs = await getTabsByIds(Array.isArray(group.tabIds) ? group.tabIds : []);
+    const items = tabs.map(tabToItem).filter((item) => item.url);
+    if (items.length === 0) {
+      continue;
+    }
+    createdLists.push({ id: generateId(), name, items });
+  }
+
+  if (createdLists.length > 0) {
+    lists.push(...createdLists);
+    await setLists(lists);
+  }
+
+  return { created: createdLists.length };
+}
+
 function tabToItem(tab) {
   const url = tab && tab.url ? tab.url : "";
   const title = tab && tab.title ? tab.title : url || "未命名";
@@ -243,6 +449,37 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       closeTab: Boolean(message.closeTab),
     };
     saveCurrentTab(payload)
+      .then((result) => sendResponse({ ok: true, result }))
+      .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
+    return true;
+  }
+
+  if (action === "aiGroupTabs") {
+    const items = Array.isArray(message.items) ? message.items : [];
+    if (items.length === 0) {
+      sendResponse({ ok: false, error: "没有可分组的标签页。" });
+      return false;
+    }
+    try {
+      const groups = aiGroupTabs(items);
+      if (!groups.length) {
+        sendResponse({ ok: false, error: "未生成有效分组。" });
+        return false;
+      }
+      sendResponse({ ok: true, result: { groups } });
+    } catch (error) {
+      sendResponse({ ok: false, error: String(error.message || error) });
+    }
+    return false;
+  }
+
+  if (action === "saveGroupedTabs") {
+    const groups = Array.isArray(message.groups) ? message.groups : [];
+    if (groups.length === 0) {
+      sendResponse({ ok: false, error: "没有可应用的分组。" });
+      return false;
+    }
+    saveGroupedTabs(groups)
       .then((result) => sendResponse({ ok: true, result }))
       .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
     return true;

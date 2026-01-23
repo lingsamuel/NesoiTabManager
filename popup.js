@@ -12,10 +12,22 @@ const clearAllButton = document.getElementById("clear-all");
 const exportButton = document.getElementById("export-lists");
 const importFile = document.getElementById("import-file");
 const importReplace = document.getElementById("import-replace");
+const aiGroupButton = document.getElementById("ai-group");
+const aiApplyButton = document.getElementById("ai-apply");
+const aiStatusEl = document.getElementById("ai-status");
+
+let tabInfoById = new Map();
+let tabTagElements = new Map();
+let aiGroups = [];
 
 function setStatus(message, type) {
   statusEl.textContent = message;
   statusEl.className = `status${type ? ` ${type}` : ""}`;
+}
+
+function setAiStatus(message, type) {
+  aiStatusEl.textContent = message;
+  aiStatusEl.className = `status${type ? ` ${type}` : ""}`;
 }
 
 function request(action, data) {
@@ -40,15 +52,24 @@ function clearTabsUI(message) {
   tabsContainer.appendChild(placeholder);
 }
 
+function resetTabState() {
+  tabInfoById = new Map();
+  tabTagElements = new Map();
+  aiGroups = [];
+  setAiStatus("", "");
+}
+
 async function loadTabs() {
   const windows = await getAllWindows();
   tabsContainer.innerHTML = "";
+  resetTabState();
 
   if (windows.length === 0) {
     clearTabsUI("未找到打开的标签页。");
     return;
   }
 
+  let globalIndex = 0;
   windows.forEach((win, index) => {
     const block = document.createElement("div");
     block.className = "window-block";
@@ -66,12 +87,15 @@ async function loadTabs() {
       block.appendChild(empty);
     } else {
       tabs.forEach((tab) => {
+        const tabId = tab.id;
+        const tabOrderIndex = globalIndex;
+        globalIndex += 1;
         const row = document.createElement("div");
         row.className = "tab-row";
 
         const checkbox = document.createElement("input");
         checkbox.type = "checkbox";
-        checkbox.dataset.tabId = tab.id;
+        checkbox.dataset.tabId = tabId;
 
         const text = document.createElement("div");
         const titleText = document.createElement("div");
@@ -85,9 +109,24 @@ async function loadTabs() {
         text.appendChild(titleText);
         text.appendChild(urlText);
 
+        const tag = document.createElement("span");
+        tag.className = "tab-tag hidden";
+        tag.dataset.tabId = tabId;
+
         row.appendChild(checkbox);
         row.appendChild(text);
+        row.appendChild(tag);
         block.appendChild(row);
+
+        if (tabId) {
+          tabInfoById.set(tabId, {
+            id: tabId,
+            title: titleText.textContent,
+            url: tab.url || "",
+            index: tabOrderIndex,
+          });
+          tabTagElements.set(tabId, tag);
+        }
       });
     }
 
@@ -137,6 +176,96 @@ function getSelectedTabIds() {
     .filter((checkbox) => checkbox.checked)
     .map((checkbox) => Number(checkbox.dataset.tabId))
     .filter((id) => Number.isFinite(id));
+}
+
+function getSelectedTabs() {
+  return getSelectedTabIds()
+    .map((tabId) => tabInfoById.get(tabId))
+    .filter(Boolean);
+}
+
+function getBaseDomain(url) {
+  if (!url) {
+    return "";
+  }
+  try {
+    const hostname = new URL(url).hostname || "";
+    const cleaned = hostname.replace(/^www\./, "");
+    const parts = cleaned.split(".");
+    if (parts.length <= 2) {
+      return cleaned;
+    }
+    const lastTwo = parts.slice(-2).join(".");
+    return lastTwo;
+  } catch (error) {
+    return "";
+  }
+}
+
+function buildAiItems(tabs) {
+  return tabs.map((tab) => ({
+    tabId: tab.id,
+    title: tab.title || "",
+    domain: getBaseDomain(tab.url),
+    index: tab.index,
+  }));
+}
+
+function applyTags(groups) {
+  tabTagElements.forEach((tagEl) => {
+    tagEl.textContent = "";
+    tagEl.classList.add("hidden");
+  });
+
+  groups.forEach((group) => {
+    const label = group.label || "未分组";
+    (group.tabIds || []).forEach((tabId) => {
+      const tagEl = tabTagElements.get(tabId);
+      if (!tagEl) {
+        return;
+      }
+      tagEl.textContent = label;
+      tagEl.classList.remove("hidden");
+    });
+  });
+}
+
+async function runAiGrouping() {
+  const selectedTabs = getSelectedTabs();
+  if (selectedTabs.length === 0) {
+    setAiStatus("请先选择需要分组的标签页。", "error");
+    return;
+  }
+  const items = buildAiItems(selectedTabs);
+  setAiStatus("AI 分组中...", "");
+  const response = await request("aiGroupTabs", { items });
+  if (!response.ok) {
+    setAiStatus(response.error || "AI 分组失败。", "error");
+    return;
+  }
+  aiGroups = response.result ? response.result.groups || [] : [];
+  if (aiGroups.length === 0) {
+    setAiStatus("未生成有效分组。", "error");
+    return;
+  }
+  applyTags(aiGroups);
+  setAiStatus(`已生成 ${aiGroups.length} 组标签。`, "ok");
+}
+
+async function applyAiGrouping() {
+  if (aiGroups.length === 0) {
+    setAiStatus("请先执行 AI 分组。", "error");
+    return;
+  }
+  setAiStatus("正在生成新列表...", "");
+  const response = await request("saveGroupedTabs", { groups: aiGroups });
+  if (!response.ok) {
+    setAiStatus(response.error || "生成新列表失败。", "error");
+    return;
+  }
+  const created = response.result ? response.result.created : 0;
+  setAiStatus(`已生成 ${created} 个新列表。`, "ok");
+  await loadLists();
 }
 
 async function saveSelectedTabs() {
@@ -238,6 +367,10 @@ clearAllButton.addEventListener("click", () => {
 listSelect.addEventListener("change", updateNewListVisibility);
 
 saveTabsButton.addEventListener("click", saveSelectedTabs);
+
+aiGroupButton.addEventListener("click", runAiGrouping);
+
+aiApplyButton.addEventListener("click", applyAiGrouping);
 
 exportButton.addEventListener("click", exportLists);
 
