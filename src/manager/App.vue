@@ -48,6 +48,7 @@
             :key="item.id"
             class="sub-item"
             :class="{ active: selectedListId === item.id }"
+            :title="item.description || ''"
             @click="setSelectedList(item.id)"
           >
             <span>{{ item.label }}</span>
@@ -87,7 +88,7 @@
               <div v-else-if="item.type === 'empty'" class="empty-row">
                 此窗口没有标签页。
               </div>
-              <div v-else class="tab-row">
+              <div v-else class="tab-row" @click="toggleTabSelection(item.tab.id)">
                 <input
                   type="checkbox"
                   :checked="Boolean(selectedTabIds[item.tab.id])"
@@ -99,11 +100,18 @@
                   :class="{ hidden: !item.tab.favIconUrl }"
                   :src="item.tab.favIconUrl || ''"
                   @error="handleIconError($event)"
-                  @click.stop
                 />
-                <div class="tab-body" @click="activateTab(item.tab)">
-                  <div class="tab-title">{{ item.tab.title || item.tab.url || "未命名" }}</div>
-                  <div class="tab-url">{{ item.tab.url || "" }}</div>
+                <div class="tab-body">
+                  <div class="tab-title">
+                    <span class="tab-link" @click.stop="activateTab(item.tab)">
+                      {{ item.tab.title || item.tab.url || "未命名" }}
+                    </span>
+                  </div>
+                  <div class="tab-url">
+                    <span class="tab-link" @click.stop="activateTab(item.tab)">
+                      {{ item.tab.url || "" }}
+                    </span>
+                  </div>
                 </div>
                 <div class="tab-actions">
                   <span class="tab-tag" :class="{ hidden: !aiTags[item.tab.id] }">
@@ -158,6 +166,15 @@
                 v-model="newListName"
               />
             </div>
+            <div class="form-row" :class="{ hidden: selectedListTarget !== NEW_LIST_VALUE }">
+              <label for="new-list-description">新建列表描述（可选）</label>
+              <textarea
+                id="new-list-description"
+                rows="3"
+                placeholder="用于指导 AI 分组，例如：工作相关、学习资料"
+                v-model="newListDescription"
+              ></textarea>
+            </div>
             <div class="form-row checkbox-row">
               <label>
                 <input type="checkbox" v-model="closeAfter" />
@@ -174,15 +191,33 @@
 
       <section v-show="view === 'lists'" class="view">
         <div class="content-header">
-          <div>
-            <h1>保存的列表</h1>
+          <div class="content-title">
+            <div v-if="isEditingListName" class="title-edit">
+              <input
+                ref="listNameInput"
+                class="title-input"
+                type="text"
+                v-model="listNameDraft"
+                @keydown.enter.prevent="saveListName"
+                @keydown.esc.prevent="cancelEditListName"
+              />
+              <button class="ghost" @click="cancelEditListName">取消</button>
+              <button class="primary" @click="saveListName">保存</button>
+            </div>
+            <h1
+              v-else
+              class="clickable"
+              :class="{ disabled: !selectedList }"
+              @click="startEditListName"
+            >
+              {{ listTitle }}
+            </h1>
             <div class="content-subtitle">{{ listSubtitle }}</div>
           </div>
           <div class="content-actions">
             <button class="ghost" @click="selectAllListItems">全选</button>
             <button class="ghost" @click="clearListSelection">清空</button>
             <button class="ghost danger" @click="deleteSelectedListItems">删除所选</button>
-            <button class="ghost" @click="renameList">重命名列表</button>
             <button class="ghost danger" @click="deleteList">删除列表</button>
             <button class="ghost" @click="exportLists">导出列表</button>
             <label class="ghost import-label" for="import-file">导入列表</label>
@@ -190,20 +225,49 @@
           </div>
         </div>
 
+        <section class="panel">
+          <div class="panel-header">
+            <h2>列表描述</h2>
+            <div class="panel-actions">
+              <button class="ghost" :disabled="!selectedList" @click="clearListDescription">
+                清空
+              </button>
+              <button class="primary" :disabled="!selectedList" @click="saveListDescription">
+                保存描述
+              </button>
+            </div>
+          </div>
+          <div class="form-row">
+            <label for="list-description">用于指导 AI 分组，可留空</label>
+            <textarea
+              id="list-description"
+              rows="4"
+              :disabled="!selectedList"
+              placeholder="例如：客户调研、竞品分析"
+              v-model="listDescriptionDraft"
+            ></textarea>
+          </div>
+        </section>
+
         <div class="panel">
           <div v-if="listItems.length === 0" class="virtual-empty">暂无已保存的列表。</div>
           <VirtualList
             v-else
             class="list-items"
             :items="listItems"
-            :item-height="120"
+            :item-height="92"
           >
             <template #default="{ item }">
-              <div class="list-item">
+              <div
+                class="list-item"
+                :class="{ selected: Boolean(selectedListItemKeys[item.key]) }"
+                @click="toggleListItemSelection(item.key)"
+              >
                 <div class="list-top">
                   <input
                     type="checkbox"
                     :checked="Boolean(selectedListItemKeys[item.key])"
+                    @click.stop
                     @change="toggleListItem(item.key, $event.target.checked)"
                   />
                   <div class="list-header">
@@ -215,7 +279,10 @@
                     />
                     <div class="list-title">{{ item.title || item.url || "未命名" }}</div>
                   </div>
-                  <button class="ghost list-action danger" @click="deleteListItem(item)">
+                  <button
+                    class="ghost list-action danger"
+                    @click.stop="deleteListItem(item)"
+                  >
                     删除
                   </button>
                 </div>
@@ -294,7 +361,7 @@
           <div class="form-row checkbox-row">
             <label>
               <input type="checkbox" v-model="aiConfig.includeListTitles" />
-              发送已有列表标题作为参考
+              发送已有列表标题/描述作为参考
             </label>
           </div>
           <div class="form-row">
@@ -308,7 +375,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, nextTick, onMounted, reactive, ref } from "vue";
 import VirtualList from "./components/VirtualList.vue";
 
 const NEW_LIST_VALUE = "__new__";
@@ -345,8 +412,13 @@ const aiConfig = reactive({
 
 const selectedListTarget = ref(NEW_LIST_VALUE);
 const newListName = ref("");
+const newListDescription = ref("");
 const closeAfter = ref(false);
 const importReplace = ref(false);
+const listDescriptionDraft = ref("");
+const isEditingListName = ref(false);
+const listNameDraft = ref("");
+const listNameInput = ref(null);
 
 const totalTabCount = computed(() =>
   windows.value.reduce((sum, win) => sum + (win.tabs ? win.tabs.length : 0), 0)
@@ -365,6 +437,7 @@ const listSubItems = computed(() =>
     id: list.id,
     label: list.name,
     count: list.items ? list.items.length : 0,
+    description: list.description || "",
   }))
 );
 
@@ -435,18 +508,29 @@ const windowRows = computed(() => {
   return rows;
 });
 
+const selectedList = computed(() =>
+  lists.value.find((item) => item.id === selectedListId.value) || null
+);
+
+const listTitle = computed(() => {
+  if (lists.value.length === 0) {
+    return "保存的列表";
+  }
+  return selectedList.value ? selectedList.value.name : "请选择列表";
+});
+
 const listSubtitle = computed(() => {
   if (lists.value.length === 0) {
     return "暂无列表";
   }
-  const list = lists.value.find((item) => item.id === selectedListId.value);
+  const list = selectedList.value;
   if (!list) {
     return "请选择列表";
   }
   const count = list.items ? list.items.length : 0;
   const selectedCount = Object.keys(selectedListItemKeys).length;
   const suffix = selectedCount > 0 ? `，已选 ${selectedCount}` : "";
-  return `${list.name}（${count}）${suffix}`;
+  return `共 ${count} 个标签页${suffix}`;
 });
 
 const listItems = computed(() => {
@@ -470,9 +554,27 @@ function setStatus(target, message, type) {
 }
 
 function resetAiTags() {
-  Object.keys(aiTags).forEach((key) => delete aiTags[key]);
+  clearAiTags();
   aiGroups.value = [];
   setStatus(aiStatus, "", "");
+}
+
+function syncListDescription() {
+  listDescriptionDraft.value = selectedList.value
+    ? selectedList.value.description || ""
+    : "";
+}
+
+function syncListName() {
+  listNameDraft.value = selectedList.value ? selectedList.value.name || "" : "";
+}
+
+function clearListDescription() {
+  listDescriptionDraft.value = "";
+}
+
+function clearAiTags() {
+  Object.keys(aiTags).forEach((key) => delete aiTags[key]);
 }
 
 function setView(nextView) {
@@ -488,7 +590,52 @@ function setSelectedWindow(windowId) {
 function setSelectedList(listId) {
   selectedListId.value = listId;
   clearListSelection();
+  isEditingListName.value = false;
+  syncListName();
+  syncListDescription();
 }
+
+function startEditListName() {
+  if (!selectedList.value) {
+    return;
+  }
+  isEditingListName.value = true;
+  syncListName();
+  nextTick(() => {
+    if (listNameInput.value) {
+      listNameInput.value.focus();
+      listNameInput.value.select();
+    }
+  });
+}
+
+function cancelEditListName() {
+  isEditingListName.value = false;
+  syncListName();
+}
+
+async function saveListName() {
+  if (!selectedList.value) {
+    return;
+  }
+  const nextName = listNameDraft.value.trim();
+  if (!nextName) {
+    setStatus(listStatus, "列表名称不能为空。", "error");
+    return;
+  }
+  const response = await request("renameList", {
+    listId: selectedList.value.id,
+    name: nextName,
+  });
+  if (!response.ok) {
+    setStatus(listStatus, response.error || "重命名失败。", "error");
+    return;
+  }
+  isEditingListName.value = false;
+  setStatus(listStatus, "列表已重命名。", "ok");
+  await loadLists();
+}
+
 
 function setVisibleSelection(checked) {
   windowsToRender.value.forEach((win) => {
@@ -520,11 +667,28 @@ function toggleListItem(key, checked) {
   }
 }
 
+function toggleListItemSelection(key) {
+  if (selectedListItemKeys[key]) {
+    delete selectedListItemKeys[key];
+  } else {
+    selectedListItemKeys[key] = true;
+  }
+}
+
 function toggleTab(tabId, checked) {
   if (checked) {
     selectedTabIds[tabId] = true;
   } else {
     delete selectedTabIds[tabId];
+  }
+}
+
+function toggleTabSelection(tabId) {
+  const key = String(tabId);
+  if (selectedTabIds[key]) {
+    delete selectedTabIds[key];
+  } else {
+    selectedTabIds[key] = true;
   }
 }
 
@@ -587,7 +751,7 @@ function buildAiItems(tabs) {
 }
 
 function applyTags(groups) {
-  resetAiTags();
+  clearAiTags();
   groups.forEach((group) => {
     const label = group.label || "未分组";
     (group.tabIds || []).forEach((tabId) => {
@@ -680,6 +844,7 @@ async function saveSelectedTabs() {
   const isNewList = selectedListTarget.value === NEW_LIST_VALUE;
   const listId = isNewList ? "" : selectedListTarget.value;
   const listName = isNewList ? newListName.value.trim() : "";
+  const listDescription = isNewList ? newListDescription.value.trim() : "";
 
   if (isNewList && !listName) {
     setStatus(status, "请输入新列表名称。", "error");
@@ -691,6 +856,7 @@ async function saveSelectedTabs() {
     tabIds: selectedTabs.map((tab) => tab.id),
     listId,
     newListName: listName,
+    newListDescription: listDescription,
     closeTabs: closeAfter.value,
   });
 
@@ -702,6 +868,7 @@ async function saveSelectedTabs() {
   const savedCount = response.result ? response.result.savedCount : 0;
   setStatus(status, `已保存 ${savedCount} 个标签页。`, "ok");
   newListName.value = "";
+  newListDescription.value = "";
   await loadLists();
 
   if (closeAfter.value) {
@@ -748,28 +915,6 @@ async function importLists(event) {
   } finally {
     event.target.value = "";
   }
-}
-
-async function renameList() {
-  if (!selectedListId.value) {
-    setStatus(listStatus, "请先选择一个列表。", "error");
-    return;
-  }
-  const current = lists.value.find((item) => item.id === selectedListId.value);
-  const nextName = window.prompt("请输入新的列表名称：", current ? current.name : "");
-  if (!nextName) {
-    return;
-  }
-  const response = await request("renameList", {
-    listId: selectedListId.value,
-    name: nextName,
-  });
-  if (!response.ok) {
-    setStatus(listStatus, response.error || "重命名失败。", "error");
-    return;
-  }
-  setStatus(listStatus, "列表已重命名。", "ok");
-  await loadLists();
 }
 
 async function deleteList() {
@@ -836,6 +981,23 @@ async function deleteSelectedListItems() {
   await loadLists();
 }
 
+async function saveListDescription() {
+  if (!selectedList.value) {
+    setStatus(listStatus, "请先选择列表。", "error");
+    return;
+  }
+  const response = await request("updateListDescription", {
+    listId: selectedList.value.id,
+    description: listDescriptionDraft.value,
+  });
+  if (!response.ok) {
+    setStatus(listStatus, response.error || "保存描述失败。", "error");
+    return;
+  }
+  setStatus(listStatus, "列表描述已更新。", "ok");
+  await loadLists();
+}
+
 async function loadWindows() {
   const data = await new Promise((resolve) => {
     chrome.windows.getAll({ populate: true }, (result) => resolve(result || []));
@@ -879,6 +1041,9 @@ async function loadLists() {
     selectedListId.value = lists.value[0].id;
   }
   clearListSelection();
+  isEditingListName.value = false;
+  syncListName();
+  syncListDescription();
 
   if (selectedListTarget.value !== NEW_LIST_VALUE) {
     const exists = lists.value.some((list) => list.id === selectedListTarget.value);

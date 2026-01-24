@@ -146,9 +146,31 @@ body {
   font-size: 20px;
 }
 
+.content-title {
+  display: flex;
+  flex-direction: column;
+}
+
 .content-subtitle {
   margin-top: 4px;
   font-size: 12px;
+  color: var(--muted);
+}
+
+.clickable {
+  cursor: pointer;
+}
+
+.clickable:hover {
+  color: var(--accent);
+}
+
+.clickable.disabled {
+  cursor: default;
+  color: var(--muted);
+}
+
+.clickable.disabled:hover {
   color: var(--muted);
 }
 
@@ -171,6 +193,24 @@ body {
   align-items: center;
   justify-content: space-between;
   margin-bottom: 8px;
+}
+
+.title-edit {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.title-input {
+  min-width: 220px;
+  flex: 1 1 220px;
+}
+
+.panel-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .panel-header h2 {
@@ -240,23 +280,27 @@ body {
 }
 
 .tab-body {
-  cursor: pointer;
+  cursor: default;
+  min-width: 0;
 }
 
 .tab-title {
   font-size: 12px;
   line-height: 1.3;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .tab-url {
   font-size: 11px;
   color: var(--muted);
+}
+
+.tab-link {
+  display: inline-block;
+  max-width: 100%;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  cursor: pointer;
 }
 
 .tab-icon {
@@ -320,6 +364,12 @@ body {
   flex-direction: column;
   justify-content: center;
   gap: 4px;
+  cursor: pointer;
+}
+
+.list-item.selected {
+  border-color: rgba(166, 132, 78, 0.6);
+  box-shadow: 0 0 0 2px rgba(166, 132, 78, 0.12);
 }
 
 .list-top {
@@ -389,7 +439,10 @@ body {
 }
 
 input[type="text"],
-select {
+input[type="password"],
+input[type="number"],
+select,
+textarea {
   width: 100%;
   padding: 8px 10px;
   border-radius: 10px;
@@ -397,6 +450,10 @@ select {
   font-size: 12px;
   font-family: inherit;
   background: #fffdf9;
+}
+
+textarea {
+  resize: vertical;
 }
 
 .checkbox-row {

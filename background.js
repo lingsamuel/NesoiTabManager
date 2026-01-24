@@ -28,6 +28,10 @@ function normalizeListName(name) {
   return (name || "").trim();
 }
 
+function normalizeListDescription(description) {
+  return (description || "").trim();
+}
+
 function sanitizeAiConfig(raw) {
   const config = raw && typeof raw === "object" ? raw : {};
   const endpoint = String(config.endpoint || "https://api.openai.com/v1/responses").trim();
@@ -81,8 +85,25 @@ function normalizeTabItems(items) {
     .filter((item) => item.tabId);
 }
 
-function buildAiPrompt(items, listTitles) {
-  const limitedLists = Array.isArray(listTitles) ? listTitles.slice(0, 100) : [];
+function normalizeListHint(raw) {
+  if (typeof raw === "string") {
+    const name = normalizeListName(raw);
+    return name ? { name, description: "" } : null;
+  }
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+  const name = normalizeListName(raw.name);
+  if (!name) {
+    return null;
+  }
+  const description = normalizeListDescription(raw.description);
+  return { name, description };
+}
+
+function buildAiPrompt(items, listHints) {
+  const limitedLists = Array.isArray(listHints) ? listHints.slice(0, 100) : [];
+  const normalizedHints = limitedLists.map(normalizeListHint).filter(Boolean);
   const payload = {
     tabs: items.map((item) => ({
       tabId: item.tabId,
@@ -90,7 +111,7 @@ function buildAiPrompt(items, listTitles) {
       domain: item.domain,
       index: item.index,
     })),
-    listTitles: limitedLists,
+    listHints: normalizedHints,
   };
 
   const system = [
@@ -111,6 +132,7 @@ function buildAiPrompt(items, listTitles) {
     "2) 连续打开的标签更容易归到同一组。",
     "3) 组数不要过多，优先合并相关内容。",
     "4) tabIds 必须来自输入，禁止编造。",
+    "如提供已有列表参考（标题/描述），可作为标签命名提示。",
     "输出格式：",
     "{",
     '  "groups": [',
@@ -285,10 +307,10 @@ function parseAiGroups(text, allowedIds) {
   return normalized;
 }
 
-async function requestAiGrouping(config, items, listTitles) {
+async function requestAiGrouping(config, items, listHints) {
   const endpoint = config.endpoint;
   const mode = config.apiMode || "responses";
-  const prompt = buildAiPrompt(items, listTitles);
+  const prompt = buildAiPrompt(items, listHints);
   let payload = null;
   if (mode === "chat") {
     payload = {
@@ -379,7 +401,7 @@ async function saveGroupedTabs(groups) {
     if (items.length === 0) {
       continue;
     }
-    createdLists.push({ id: generateId(), name, items });
+    createdLists.push({ id: generateId(), name, description: "", items });
   }
 
   if (createdLists.length > 0) {
@@ -455,11 +477,25 @@ async function deleteListItems(listId, indices) {
   return { removed: originalCount - target.items.length };
 }
 
+async function updateListDescription(listId, description) {
+  const lists = await getLists();
+  const target = lists.find((list) => list.id === listId);
+  if (!target) {
+    throw new Error("未找到对应列表。");
+  }
+  target.description = normalizeListDescription(description);
+  await setLists(lists);
+  return { listId, description: target.description };
+}
+
 function sanitizeImportedList(rawList) {
   const name = normalizeListName(rawList && rawList.name ? rawList.name : "");
   if (!name) {
     return null;
   }
+  const description = normalizeListDescription(
+    rawList && rawList.description ? rawList.description : ""
+  );
   const items = Array.isArray(rawList.items) ? rawList.items : [];
   const sanitizedItems = items
     .map((item) => ({
@@ -472,6 +508,7 @@ function sanitizeImportedList(rawList) {
   return {
     id: rawList && rawList.id ? String(rawList.id) : generateId(),
     name,
+    description,
     items: sanitizedItems,
   };
 }
@@ -494,7 +531,7 @@ async function getTabsByIds(tabIds) {
   return results.filter(Boolean);
 }
 
-async function saveTabs({ tabIds, listId, newListName, closeTabs }) {
+async function saveTabs({ tabIds, listId, newListName, closeTabs, newListDescription }) {
   const lists = await getLists();
   let targetList = null;
 
@@ -507,7 +544,12 @@ async function saveTabs({ tabIds, listId, newListName, closeTabs }) {
     if (!name) {
       throw new Error("需要列表名称。");
     }
-    targetList = { id: generateId(), name, items: [] };
+    targetList = {
+      id: generateId(),
+      name,
+      description: normalizeListDescription(newListDescription),
+      items: [],
+    };
     lists.push(targetList);
   }
 
@@ -661,6 +703,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       tabIds: Array.isArray(message.tabIds) ? message.tabIds : [],
       listId: message.listId || "",
       newListName: message.newListName || "",
+      newListDescription: message.newListDescription || "",
       closeTabs: Boolean(message.closeTabs),
     };
     saveTabs(payload)
@@ -686,6 +729,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const listId = message.listId || "";
     const name = message.name || "";
     renameList(listId, name)
+      .then((result) => sendResponse({ ok: true, result }))
+      .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
+    return true;
+  }
+
+  if (action === "updateListDescription") {
+    const listId = message.listId || "";
+    const description = message.description || "";
+    updateListDescription(listId, description)
       .then((result) => sendResponse({ ok: true, result }))
       .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
     return true;
@@ -738,8 +790,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const maxTabs = config.maxTabs || 120;
       const limited = normalized.slice(0, maxTabs);
       const truncated = normalized.length > limited.length ? normalized.length - limited.length : 0;
-      const listTitles = config.includeListTitles ? (await getLists()).map((list) => list.name) : [];
-      const groups = await requestAiGrouping(config, limited, listTitles);
+      const listHints = config.includeListTitles
+        ? (await getLists()).map((list) => ({
+            name: list.name,
+            description: list.description || "",
+          }))
+        : [];
+      const groups = await requestAiGrouping(config, limited, listHints);
       if (!groups.length) {
         sendResponse({ ok: false, error: "未生成有效分组。" });
         return;
