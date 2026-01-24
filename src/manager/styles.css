@@ -324,10 +324,22 @@ body {
   background: #f0e7d9;
   color: var(--ink);
   white-space: nowrap;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
 
 .tab-tag.hidden {
   display: none;
+}
+
+.tab-tag:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(29, 23, 16, 0.12);
+}
+
+.tab-tag.close {
+  background: #f6d9d6;
+  color: #7f1d1d;
 }
 
 .tab-actions {

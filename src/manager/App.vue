@@ -114,8 +114,19 @@
                   </div>
                 </div>
                 <div class="tab-actions">
-                  <span class="tab-tag" :class="{ hidden: !aiTags[item.tab.id] }">
+                  <span
+                    class="tab-tag"
+                    :class="{ hidden: !aiTags[item.tab.id] }"
+                    @click.stop="saveTabToAiGroup(item.tab, false)"
+                  >
                     {{ aiTags[item.tab.id] || "" }}
+                  </span>
+                  <span
+                    class="tab-tag close"
+                    :class="{ hidden: !aiTags[item.tab.id] }"
+                    @click.stop="saveTabToAiGroup(item.tab, true)"
+                  >
+                    保存并关闭
                   </span>
                   <button class="ghost tab-action danger" @click.stop="closeTab(item.tab)">
                     关闭
@@ -689,6 +700,45 @@ function toggleTabSelection(tabId) {
     delete selectedTabIds[key];
   } else {
     selectedTabIds[key] = true;
+  }
+}
+
+function normalizeName(name) {
+  return String(name || "").trim();
+}
+
+function findListByName(name) {
+  const target = normalizeName(name);
+  if (!target) {
+    return null;
+  }
+  return lists.value.find((list) => normalizeName(list.name) === target) || null;
+}
+
+async function saveTabToAiGroup(tab, closeTab) {
+  if (!tab || !tab.id) {
+    return;
+  }
+  const label = normalizeName(aiTags[tab.id]);
+  if (!label) {
+    return;
+  }
+  const existing = findListByName(label);
+  const response = await request("saveTabs", {
+    tabIds: [tab.id],
+    listId: existing ? existing.id : "",
+    newListName: existing ? "" : label,
+    closeTabs: Boolean(closeTab),
+  });
+  if (!response.ok) {
+    setStatus(aiStatus, response.error || "保存到分组失败。", "error");
+    return;
+  }
+  const actionText = closeTab ? "保存并关闭" : "保存";
+  setStatus(aiStatus, `已${actionText}到列表：${label}`, "ok");
+  await loadLists();
+  if (closeTab) {
+    await loadWindows();
   }
 }
 
