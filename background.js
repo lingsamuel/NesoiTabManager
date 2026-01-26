@@ -532,6 +532,23 @@ async function updateListDescription(listId, description) {
   return { listId, description: target.description };
 }
 
+async function createList(name, description) {
+  const trimmed = normalizeListName(name);
+  if (!trimmed) {
+    throw new Error("列表名称不能为空。");
+  }
+  const lists = await getLists();
+  const list = {
+    id: generateId(),
+    name: trimmed,
+    description: normalizeListDescription(description),
+    items: [],
+  };
+  lists.push(list);
+  await setLists(lists);
+  return { list };
+}
+
 function sanitizeImportedList(rawList) {
   const name = normalizeListName(rawList && rawList.name ? rawList.name : "");
   if (!name) {
@@ -782,6 +799,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const listId = message.listId || "";
     const description = message.description || "";
     updateListDescription(listId, description)
+      .then((result) => sendResponse({ ok: true, result }))
+      .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
+    return true;
+  }
+
+  if (action === "createList") {
+    const name = message.name || "";
+    const description = message.description || "";
+    createList(name, description)
       .then((result) => sendResponse({ ok: true, result }))
       .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
     return true;

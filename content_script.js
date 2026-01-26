@@ -10,7 +10,7 @@
     #${WIDGET_ID} {
       position: fixed;
       bottom: 14px;
-      left: -56px;
+      left: 0;
       z-index: 2147483647;
       font-family: "Space Grotesk", "Segoe UI", Tahoma, sans-serif;
       color: #1e1b16;
@@ -18,11 +18,11 @@
       width: 72px;
       height: 72px;
       transform: translateX(0);
-      transition: transform 0.18s ease;
+      transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
     }
 
-    #${WIDGET_ID}.open {
-      transform: translateX(56px);
+    #${WIDGET_ID}.expanded {
+      transform: translateX(12px);
     }
 
     #${WIDGET_ID} .ntm-hotzone {
@@ -30,26 +30,43 @@
       height: 72px;
       display: flex;
       align-items: center;
-      justify-content: center;
+      justify-content: flex-start;
+      padding-left: 0;
       border-radius: 999px;
-      background: rgba(255, 255, 255, 0.01);
+      background: transparent;
     }
 
     #${WIDGET_ID} .ntm-handle {
-      width: 38px;
-      height: 38px;
-      background: linear-gradient(135deg, #0f766e 0%, #2b9a86 55%, #f6c453 100%);
-      color: #fffdf7;
-      border-radius: 50%;
+      position: relative;
+      width: 36px;
+      height: 32px;
+      background: #ffffff;
+      color: #6b7280;
+      border-radius: 0 16px 16px 0;
       font-size: 12px;
       font-weight: 600;
       letter-spacing: 0.3px;
-      box-shadow: 0 10px 24px rgba(15, 118, 110, 0.35);
+      border: 1px solid #d1d5db;
+      box-shadow: 0 6px 14px rgba(17, 24, 39, 0.12);
       cursor: default;
       user-select: none;
       display: flex;
       align-items: center;
       justify-content: center;
+      transition: transform 0.2s ease, border-radius 0.2s ease, width 0.2s ease, height 0.2s ease;
+    }
+
+    #${WIDGET_ID} .ntm-hotzone:hover .ntm-handle {
+      transform: translateX(6px) scale(1.03);
+      box-shadow: 0 8px 16px rgba(17, 24, 39, 0.16);
+    }
+
+    #${WIDGET_ID}.expanded .ntm-handle {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      transform: translateX(8px) scale(1.04);
+      box-shadow: 0 10px 18px rgba(17, 24, 39, 0.16);
     }
 
     #${WIDGET_ID} .ntm-panel {
@@ -60,18 +77,21 @@
       max-height: 280px;
       overflow: hidden;
       opacity: 0;
-      transform: translateY(12px);
-      background: #fffdf7;
+      transform: translateY(10px) scale(0.96);
+      transform-origin: bottom left;
+      background: rgba(255, 255, 255, 0.96);
       border-radius: 16px;
-      box-shadow: 0 16px 28px rgba(34, 26, 16, 0.2);
-      border: 1px solid rgba(230, 221, 207, 0.8);
+      box-shadow: none;
+      border: 1px solid rgba(217, 235, 227, 0.9);
+      backdrop-filter: blur(10px);
       pointer-events: none;
-      transition: all 0.18s ease;
+      transition: opacity 0.18s ease, transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+      will-change: transform, opacity;
     }
 
     #${WIDGET_ID}.open .ntm-panel {
       opacity: 1;
-      transform: translateY(0);
+      transform: translateY(0) scale(1);
       pointer-events: auto;
     }
 
@@ -128,6 +148,7 @@
       font-size: 12px;
       color: #6d6256;
     }
+
   `;
   document.head.appendChild(style);
 
@@ -147,14 +168,12 @@
   const panel = widget.querySelector(".ntm-panel");
   const listsContainer = widget.querySelector(".ntm-lists");
   const handle = widget.querySelector(".ntm-handle");
-  const hotzone = widget.querySelector(".ntm-hotzone");
 
   let isOpen = false;
+  let isExpanded = false;
   let rafId = null;
-  let lastPointer = { x: 0, y: 0 };
-  const OPEN_DISTANCE = 110;
-  const EDGE_REVEAL_DISTANCE = 26;
-  const VERTICAL_PADDING = 120;
+  let closeTimer = null;
+  const CLOSE_DELAY = 650;
 
   function request(action, data) {
     return new Promise((resolve) => {
@@ -218,6 +237,14 @@
     }, 1200);
   }
 
+  function setExpanded(nextExpanded) {
+    if (isExpanded === nextExpanded) {
+      return;
+    }
+    isExpanded = nextExpanded;
+    widget.classList.toggle("expanded", nextExpanded);
+  }
+
   function setOpen(nextOpen) {
     if (isOpen === nextOpen) {
       return;
@@ -225,44 +252,52 @@
     isOpen = nextOpen;
     widget.classList.toggle("open", nextOpen);
     if (nextOpen) {
+      setExpanded(true);
       loadLists();
     }
   }
 
-  function isPointerNearHandle(pointer) {
-    const rect = hotzone.getBoundingClientRect();
-    const centerX = rect.left + rect.width / 2;
-    const centerY = rect.top + rect.height / 2;
-    const dx = pointer.x - centerX;
-    const dy = pointer.y - centerY;
-    const distance = Math.sqrt(dx * dx + dy * dy);
-    return distance <= OPEN_DISTANCE;
+  function clearCloseTimer() {
+    if (closeTimer) {
+      clearTimeout(closeTimer);
+      closeTimer = null;
+    }
   }
 
-  function isPointerNearEdge(pointer) {
-    const rect = hotzone.getBoundingClientRect();
-    const centerY = rect.top + rect.height / 2;
-    return pointer.x <= EDGE_REVEAL_DISTANCE && Math.abs(pointer.y - centerY) <= VERTICAL_PADDING;
+  function scheduleCollapse() {
+    if (closeTimer) {
+      return;
+    }
+    closeTimer = setTimeout(() => {
+      closeTimer = null;
+      const hoveringWidget = widget.matches(":hover") || panel.matches(":hover");
+      if (hoveringWidget) {
+        return;
+      }
+      setExpanded(false);
+    }, CLOSE_DELAY);
   }
 
-  function scheduleCheck(pointer) {
-    lastPointer = pointer;
+  function scheduleCheck() {
     if (rafId) {
       return;
     }
     rafId = requestAnimationFrame(() => {
       rafId = null;
       const hoveringWidget = widget.matches(":hover") || panel.matches(":hover");
-      if (hoveringWidget || isPointerNearHandle(lastPointer) || isPointerNearEdge(lastPointer)) {
+      if (hoveringWidget) {
+        clearCloseTimer();
+        setExpanded(true);
         setOpen(true);
       } else {
         setOpen(false);
+        scheduleCollapse();
       }
     });
   }
 
-  document.addEventListener("mousemove", (event) => {
-    scheduleCheck({ x: event.clientX, y: event.clientY });
+  document.addEventListener("mousemove", () => {
+    scheduleCheck();
   });
 
   panel.addEventListener("click", async (event) => {

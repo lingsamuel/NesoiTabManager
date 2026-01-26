@@ -13,6 +13,11 @@
           :class="{ active: view === item.key }"
           @click="setView(item.key)"
         >
+          <span class="nav-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path :d="item.icon" />
+            </svg>
+          </span>
           {{ item.label }}
         </button>
       </nav>
@@ -55,6 +60,14 @@
             <small>{{ item.count }}</small>
           </button>
           <div v-if="listSubItems.length === 0" class="empty-state">暂无列表</div>
+          <button class="sub-item add" @click="openCreateListModal">
+            <span class="sub-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+            </span>
+            <span>新增列表</span>
+          </button>
         </template>
       </div>
     </aside>
@@ -67,9 +80,30 @@
             <div class="content-subtitle">{{ windowSubtitle }}</div>
           </div>
           <div class="content-actions">
-            <button class="ghost" @click="setVisibleSelection(true)">全选</button>
-            <button class="ghost" @click="setVisibleSelection(false)">清空</button>
-            <button class="ghost danger" @click="closeSelectedTabs">关闭所选</button>
+            <button class="ghost btn-icon" @click="setVisibleSelection(true)">
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M20 6L9 17l-5-5" />
+                </svg>
+              </span>
+              全选
+            </button>
+            <button class="ghost btn-icon" @click="setVisibleSelection(false)">
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M6 6l12 12M18 6l-12 12" />
+                </svg>
+              </span>
+              清空
+            </button>
+            <button class="ghost danger btn-icon" @click="closeSelectedTabs">
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M6 6l12 12M18 6l-12 12" />
+                </svg>
+              </span>
+              关闭所选
+            </button>
           </div>
         </div>
 
@@ -128,7 +162,12 @@
                   >
                     保存并关闭
                   </span>
-                  <button class="ghost tab-action danger" @click.stop="closeTab(item.tab)">
+                  <button class="ghost tab-action danger btn-icon" @click.stop="closeTab(item.tab)">
+                    <span class="icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24">
+                        <path d="M6 6l12 12M18 6l-12 12" />
+                      </svg>
+                    </span>
                     关闭
                   </button>
                 </div>
@@ -146,8 +185,22 @@
               <div class="hint">仅使用标题与基础域名，并结合打开顺序生成标签。</div>
             </div>
             <div class="form-row ai-actions">
-              <button class="ghost" @click="runAiGrouping">AI 分组</button>
-              <button class="primary" @click="applyAiGrouping">应用分组生成新列表</button>
+              <button class="ghost btn-icon" @click="runAiGrouping">
+                <span class="icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <path d="M12 3l2.2 4.4L19 9l-4.8 1.6L12 15l-2.2-4.4L5 9l4.8-1.6z" />
+                  </svg>
+                </span>
+                AI 分组
+              </button>
+              <button class="primary btn-icon" @click="applyAiGrouping">
+                <span class="icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <path d="M4 7h10M4 12h16M4 17h12" />
+                  </svg>
+                </span>
+                应用分组生成新列表
+              </button>
             </div>
             <div class="status" :class="aiStatus.type">{{ aiStatus.message }}</div>
           </section>
@@ -193,7 +246,14 @@
               </label>
             </div>
             <div class="form-row">
-              <button class="primary" @click="saveSelectedTabs">保存所选标签页</button>
+              <button class="primary btn-icon" @click="saveSelectedTabs">
+                <span class="icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <path d="M6 20h12V8l-4-4H6zM9 20v-6h6v6" />
+                  </svg>
+                </span>
+                保存所选标签页
+              </button>
             </div>
             <div class="status" :class="status.type">{{ status.message }}</div>
           </section>
@@ -212,8 +272,22 @@
                 @keydown.enter.prevent="saveListName"
                 @keydown.esc.prevent="cancelEditListName"
               />
-              <button class="ghost" @click="cancelEditListName">取消</button>
-              <button class="primary" @click="saveListName">保存</button>
+              <button class="ghost btn-icon" @click="cancelEditListName">
+                <span class="icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <path d="M6 6l12 12M18 6l-12 12" />
+                  </svg>
+                </span>
+                取消
+              </button>
+              <button class="primary btn-icon" @click="saveListName">
+                <span class="icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <path d="M6 20h12V8l-4-4H6zM9 20v-6h6v6" />
+                  </svg>
+                </span>
+                保存
+              </button>
             </div>
             <h1
               v-else
@@ -226,12 +300,62 @@
             <div class="content-subtitle">{{ listSubtitle }}</div>
           </div>
           <div class="content-actions">
-            <button class="ghost" @click="selectAllListItems">全选</button>
-            <button class="ghost" @click="clearListSelection">清空</button>
-            <button class="ghost danger" @click="deleteSelectedListItems">删除所选</button>
-            <button class="ghost danger" @click="deleteList">删除列表</button>
-            <button class="ghost" @click="exportLists">导出列表</button>
-            <label class="ghost import-label" for="import-file">导入列表</label>
+            <button class="ghost btn-icon" @click="selectAllListItems">
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M20 6L9 17l-5-5" />
+                </svg>
+              </span>
+              全选
+            </button>
+            <button class="ghost btn-icon" @click="clearListSelection">
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M6 6l12 12M18 6l-12 12" />
+                </svg>
+              </span>
+              清空
+            </button>
+            <button class="ghost danger btn-icon" @click="deleteSelectedListItems">
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M4 7h16M9 7v10M15 7v10M6 7l1-3h10l1 3M7 20h10" />
+                </svg>
+              </span>
+              删除所选
+            </button>
+            <button class="ghost btn-icon" :disabled="!selectedList" @click="openMoveModal">
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M5 12h14M13 6l6 6-6 6" />
+                </svg>
+              </span>
+              移动所选
+            </button>
+            <button class="ghost danger btn-icon" @click="deleteList">
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M4 7h16M9 7v10M15 7v10M6 7l1-3h10l1 3M7 20h10" />
+                </svg>
+              </span>
+              删除列表
+            </button>
+            <button class="ghost btn-icon" @click="exportLists">
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M12 3v12M8 11l4 4 4-4M5 21h14" />
+                </svg>
+              </span>
+              导出列表
+            </button>
+            <label class="ghost import-label btn-icon" for="import-file">
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M12 21V9M8 13l4-4 4 4M5 3h14" />
+                </svg>
+              </span>
+              导入列表
+            </label>
             <input id="import-file" type="file" accept="application/json" @change="importLists" />
           </div>
         </div>
@@ -240,10 +364,20 @@
           <div class="panel-header">
             <h2>列表描述</h2>
             <div class="panel-actions">
-              <button class="ghost" :disabled="!selectedList" @click="clearListDescription">
+              <button class="ghost btn-icon" :disabled="!selectedList" @click="clearListDescription">
+                <span class="icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <path d="M6 6l12 12M18 6l-12 12" />
+                  </svg>
+                </span>
                 清空
               </button>
-              <button class="primary" :disabled="!selectedList" @click="saveListDescription">
+              <button class="primary btn-icon" :disabled="!selectedList" @click="saveListDescription">
+                <span class="icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <path d="M6 20h12V8l-4-4H6zM9 20v-6h6v6" />
+                  </svg>
+                </span>
                 保存描述
               </button>
             </div>
@@ -257,44 +391,6 @@
               placeholder="例如：客户调研、竞品分析"
               v-model="listDescriptionDraft"
             ></textarea>
-          </div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-header">
-            <h2>移动所选</h2>
-          </div>
-          <div class="form-row">
-            <label for="move-list-select">目标列表</label>
-            <select
-              id="move-list-select"
-              v-model="moveTargetListId"
-              :disabled="!selectedList"
-            >
-              <option
-                v-for="list in moveTargetLists"
-                :key="list.id"
-                :value="list.id"
-              >
-                {{ list.name }}（{{ list.items ? list.items.length : 0 }}）
-              </option>
-              <option :value="MOVE_NEW_LIST_VALUE">新建列表</option>
-            </select>
-          </div>
-          <div class="form-row" :class="{ hidden: moveTargetListId !== MOVE_NEW_LIST_VALUE }">
-            <label for="move-new-list-name">新建列表名称</label>
-            <input
-              id="move-new-list-name"
-              type="text"
-              placeholder="例如：已归档"
-              v-model="moveNewListName"
-              :disabled="!selectedList"
-            />
-          </div>
-          <div class="form-row">
-            <button class="primary" :disabled="!selectedList" @click="moveSelectedListItems">
-              移动所选标签
-            </button>
           </div>
         </section>
 
@@ -312,31 +408,39 @@
                 :class="{ selected: Boolean(selectedListItemKeys[item.key]) }"
                 @click="toggleListItemSelection(item.key)"
               >
-                <div class="list-top">
-                  <input
-                    type="checkbox"
-                    :checked="Boolean(selectedListItemKeys[item.key])"
-                    @click.stop
-                    @change="toggleListItem(item.key, $event.target.checked)"
-                  />
-                  <div class="list-header">
-                    <img
-                      class="list-icon"
-                      :class="{ hidden: !item.favIconUrl }"
-                      :src="item.favIconUrl || ''"
-                      @error="handleIconError($event)"
-                    />
-                    <div class="list-title">{{ item.title || item.url || "未命名" }}</div>
+                <input
+                  type="checkbox"
+                  :checked="Boolean(selectedListItemKeys[item.key])"
+                  @click.stop
+                  @change="toggleListItem(item.key, $event.target.checked)"
+                />
+                <img
+                  class="list-icon"
+                  :class="{ hidden: !item.favIconUrl }"
+                  :src="item.favIconUrl || ''"
+                  @error="handleIconError($event)"
+                />
+                <div class="list-body">
+                  <div class="list-title">
+                    <span class="list-link" @click.stop="openSavedInNewWindow(item)">
+                      {{ item.title || item.url || "未命名" }}
+                    </span>
                   </div>
-                  <button
-                    class="ghost list-action danger"
-                    @click.stop="deleteListItem(item)"
-                  >
-                    删除
-                  </button>
+                  <div class="list-url">
+                    <span class="list-link" @click.stop="openSavedInNewWindow(item)">
+                      {{ item.url || "" }}
+                    </span>
+                  </div>
+                  <div v-if="item.savedAt" class="list-meta">保存时间：{{ item.savedAt }}</div>
                 </div>
-                <div class="list-url">{{ item.url || "" }}</div>
-                <div v-if="item.savedAt" class="list-meta">保存时间：{{ item.savedAt }}</div>
+                <button class="ghost list-action danger btn-icon" @click.stop="deleteListItem(item)">
+                  <span class="icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24">
+                      <path d="M4 7h16M9 7v10M15 7v10M6 7l1-3h10l1 3M7 20h10" />
+                    </svg>
+                  </span>
+                  删除
+                </button>
               </div>
             </template>
           </VirtualList>
@@ -355,6 +459,120 @@
           <div class="status" :class="listStatus.type">{{ listStatus.message }}</div>
         </section>
       </section>
+
+      <div v-if="showMoveModal" class="modal-backdrop" @click.self="closeMoveModal">
+        <div class="modal">
+          <div class="modal-header">
+            <h3>移动所选标签</h3>
+            <button class="ghost btn-icon" @click="closeMoveModal">
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M6 6l12 12M18 6l-12 12" />
+                </svg>
+              </span>
+              关闭
+            </button>
+          </div>
+          <div class="modal-body">
+            <div class="form-row">
+              <label for="move-list-select">目标列表</label>
+              <select id="move-list-select" v-model="moveTargetListId">
+                <option
+                  v-for="list in moveTargetLists"
+                  :key="list.id"
+                  :value="list.id"
+                >
+                  {{ list.name }}（{{ list.items ? list.items.length : 0 }}）
+                </option>
+                <option :value="MOVE_NEW_LIST_VALUE">新建列表</option>
+              </select>
+            </div>
+            <div class="form-row" :class="{ hidden: moveTargetListId !== MOVE_NEW_LIST_VALUE }">
+              <label for="move-new-list-name">新建列表名称</label>
+              <input
+                id="move-new-list-name"
+                type="text"
+                placeholder="例如：已归档"
+                v-model="moveNewListName"
+              />
+            </div>
+            <div class="status" :class="listStatus.type">{{ listStatus.message }}</div>
+          </div>
+          <div class="modal-actions">
+            <button class="ghost btn-icon" @click="closeMoveModal">
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M6 6l12 12M18 6l-12 12" />
+                </svg>
+              </span>
+              取消
+            </button>
+            <button class="primary btn-icon" @click="confirmMoveSelected">
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M5 12h14M13 6l6 6-6 6" />
+                </svg>
+              </span>
+              确认移动
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="showCreateListModal" class="modal-backdrop" @click.self="closeCreateListModal">
+        <div class="modal">
+          <div class="modal-header">
+            <h3>新增列表</h3>
+            <button class="ghost btn-icon" @click="closeCreateListModal">
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M6 6l12 12M18 6l-12 12" />
+                </svg>
+              </span>
+              关闭
+            </button>
+          </div>
+          <div class="modal-body">
+            <div class="form-row">
+              <label for="create-list-name">列表名称</label>
+              <input
+                id="create-list-name"
+                type="text"
+                placeholder="例如：项目资料"
+                v-model="createListName"
+              />
+            </div>
+            <div class="form-row">
+              <label for="create-list-description">列表描述（可选）</label>
+              <textarea
+                id="create-list-description"
+                rows="3"
+                placeholder="用于指导 AI 分组"
+                v-model="createListDescription"
+              ></textarea>
+            </div>
+            <div class="status" :class="listStatus.type">{{ listStatus.message }}</div>
+          </div>
+          <div class="modal-actions">
+            <button class="ghost btn-icon" @click="closeCreateListModal">
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M6 6l12 12M18 6l-12 12" />
+                </svg>
+              </span>
+              取消
+            </button>
+            <button class="primary btn-icon" @click="confirmCreateList">
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M12 5v14M5 12h14" />
+                </svg>
+              </span>
+              创建列表
+            </button>
+          </div>
+        </div>
+      </div>
 
       <section v-show="view === 'settings'" class="view">
         <div class="content-header">
@@ -414,7 +632,14 @@
             </label>
           </div>
           <div class="form-row">
-            <button class="primary" @click="saveAiConfig">保存配置</button>
+            <button class="primary btn-icon" @click="saveAiConfig">
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M6 20h12V8l-4-4H6zM9 20v-6h6v6" />
+                </svg>
+              </span>
+              保存配置
+            </button>
           </div>
           <div class="status" :class="settingsStatus.type">{{ settingsStatus.message }}</div>
         </section>
@@ -431,9 +656,22 @@ const NEW_LIST_VALUE = "__new__";
 const MOVE_NEW_LIST_VALUE = "__move_new__";
 
 const navItems = [
-  { key: "windows", label: "打开的窗口" },
-  { key: "lists", label: "保存的列表" },
-  { key: "settings", label: "插件设置" },
+  {
+    key: "windows",
+    label: "打开的窗口",
+    icon: "M4 5h16v4H4zM4 11h10v8H4zM16 11h4v8h-4z",
+  },
+  {
+    key: "lists",
+    label: "保存的列表",
+    icon: "M4 6h16M4 12h16M4 18h16",
+  },
+  {
+    key: "settings",
+    label: "插件设置",
+    icon:
+      "M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7zM4 12h2m12 0h2M6.5 6.5l1.5 1.5m8-1.5-1.5 1.5M6.5 17.5l1.5-1.5m8 1.5-1.5-1.5",
+  },
 ];
 
 const view = ref("windows");
@@ -471,6 +709,10 @@ const listNameDraft = ref("");
 const listNameInput = ref(null);
 const moveTargetListId = ref(MOVE_NEW_LIST_VALUE);
 const moveNewListName = ref("");
+const showMoveModal = ref(false);
+const showCreateListModal = ref(false);
+const createListName = ref("");
+const createListDescription = ref("");
 
 const totalTabCount = computed(() =>
   windows.value.reduce((sum, win) => sum + (win.tabs ? win.tabs.length : 0), 0)
@@ -645,6 +887,31 @@ function clearListDescription() {
   listDescriptionDraft.value = "";
 }
 
+function openMoveModal() {
+  if (!selectedList.value) {
+    setStatus(listStatus, "请先选择一个列表。", "error");
+    return;
+  }
+  setStatus(listStatus, "", "");
+  syncMoveTarget();
+  showMoveModal.value = true;
+}
+
+function closeMoveModal() {
+  showMoveModal.value = false;
+}
+
+function openCreateListModal() {
+  createListName.value = "";
+  createListDescription.value = "";
+  setStatus(listStatus, "", "");
+  showCreateListModal.value = true;
+}
+
+function closeCreateListModal() {
+  showCreateListModal.value = false;
+}
+
 function clearAiTags() {
   Object.keys(aiTags).forEach((key) => delete aiTags[key]);
 }
@@ -666,6 +933,8 @@ function setSelectedList(listId) {
   syncListName();
   syncListDescription();
   syncMoveTarget();
+  showMoveModal.value = false;
+  showCreateListModal.value = false;
 }
 
 function startEditListName() {
@@ -742,6 +1011,38 @@ async function moveSelectedListItems() {
   moveNewListName.value = "";
   clearListSelection();
   await loadLists();
+}
+
+async function confirmMoveSelected() {
+  await moveSelectedListItems();
+  if (listStatus.type !== "error") {
+    closeMoveModal();
+  }
+}
+
+async function confirmCreateList() {
+  const name = createListName.value.trim();
+  if (!name) {
+    setStatus(listStatus, "请输入列表名称。", "error");
+    return;
+  }
+  const response = await request("createList", {
+    name,
+    description: createListDescription.value.trim(),
+  });
+  if (!response.ok) {
+    setStatus(listStatus, response.error || "创建列表失败。", "error");
+    return;
+  }
+  const created = response.result ? response.result.list : null;
+  setStatus(listStatus, "列表已创建。", "ok");
+  createListName.value = "";
+  createListDescription.value = "";
+  if (created && created.id) {
+    selectedListId.value = created.id;
+  }
+  await loadLists();
+  closeCreateListModal();
 }
 
 
@@ -861,6 +1162,14 @@ function activateTab(tab) {
     chrome.windows.update(tab.windowId, { focused: true });
   }
   chrome.tabs.update(tab.id, { active: true });
+}
+
+function openSavedInNewWindow(item) {
+  const url = item && item.url ? String(item.url) : "";
+  if (!url) {
+    return;
+  }
+  chrome.windows.create({ url });
 }
 
 function getSelectedTabs() {
