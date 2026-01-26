@@ -260,6 +260,44 @@
           </div>
         </section>
 
+        <section class="panel">
+          <div class="panel-header">
+            <h2>移动所选</h2>
+          </div>
+          <div class="form-row">
+            <label for="move-list-select">目标列表</label>
+            <select
+              id="move-list-select"
+              v-model="moveTargetListId"
+              :disabled="!selectedList"
+            >
+              <option
+                v-for="list in moveTargetLists"
+                :key="list.id"
+                :value="list.id"
+              >
+                {{ list.name }}（{{ list.items ? list.items.length : 0 }}）
+              </option>
+              <option :value="MOVE_NEW_LIST_VALUE">新建列表</option>
+            </select>
+          </div>
+          <div class="form-row" :class="{ hidden: moveTargetListId !== MOVE_NEW_LIST_VALUE }">
+            <label for="move-new-list-name">新建列表名称</label>
+            <input
+              id="move-new-list-name"
+              type="text"
+              placeholder="例如：已归档"
+              v-model="moveNewListName"
+              :disabled="!selectedList"
+            />
+          </div>
+          <div class="form-row">
+            <button class="primary" :disabled="!selectedList" @click="moveSelectedListItems">
+              移动所选标签
+            </button>
+          </div>
+        </section>
+
         <div class="panel">
           <div v-if="listItems.length === 0" class="virtual-empty">暂无已保存的列表。</div>
           <VirtualList
@@ -390,6 +428,7 @@ import { computed, nextTick, onMounted, reactive, ref } from "vue";
 import VirtualList from "./components/VirtualList.vue";
 
 const NEW_LIST_VALUE = "__new__";
+const MOVE_NEW_LIST_VALUE = "__move_new__";
 
 const navItems = [
   { key: "windows", label: "打开的窗口" },
@@ -430,6 +469,8 @@ const listDescriptionDraft = ref("");
 const isEditingListName = ref(false);
 const listNameDraft = ref("");
 const listNameInput = ref(null);
+const moveTargetListId = ref(MOVE_NEW_LIST_VALUE);
+const moveNewListName = ref("");
 
 const totalTabCount = computed(() =>
   windows.value.reduce((sum, win) => sum + (win.tabs ? win.tabs.length : 0), 0)
@@ -450,6 +491,10 @@ const listSubItems = computed(() =>
     count: list.items ? list.items.length : 0,
     description: list.description || "",
   }))
+);
+
+const moveTargetLists = computed(() =>
+  lists.value.filter((list) => list.id !== selectedListId.value)
 );
 
 const windowsToRender = computed(() => {
@@ -580,6 +625,22 @@ function syncListName() {
   listNameDraft.value = selectedList.value ? selectedList.value.name || "" : "";
 }
 
+function syncMoveTarget() {
+  if (!selectedList.value) {
+    moveTargetListId.value = MOVE_NEW_LIST_VALUE;
+    return;
+  }
+  const available = moveTargetLists.value;
+  const current = moveTargetListId.value;
+  if (current === MOVE_NEW_LIST_VALUE) {
+    return;
+  }
+  if (!available.some((list) => list.id === current)) {
+    moveTargetListId.value =
+      available.length > 0 ? available[0].id : MOVE_NEW_LIST_VALUE;
+  }
+}
+
 function clearListDescription() {
   listDescriptionDraft.value = "";
 }
@@ -604,6 +665,7 @@ function setSelectedList(listId) {
   isEditingListName.value = false;
   syncListName();
   syncListDescription();
+  syncMoveTarget();
 }
 
 function startEditListName() {
@@ -647,6 +709,41 @@ async function saveListName() {
   await loadLists();
 }
 
+async function moveSelectedListItems() {
+  if (!selectedList.value) {
+    setStatus(listStatus, "请先选择一个列表。", "error");
+    return;
+  }
+  const indices = getSelectedListIndices();
+  if (indices.length === 0) {
+    setStatus(listStatus, "请先选择要移动的标签。", "error");
+    return;
+  }
+  const isNewTarget = moveTargetListId.value === MOVE_NEW_LIST_VALUE;
+  const targetListId = isNewTarget ? "" : moveTargetListId.value;
+  const newListName = isNewTarget ? moveNewListName.value.trim() : "";
+  if (isNewTarget && !newListName) {
+    setStatus(listStatus, "请输入新建列表名称。", "error");
+    return;
+  }
+  setStatus(listStatus, "正在移动标签...", "");
+  const response = await request("moveListItems", {
+    listId: selectedList.value.id,
+    indices,
+    targetListId,
+    newListName,
+  });
+  if (!response.ok) {
+    setStatus(listStatus, response.error || "移动失败。", "error");
+    return;
+  }
+  const moved = response.result ? response.result.moved : 0;
+  setStatus(listStatus, `已移动 ${moved} 个标签。`, "ok");
+  moveNewListName.value = "";
+  clearListSelection();
+  await loadLists();
+}
+
 
 function setVisibleSelection(checked) {
   windowsToRender.value.forEach((win) => {
@@ -684,6 +781,16 @@ function toggleListItemSelection(key) {
   } else {
     selectedListItemKeys[key] = true;
   }
+}
+
+function getSelectedListIndices() {
+  const indices = [];
+  listItems.value.forEach((item) => {
+    if (selectedListItemKeys[item.key]) {
+      indices.push(item.index);
+    }
+  });
+  return indices;
 }
 
 function toggleTab(tabId, checked) {
@@ -1094,6 +1201,7 @@ async function loadLists() {
   isEditingListName.value = false;
   syncListName();
   syncListDescription();
+  syncMoveTarget();
 
   if (selectedListTarget.value !== NEW_LIST_VALUE) {
     const exists = lists.value.some((list) => list.id === selectedListTarget.value);

@@ -477,6 +477,50 @@ async function deleteListItems(listId, indices) {
   return { removed: originalCount - target.items.length };
 }
 
+async function moveListItems(listId, indices, targetListId, newListName) {
+  const lists = await getLists();
+  const source = lists.find((list) => list.id === listId);
+  if (!source) {
+    throw new Error("未找到源列表。");
+  }
+  const indexSet = new Set(
+    (Array.isArray(indices) ? indices : [])
+      .map((item) => Number(item))
+      .filter((num) => Number.isFinite(num))
+  );
+  if (indexSet.size === 0) {
+    throw new Error("没有有效的移动索引。");
+  }
+
+  let target = null;
+  if (targetListId) {
+    target = lists.find((list) => list.id === targetListId) || null;
+  }
+  if (target && target.id === source.id) {
+    throw new Error("目标列表不能是当前列表。");
+  }
+  if (!target) {
+    const name = normalizeListName(newListName);
+    if (!name) {
+      throw new Error("需要目标列表名称。");
+    }
+    target = { id: generateId(), name, description: "", items: [] };
+    lists.push(target);
+  }
+
+  const sorted = Array.from(indexSet).sort((a, b) => a - b);
+  const itemsToMove = sorted.map((index) => source.items[index]).filter(Boolean);
+  if (itemsToMove.length === 0) {
+    throw new Error("没有可移动的标签。");
+  }
+
+  source.items = source.items.filter((_, index) => !indexSet.has(index));
+  target.items.push(...itemsToMove);
+  await setLists(lists);
+
+  return { moved: itemsToMove.length, targetListId: target.id };
+}
+
 async function updateListDescription(listId, description) {
   const lists = await getLists();
   const target = lists.find((list) => list.id === listId);
@@ -755,6 +799,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const listId = message.listId || "";
     const indices = message.indices || [];
     deleteListItems(listId, indices)
+      .then((result) => sendResponse({ ok: true, result }))
+      .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
+    return true;
+  }
+
+  if (action === "moveListItems") {
+    const listId = message.listId || "";
+    const indices = message.indices || [];
+    const targetListId = message.targetListId || "";
+    const newListName = message.newListName || "";
+    moveListItems(listId, indices, targetListId, newListName)
       .then((result) => sendResponse({ ok: true, result }))
       .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
     return true;
