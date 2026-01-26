@@ -113,7 +113,7 @@ body {
 .sub-items {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   max-height: calc(100vh - 80px);
   overflow-y: auto;
   padding-right: 4px;
@@ -126,9 +126,9 @@ body {
   gap: 8px;
   background: #f3f4f6;
   border: 1px solid transparent;
-  padding: 8px 10px;
+  padding: 6px 8px;
   border-radius: 10px;
-  font-size: 12px;
+  font-size: 11px;
   cursor: pointer;
   color: var(--ink);
 }
@@ -313,33 +313,33 @@ body {
 }
 
 .window-title-row {
-  height: 54px;
+  height: 44px;
   display: flex;
   align-items: center;
   padding: 0 6px;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--muted);
   border-bottom: 1px dashed var(--stroke);
 }
 
 .empty-row {
-  height: 54px;
+  height: 44px;
   display: flex;
   align-items: center;
   padding: 0 6px;
-  font-size: 12px;
+  font-size: 11px;
   color: var(--muted);
 }
 
 .tab-row {
   display: grid;
   grid-template-columns: 18px 20px minmax(0, 1fr) auto;
-  gap: 8px;
-  padding: 6px 6px;
+  gap: 6px;
+  padding: 4px 6px;
   border-radius: 10px;
   align-items: center;
-  height: 54px;
+  height: 44px;
 }
 
 .tab-row:hover {
@@ -352,12 +352,12 @@ body {
 }
 
 .tab-title {
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.3;
 }
 
 .tab-url {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--muted);
 }
 
@@ -384,9 +384,9 @@ body {
 }
 
 .tab-tag {
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 600;
-  padding: 2px 8px;
+  padding: 2px 6px;
   border-radius: 999px;
   background: #e5e7eb;
   color: var(--ink);
@@ -412,18 +412,18 @@ body {
 .tab-actions {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   justify-content: flex-end;
 }
 
 .tab-action {
-  padding: 4px 10px;
-  font-size: 11px;
+  padding: 3px 8px;
+  font-size: 10px;
 }
 
 .list-action {
-  padding: 4px 10px;
-  font-size: 11px;
+  padding: 3px 8px;
+  font-size: 10px;
 }
 
 .list-items {
@@ -435,14 +435,14 @@ body {
 
 .list-item {
   height: 100%;
-  padding: 10px 12px;
+  padding: 6px 8px;
   border-radius: 12px;
   background: transparent;
   border: 1px solid transparent;
   display: grid;
-  grid-template-columns: 18px 20px minmax(0, 1fr) auto;
+  grid-template-columns: 16px 18px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   cursor: default;
 }
 
@@ -459,8 +459,8 @@ body {
 }
 
 .list-icon {
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   border-radius: 4px;
   background: #e5e7eb;
   object-fit: cover;
@@ -472,19 +472,19 @@ body {
 }
 
 .list-title {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   line-height: 1.25;
 }
 
 .list-url {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--muted);
   line-height: 1.35;
 }
 
 .list-meta {
-  font-size: 10px;
+  font-size: 9px;
   color: var(--muted);
   line-height: 1.35;
 }

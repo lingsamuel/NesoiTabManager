@@ -113,7 +113,7 @@
             v-else
             class="tabs"
             :items="windowRows"
-            :item-height="54"
+            :item-height="44"
           >
             <template #default="{ item }">
               <div v-if="item.type === 'window'" class="window-title-row">
@@ -400,7 +400,7 @@
             v-else
             class="list-items"
             :items="listItems"
-            :item-height="92"
+            :item-height="60"
           >
             <template #default="{ item }">
               <div
