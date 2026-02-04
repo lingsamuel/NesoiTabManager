@@ -391,6 +391,10 @@ function queryAllTabs() {
   });
 }
 
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function ensureTabActivity() {
   if (tabActivityReady) {
     return;
@@ -465,14 +469,21 @@ function evaluateDiscardCandidate(tab, config, now) {
 }
 
 async function discardTabs(tabIds) {
-  await Promise.all(
-    tabIds.map(
-      (tabId) =>
-        new Promise((resolve) => {
-          chrome.tabs.discard(tabId, () => resolve());
-        })
-    )
-  );
+  const batchSize = 100;
+  for (let i = 0; i < tabIds.length; i += batchSize) {
+    const batch = tabIds.slice(i, i + batchSize);
+    await Promise.all(
+      batch.map(
+        (tabId) =>
+          new Promise((resolve) => {
+            chrome.tabs.discard(tabId, () => resolve());
+          })
+      )
+    );
+    if (i + batchSize < tabIds.length) {
+      await delay(150);
+    }
+  }
 }
 
 async function recordDiscardBatch(items, at, config) {

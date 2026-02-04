@@ -1589,6 +1589,23 @@ async function request(action, payload) {
   });
 }
 
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function removeTabsInBatches(ids) {
+  const batchSize = 100;
+  for (let i = 0; i < ids.length; i += batchSize) {
+    const batch = ids.slice(i, i + batchSize);
+    await new Promise((resolve) => {
+      chrome.tabs.remove(batch, () => resolve());
+    });
+    if (i + batchSize < ids.length) {
+      await delay(150);
+    }
+  }
+}
+
 async function discardTab(tab) {
   if (!tab || !tab.id) {
     return;
@@ -1635,14 +1652,14 @@ async function closeSelectedTabsForView(targetView) {
     return;
   }
   const ids = selectedTabs.map((tab) => tab.id).filter(Boolean);
-  chrome.tabs.remove(ids, async () => {
-    setStatus(statusTarget, `已关闭 ${ids.length} 个标签页。`, "ok");
-    if (targetView === "discard") {
-      clearHistorySelection();
-      await loadDiscardHistory();
-    }
-    await loadWindows();
-  });
+  setStatus(statusTarget, "正在关闭标签页...", "");
+  await removeTabsInBatches(ids);
+  setStatus(statusTarget, `已关闭 ${ids.length} 个标签页。`, "ok");
+  if (targetView === "discard") {
+    clearHistorySelection();
+    await loadDiscardHistory();
+  }
+  await loadWindows();
 }
 
 async function runAiGrouping() {
