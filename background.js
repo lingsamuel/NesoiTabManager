@@ -9,6 +9,8 @@ const discardSession = {
   startEpoch: 0,
   lastDiscarded: [],
   lastDiscardedAt: "",
+  historyBatches: [],
+  freezeCounts: {},
 };
 const activeTabByWindow = new Map();
 let focusedWindowId = null;
@@ -113,6 +115,9 @@ function sanitizeDiscardConfig(raw) {
   const batchLimit = Number.isFinite(Number(config.batchLimit))
     ? Math.max(1, Math.min(200, Number(config.batchLimit)))
     : 20;
+  const historyLimit = Number.isFinite(Number(config.historyLimit))
+    ? Math.max(0, Number(config.historyLimit))
+    : 0;
   const allowPinned = Boolean(config.allowPinned);
   const allowAudible = Boolean(config.allowAudible);
   const matchMode = config.matchMode === "url" || config.matchMode === "full" ? config.matchMode : "domain";
@@ -123,6 +128,7 @@ function sanitizeDiscardConfig(raw) {
     idleMinutes,
     sweepMinutes,
     batchLimit,
+    historyLimit,
     allowPinned,
     allowAudible,
     matchMode,
@@ -155,11 +161,15 @@ async function resetDiscardSession() {
   discardSession.startEpoch = now;
   discardSession.lastDiscarded = [];
   discardSession.lastDiscardedAt = "";
+  discardSession.historyBatches = [];
+  discardSession.freezeCounts = {};
   await storageSessionSet({
     [DISCARD_SESSION_KEY]: {
       startEpoch: now,
       lastDiscarded: [],
       lastDiscardedAt: "",
+      historyBatches: [],
+      freezeCounts: {},
     },
   });
 }
@@ -176,12 +186,20 @@ async function ensureDiscardSession() {
     ? stored.lastDiscarded
     : [];
   discardSession.lastDiscardedAt = stored && stored.lastDiscardedAt ? String(stored.lastDiscardedAt) : "";
+  discardSession.historyBatches = Array.isArray(stored && stored.historyBatches)
+    ? stored.historyBatches
+    : [];
+  discardSession.freezeCounts = stored && typeof stored.freezeCounts === "object" && stored.freezeCounts
+    ? stored.freezeCounts
+    : {};
   if (!startEpoch) {
     await storageSessionSet({
       [DISCARD_SESSION_KEY]: {
         startEpoch: discardSession.startEpoch,
         lastDiscarded: discardSession.lastDiscarded,
         lastDiscardedAt: discardSession.lastDiscardedAt,
+        historyBatches: discardSession.historyBatches,
+        freezeCounts: discardSession.freezeCounts,
       },
     });
   }
@@ -193,6 +211,8 @@ async function saveDiscardSession() {
       startEpoch: discardSession.startEpoch,
       lastDiscarded: discardSession.lastDiscarded,
       lastDiscardedAt: discardSession.lastDiscardedAt,
+      historyBatches: discardSession.historyBatches,
+      freezeCounts: discardSession.freezeCounts,
     },
   });
 }
@@ -214,6 +234,10 @@ async function setDiscardConfig(config) {
   if (sanitized.enabled && !prevEnabled) {
     resetTabActivity();
     await resetDiscardSession();
+  }
+  if (sanitized.historyLimit > 0) {
+    trimDiscardHistory(sanitized.historyLimit);
+    await saveDiscardSession();
   }
   await ensureDiscardAlarm(sanitized);
   return sanitized;
@@ -451,6 +475,7 @@ async function runDiscardSweep() {
     const tabs = await queryAllTabs();
     const candidates = [];
     const candidateDetails = [];
+    const counts = discardSession.freezeCounts || {};
     for (let i = 0; i < tabs.length; i += 1) {
       const tab = tabs[i];
       const result = evaluateDiscardCandidate(tab, config, now);
@@ -458,6 +483,8 @@ async function runDiscardSweep() {
         continue;
       }
       candidates.push(tab.id);
+      const nextCount = (counts[tab.id] || 0) + 1;
+      counts[tab.id] = nextCount;
       candidateDetails.push({
         id: tab.id,
         windowId: tab.windowId,
@@ -467,6 +494,7 @@ async function runDiscardSweep() {
         idleMinutes: result.idleMinutes,
         lastActive: result.lastActive,
         discardedAt: now,
+        freezeCount: nextCount,
       });
       if (candidates.length >= config.batchLimit) {
         break;
@@ -476,6 +504,15 @@ async function runDiscardSweep() {
       await discardTabs(candidates);
       discardSession.lastDiscarded = candidateDetails;
       discardSession.lastDiscardedAt = new Date(now).toISOString();
+      const batch = {
+        id: `batch_${now}_${Math.random().toString(36).slice(2, 8)}`,
+        at: discardSession.lastDiscardedAt,
+        items: candidateDetails,
+      };
+      discardSession.historyBatches = discardSession.historyBatches || [];
+      discardSession.historyBatches.unshift(batch);
+      discardSession.freezeCounts = counts;
+      trimDiscardHistory(config.historyLimit);
       await saveDiscardSession();
     }
   } finally {
@@ -493,6 +530,8 @@ async function getDiscardCandidates(limit) {
       enabled: false,
       lastDiscarded: discardSession.lastDiscarded || [],
       lastDiscardedAt: discardSession.lastDiscardedAt || "",
+      historyBatches: discardSession.historyBatches || [],
+      historyLimit: config.historyLimit || 0,
     };
   }
   await ensureTabActivity();
@@ -527,6 +566,22 @@ async function getDiscardCandidates(limit) {
     enabled: config.enabled,
     lastDiscarded: discardSession.lastDiscarded || [],
     lastDiscardedAt: discardSession.lastDiscardedAt || "",
+    historyBatches: discardSession.historyBatches || [],
+    historyLimit: config.historyLimit || 0,
+  };
+}
+
+async function getDiscardHistory() {
+  await ensureDiscardSession();
+  const config = await getDiscardConfig();
+  const batches = discardSession.historyBatches || [];
+  const total = batches.reduce((sum, batch) => sum + (batch.items ? batch.items.length : 0), 0);
+  return {
+    enabled: config.enabled,
+    historyBatches: batches,
+    historyLimit: config.historyLimit || 0,
+    historyTotal: total,
+    historyBatchesCount: batches.length,
   };
 }
 
@@ -546,6 +601,31 @@ function initializeDiscardSystem() {
       await ensureDiscardAlarm(config);
     })
     .catch(() => {});
+}
+
+function trimDiscardHistory(limit) {
+  if (!limit || limit <= 0) {
+    return;
+  }
+  const batches = discardSession.historyBatches || [];
+  let total = batches.reduce((sum, batch) => sum + (batch.items ? batch.items.length : 0), 0);
+  while (total > limit && batches.length > 0) {
+    const lastBatch = batches[batches.length - 1];
+    const batchCount = lastBatch.items ? lastBatch.items.length : 0;
+    if (total - batchCount >= limit) {
+      batches.pop();
+      total -= batchCount;
+      continue;
+    }
+    const removeCount = total - limit;
+    if (removeCount > 0 && Array.isArray(lastBatch.items)) {
+      lastBatch.items = lastBatch.items.slice(removeCount);
+      total = limit;
+    } else {
+      break;
+    }
+  }
+  discardSession.historyBatches = batches;
 }
 
 function normalizeTabItems(items) {
@@ -1280,6 +1360,10 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (changes[DISCARD_CONFIG_KEY]) {
     discardConfigCache = sanitizeDiscardConfig(changes[DISCARD_CONFIG_KEY].newValue || {});
     ensureDiscardAlarm(discardConfigCache);
+    if (discardConfigCache.historyLimit > 0) {
+      trimDiscardHistory(discardConfigCache.historyLimit);
+      saveDiscardSession();
+    }
   }
 });
 
@@ -1426,6 +1510,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (action === "getDiscardCandidates") {
     const limit = Number.isFinite(Number(message.limit)) ? Math.max(1, Number(message.limit)) : 200;
     getDiscardCandidates(limit)
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
+    return true;
+  }
+
+  if (action === "getDiscardHistory") {
+    getDiscardHistory()
       .then((result) => sendResponse({ ok: true, ...result }))
       .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
     return true;

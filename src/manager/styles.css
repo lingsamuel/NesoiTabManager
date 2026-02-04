@@ -29,6 +29,10 @@ body {
   min-height: 100vh;
 }
 
+.app.no-sub {
+  grid-template-columns: 220px 1fr;
+}
+
 .sidebar {
   padding: 24px 18px;
   background: #ffffff;
@@ -174,6 +178,12 @@ body {
   flex-direction: column;
 }
 
+.view-windows,
+.view-lists {
+  max-width: 1100px;
+  width: 100%;
+}
+
 .view {
   display: flex;
   flex-direction: column;
@@ -185,6 +195,24 @@ body {
 
 .view-settings {
   overflow-y: auto;
+}
+
+.view-settings .panel {
+  width: min(960px, 100%);
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.settings-grid .form-row {
+  margin-bottom: 0;
+}
+
+.settings-grid .form-row.full {
+  grid-column: 1 / -1;
 }
 
 .content-header {
@@ -353,6 +381,20 @@ body {
   border-bottom: 1px dashed var(--stroke);
 }
 
+.window-separator {
+  height: 44px;
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+}
+
+.window-separator::before {
+  content: "";
+  height: 1px;
+  width: 100%;
+  background: var(--stroke);
+}
+
 .empty-row {
   height: 44px;
   display: flex;
@@ -411,6 +453,20 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   cursor: pointer;
+}
+
+.tab-title .tab-link {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.freeze-badge {
+  font-size: 9px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: #f3f4f6;
+  color: var(--muted);
+  white-space: nowrap;
 }
 
 .tab-icon {

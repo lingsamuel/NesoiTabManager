@@ -1,5 +1,5 @@
 <template>
-  <div class="app">
+  <div class="app" :class="{ 'no-sub': !hasSubSidebar }">
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-title">Nesoi 标签管理器</div>
@@ -123,83 +123,20 @@
           </div>
         </div>
 
-        <div class="panel tabs-panel">
-          <div v-if="windowRows.length === 0" class="virtual-empty">未找到打开的标签页。</div>
-          <VirtualList
-            v-else
-            class="tabs"
-            :items="windowRows"
-            :item-height="44"
-          >
-            <template #default="{ item }">
-              <div v-if="item.type === 'window'" class="window-title-row">
-                {{ item.label }}（{{ item.count }}）
-              </div>
-              <div v-else-if="item.type === 'empty'" class="empty-row">
-                此窗口没有标签页。
-              </div>
-              <div v-else class="tab-row" @click="toggleTabSelection(item.tab.id)">
-                <input
-                  type="checkbox"
-                  :checked="Boolean(selectedTabIds[item.tab.id])"
-                  @click.stop
-                  @change="toggleTab(item.tab.id, $event.target.checked)"
-                />
-                <img
-                  class="tab-icon"
-                  :class="{ hidden: !item.tab.favIconUrl }"
-                  :src="item.tab.favIconUrl || ''"
-                  @error="handleIconError($event)"
-                />
-                <div class="tab-body">
-                  <div class="tab-title">
-                    <span v-if="item.tab.discarded" class="discard-dot" aria-hidden="true"></span>
-                    <span class="tab-link" @click.stop="activateTab(item.tab)">
-                      {{ item.tab.title || item.tab.url || "未命名" }}
-                    </span>
-                  </div>
-                  <div class="tab-url">
-                    <span class="tab-link" @click.stop="activateTab(item.tab)">
-                      {{ item.tab.url || "" }}
-                    </span>
-                  </div>
-                </div>
-                <div class="tab-actions">
-                  <span
-                    class="tab-tag"
-                    :class="{ hidden: !aiTags[item.tab.id] }"
-                    @click.stop="saveTabToAiGroup(item.tab, false)"
-                  >
-                    {{ aiTags[item.tab.id] || "" }}
-                  </span>
-                  <span
-                    class="tab-tag close"
-                    :class="{ hidden: !aiTags[item.tab.id] }"
-                    @click.stop="saveTabToAiGroup(item.tab, true)"
-                  >
-                    保存并关闭
-                  </span>
-                  <button class="ghost tab-action danger btn-icon" @click.stop="closeTab(item.tab)">
-                    <span class="icon" aria-hidden="true">
-                      <svg viewBox="0 0 24 24">
-                        <path d="M6 6l12 12M18 6l-12 12" />
-                      </svg>
-                    </span>
-                    关闭
-                  </button>
-                  <button class="ghost tab-action btn-icon" @click.stop="discardTab(item.tab)">
-                    <span class="icon" aria-hidden="true">
-                      <svg viewBox="0 0 24 24">
-                        <path d="M7 5h4v14H7zM13 5h4v14h-4z" />
-                      </svg>
-                    </span>
-                    冻结
-                  </button>
-                </div>
-              </div>
-            </template>
-          </VirtualList>
-        </div>
+        <TabListPanel
+          :rows="windowRows"
+          :item-height="44"
+          :selected-map="selectedTabIds"
+          :ai-tags="aiTags"
+          empty-text="未找到打开的标签页。"
+          empty-row-text="此窗口没有标签页。"
+          :on-toggle-selection="toggleTabSelection"
+          :on-toggle-tab="toggleTab"
+          :on-activate="activateTab"
+          :on-close="closeTab"
+          :on-discard="discardTab"
+          :on-save-ai-group="saveTabToAiGroup"
+        />
 
         
       </section>
@@ -632,11 +569,51 @@
       <section v-show="view === 'discard'" class="view view-discard">
         <div class="content-header">
           <div>
-            <h1>自动冻结调试</h1>
-            <div class="content-subtitle">显示满足条件且即将被冻结的标签页</div>
+            <h1>冻结历史</h1>
+            <div class="content-subtitle">{{ historySubtitle }}</div>
           </div>
           <div class="content-actions">
-            <button class="ghost btn-icon" @click="loadDiscardCandidates">
+            <button class="ghost btn-icon" @click="setHistorySelection(true)">
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M20 6L9 17l-5-5" />
+                </svg>
+              </span>
+              全选
+            </button>
+            <button class="ghost btn-icon" @click="clearHistorySelection">
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M6 6l12 12M18 6l-12 12" />
+                </svg>
+              </span>
+              清空
+            </button>
+            <button class="ghost danger btn-icon" @click="closeSelectedHistoryTabs">
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M6 6l12 12M18 6l-12 12" />
+                </svg>
+              </span>
+              关闭所选
+            </button>
+            <button class="ghost btn-icon" @click="openAiModal">
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M12 3l2.2 4.4L19 9l-4.8 1.6L12 15l-2.2-4.4L5 9l4.8-1.6z" />
+                </svg>
+              </span>
+              AI 分组
+            </button>
+            <button class="ghost btn-icon" @click="openSaveModal">
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M6 20h12V8l-4-4H6zM9 20v-6h6v6" />
+                </svg>
+              </span>
+              保存所选
+            </button>
+            <button class="ghost btn-icon" @click="loadDiscardHistory">
               <span class="icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24">
                   <path d="M4 4v6h6M20 20v-6h-6M20 8a8 8 0 0 0-14-3M4 16a8 8 0 0 0 14 3" />
@@ -646,74 +623,21 @@
             </button>
           </div>
         </div>
-        <div class="panel discard-panel">
-          <div class="panel-header">
-            <h2>候选标签页</h2>
-            <div class="panel-actions">
-              <div class="discard-summary">
-                共 {{ discardSummary.total }} 个，展示前 {{ discardCandidates.length }} 个
-              </div>
-            </div>
-          </div>
-          <div class="status" :class="discardDebugStatus.type">{{ discardDebugStatus.message }}</div>
-          <div v-if="discardLastBatch.length > 0" class="discard-last">
-            <div class="discard-last-header">
-              上次冻结（{{ discardLastSummary.count }}）{{ discardLastSummary.at ? " · " + discardLastSummary.at : "" }}
-            </div>
-            <div class="discard-last-list">
-              <div v-for="item in discardLastBatch" :key="item.key" class="tab-row discard-row">
-                <img
-                  class="tab-icon"
-                  :class="{ hidden: !item.favIconUrl }"
-                  :src="item.favIconUrl || ''"
-                  @error="handleIconError($event)"
-                />
-                <div class="tab-body">
-                  <div class="tab-title">{{ item.title || item.url || "未命名" }}</div>
-                  <div class="tab-url">{{ item.url || "" }}</div>
-                  <div class="discard-meta">
-                    冻结时间：{{ formatLocalTime(item.discardedAt) }} · 闲置 {{ item.idleMinutes }} 分钟
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div v-if="discardCandidates.length === 0" class="virtual-empty">暂无候选标签页。</div>
-          <VirtualList
-            v-else
-            class="discard-list"
-            :items="discardCandidates"
-            :item-height="60"
-          >
-            <template #default="{ item }">
-              <div class="tab-row discard-row">
-                <img
-                  class="tab-icon"
-                  :class="{ hidden: !item.favIconUrl }"
-                  :src="item.favIconUrl || ''"
-                  @error="handleIconError($event)"
-                />
-                <div class="tab-body">
-                  <div class="tab-title">{{ item.title || item.url || "未命名" }}</div>
-                  <div class="tab-url">{{ item.url || "" }}</div>
-                  <div class="discard-meta">
-                    闲置 {{ item.idleMinutes }} 分钟 · 最后活跃：{{ formatLocalTime(item.lastActive) }}
-                  </div>
-                </div>
-                <div class="tab-actions">
-                  <button class="ghost tab-action btn-icon" @click.stop="discardTab(item)">
-                    <span class="icon" aria-hidden="true">
-                      <svg viewBox="0 0 24 24">
-                        <path d="M7 5h4v14H7zM13 5h4v14h-4z" />
-                      </svg>
-                    </span>
-                    冻结
-                  </button>
-                </div>
-              </div>
-            </template>
-          </VirtualList>
-        </div>
+        <div class="status" :class="discardDebugStatus.type">{{ discardDebugStatus.message }}</div>
+        <TabListPanel
+          :rows="historyRows"
+          :item-height="44"
+          :selected-map="historySelectedTabIds"
+          :ai-tags="aiTags"
+          empty-text="暂无冻结历史。"
+          empty-row-text="暂无冻结记录。"
+          :on-toggle-selection="toggleHistoryTabSelection"
+          :on-toggle-tab="toggleHistoryTab"
+          :on-activate="activateTab"
+          :on-close="closeTab"
+          :on-discard="discardTab"
+          :on-save-ai-group="saveTabToAiGroup"
+        />
       </section>
 
       <section v-show="view === 'settings'" class="view view-settings">
@@ -727,75 +651,79 @@
           <div class="panel-header">
             <h2>AI 配置</h2>
           </div>
-          <div class="form-row">
-            <label for="ai-endpoint">API 端点</label>
-            <input
-              id="ai-endpoint"
-              type="text"
-              v-model="aiConfig.endpoint"
-              placeholder="填写完整请求地址（如 https://api.openai.com/v1/responses）"
-            />
+          <div class="settings-grid">
+            <div class="form-row full">
+              <label for="ai-endpoint">API 端点</label>
+              <input
+                id="ai-endpoint"
+                type="text"
+                v-model="aiConfig.endpoint"
+                placeholder="填写完整请求地址（如 https://api.openai.com/v1/responses）"
+              />
+            </div>
+            <div class="form-row">
+              <label for="ai-mode">API 格式</label>
+              <select id="ai-mode" v-model="aiConfig.apiMode">
+                <option value="responses">Responses</option>
+                <option value="codex">Codex CLI</option>
+                <option value="chat">Chat Completions</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <label for="ai-key">API Key</label>
+              <input
+                id="ai-key"
+                type="password"
+                v-model="aiConfig.apiKey"
+                placeholder="sk-..."
+              />
+            </div>
+            <div class="form-row">
+              <label for="ai-model">模型名称</label>
+              <input id="ai-model" type="text" v-model="aiConfig.model" placeholder="gpt-4.1-mini" />
+            </div>
+            <div class="form-row">
+              <label for="ai-max-tabs">单次最多标签数</label>
+              <input
+                id="ai-max-tabs"
+                type="number"
+                min="10"
+                max="500"
+                v-model.number="aiConfig.maxTabs"
+              />
+            </div>
+            <div class="form-row checkbox-row full">
+              <label>
+                <input type="checkbox" v-model="aiConfig.includeListTitles" />
+                发送已有列表标题/描述作为参考
+              </label>
+            </div>
+            <div class="form-row full">
+              <button class="primary btn-icon" @click="saveAiConfig">
+                <span class="icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <path d="M6 20h12V8l-4-4H6zM9 20v-6h6v6" />
+                  </svg>
+                </span>
+                保存配置
+              </button>
+            </div>
+            <div class="form-row full">
+              <div class="status" :class="settingsStatus.type">{{ settingsStatus.message }}</div>
+            </div>
           </div>
-          <div class="form-row">
-            <label for="ai-mode">API 格式</label>
-            <select id="ai-mode" v-model="aiConfig.apiMode">
-              <option value="responses">Responses</option>
-              <option value="codex">Codex CLI</option>
-              <option value="chat">Chat Completions</option>
-            </select>
-          </div>
-          <div class="form-row">
-            <label for="ai-key">API Key</label>
-            <input
-              id="ai-key"
-              type="password"
-              v-model="aiConfig.apiKey"
-              placeholder="sk-..."
-            />
-          </div>
-          <div class="form-row">
-            <label for="ai-model">模型名称</label>
-            <input id="ai-model" type="text" v-model="aiConfig.model" placeholder="gpt-4.1-mini" />
-          </div>
-          <div class="form-row">
-            <label for="ai-max-tabs">单次最多标签数</label>
-            <input
-              id="ai-max-tabs"
-              type="number"
-              min="10"
-              max="500"
-              v-model.number="aiConfig.maxTabs"
-            />
-          </div>
-          <div class="form-row checkbox-row">
-            <label>
-              <input type="checkbox" v-model="aiConfig.includeListTitles" />
-              发送已有列表标题/描述作为参考
-            </label>
-          </div>
-          <div class="form-row">
-            <button class="primary btn-icon" @click="saveAiConfig">
-              <span class="icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24">
-                  <path d="M6 20h12V8l-4-4H6zM9 20v-6h6v6" />
-                </svg>
-              </span>
-              保存配置
-            </button>
-          </div>
-          <div class="status" :class="settingsStatus.type">{{ settingsStatus.message }}</div>
         </section>
         <section class="panel">
           <div class="panel-header">
             <h2>自动冻结</h2>
           </div>
-          <div class="form-row checkbox-row">
-            <label>
-              <input type="checkbox" v-model="discardConfig.enabled" />
-              启用自动冻结（闲置时自动 discard）
-            </label>
-          </div>
-          <div class="panel-grid">
+          <div class="settings-grid">
+            <div class="form-row checkbox-row full">
+              <label>
+                <input type="checkbox" v-model="discardConfig.enabled" />
+                启用自动冻结（闲置时自动 discard）
+              </label>
+            </div>
             <div class="form-row">
               <label for="discard-idle">闲置阈值（分钟）</label>
               <input
@@ -826,8 +754,15 @@
                 v-model.number="discardConfig.batchLimit"
               />
             </div>
-          </div>
-          <div class="panel-grid">
+            <div class="form-row">
+              <label for="discard-history-limit">最大冻结历史记录数（0 不限制）</label>
+              <input
+                id="discard-history-limit"
+                type="number"
+                min="0"
+                v-model.number="discardConfig.historyLimit"
+              />
+            </div>
             <div class="form-row checkbox-row">
               <label>
                 <input type="checkbox" v-model="discardConfig.allowPinned" />
@@ -840,41 +775,43 @@
                 允许冻结正在发声的标签页
               </label>
             </div>
+            <div class="form-row">
+              <label for="discard-match-mode">白名单匹配方式</label>
+              <select id="discard-match-mode" v-model="discardConfig.matchMode">
+                <option value="domain">基础域名（默认）</option>
+                <option value="url">URL（不含参数）</option>
+                <option value="full">完整链接（含参数）</option>
+              </select>
+            </div>
+            <div class="form-row checkbox-row">
+              <label>
+                <input type="checkbox" v-model="discardConfig.regexMode" />
+                使用正则匹配（性能较差）
+              </label>
+            </div>
+            <div class="form-row full">
+              <label for="discard-whitelist">白名单（每行一条，命中后不自动冻结）</label>
+              <textarea
+                id="discard-whitelist"
+                rows="5"
+                placeholder="例如：github.com&#10;notion.so"
+                v-model="discardConfig.whitelist"
+              ></textarea>
+            </div>
+            <div class="form-row full">
+              <button class="primary btn-icon" @click="saveDiscardConfig">
+                <span class="icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <path d="M6 20h12V8l-4-4H6zM9 20v-6h6v6" />
+                  </svg>
+                </span>
+                保存配置
+              </button>
+            </div>
+            <div class="form-row full">
+              <div class="status" :class="discardConfigStatus.type">{{ discardConfigStatus.message }}</div>
+            </div>
           </div>
-          <div class="form-row">
-            <label for="discard-match-mode">白名单匹配方式</label>
-            <select id="discard-match-mode" v-model="discardConfig.matchMode">
-              <option value="domain">基础域名（默认）</option>
-              <option value="url">URL（不含参数）</option>
-              <option value="full">完整链接（含参数）</option>
-            </select>
-          </div>
-          <div class="form-row checkbox-row">
-            <label>
-              <input type="checkbox" v-model="discardConfig.regexMode" />
-              使用正则匹配（性能较差）
-            </label>
-          </div>
-          <div class="form-row">
-            <label for="discard-whitelist">白名单（每行一条，命中后不自动冻结）</label>
-            <textarea
-              id="discard-whitelist"
-              rows="5"
-              placeholder="例如：github.com&#10;notion.so"
-              v-model="discardConfig.whitelist"
-            ></textarea>
-          </div>
-          <div class="form-row">
-            <button class="primary btn-icon" @click="saveDiscardConfig">
-              <span class="icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24">
-                  <path d="M6 20h12V8l-4-4H6zM9 20v-6h6v6" />
-                </svg>
-              </span>
-              保存配置
-            </button>
-          </div>
-          <div class="status" :class="discardConfigStatus.type">{{ discardConfigStatus.message }}</div>
         </section>
       </section>
     </main>
@@ -884,6 +821,7 @@
 <script setup>
 import { computed, nextTick, onMounted, reactive, ref } from "vue";
 import VirtualList from "./components/VirtualList.vue";
+import TabListPanel from "./components/TabListPanel.vue";
 
 const NEW_LIST_VALUE = "__new__";
 const MOVE_NEW_LIST_VALUE = "__move_new__";
@@ -901,7 +839,7 @@ const navItems = [
   },
   {
     key: "discard",
-    label: "自动冻结调试",
+    label: "冻结历史",
     icon: "M7 5h4v14H7zM13 5h4v14h-4z",
   },
   {
@@ -913,6 +851,7 @@ const navItems = [
 ];
 
 const view = ref("windows");
+const hasSubSidebar = computed(() => view.value === "windows" || view.value === "lists");
 const windows = ref([]);
 const lists = ref([]);
 const selectedWindowId = ref("all");
@@ -943,6 +882,7 @@ const discardConfig = reactive({
   idleMinutes: 20,
   sweepMinutes: 3,
   batchLimit: 20,
+  historyLimit: 0,
   allowPinned: false,
   allowAudible: false,
   whitelist: "",
@@ -950,10 +890,9 @@ const discardConfig = reactive({
   regexMode: false,
 });
 
-const discardCandidates = ref([]);
-const discardSummary = reactive({ total: 0, updatedAt: "" });
-const discardLastBatch = ref([]);
-const discardLastSummary = reactive({ count: 0, at: "" });
+const discardHistoryBatches = ref([]);
+const discardHistorySummary = reactive({ total: 0, batches: 0, limit: 0 });
+const historySelectedTabIds = reactive({});
 
 const selectedListTarget = ref(NEW_LIST_VALUE);
 const newListName = ref("");
@@ -972,6 +911,8 @@ const createListName = ref("");
 const createListDescription = ref("");
 const showAiModal = ref(false);
 const showSaveModal = ref(false);
+const aiContextView = ref("windows");
+const saveContextView = ref("windows");
 
 const totalTabCount = computed(() =>
   windows.value.reduce((sum, win) => sum + (win.tabs ? win.tabs.length : 0), 0)
@@ -1106,6 +1047,75 @@ const listItems = computed(() => {
   }));
 });
 
+const historyTabsFlat = computed(() => {
+  const tabs = [];
+  discardHistoryBatches.value.forEach((batch) => {
+    (batch.items || []).forEach((item) => {
+      if (!item || !item.id) {
+        return;
+      }
+      const freezeCount = Number(item.freezeCount) || 1;
+      tabs.push({
+        id: item.id,
+        windowId: item.windowId,
+        title: item.title,
+        url: item.url,
+        favIconUrl: item.favIconUrl,
+        discarded: true,
+        freezeCount,
+      });
+    });
+  });
+  return tabs;
+});
+
+const historyRows = computed(() => {
+  const rows = [];
+  const batches = discardHistoryBatches.value || [];
+  batches.forEach((batch, index) => {
+    const label = batch.at ? `冻结时间：${formatLocalTime(batch.at)}` : "冻结记录";
+    rows.push({
+      type: "window",
+      key: `batch-${batch.id || index}`,
+      label,
+      count: batch.items ? batch.items.length : 0,
+    });
+    (batch.items || []).forEach((item, itemIndex) => {
+      const freezeCount = Number(item.freezeCount) || 1;
+      rows.push({
+        type: "tab",
+        key: `batch-${batch.id || index}-tab-${item.id || itemIndex}`,
+        tab: {
+          id: item.id,
+          windowId: item.windowId,
+          title: item.title,
+          url: item.url,
+          favIconUrl: item.favIconUrl,
+          discarded: true,
+          freezeCount,
+        },
+      });
+    });
+    if (index < batches.length - 1) {
+      rows.push({
+        type: "separator",
+        key: `batch-sep-${batch.id || index}`,
+      });
+    }
+  });
+  return rows;
+});
+
+const historySubtitle = computed(() => {
+  const total = discardHistorySummary.total || 0;
+  const batches = discardHistorySummary.batches || 0;
+  const selected = Object.keys(historySelectedTabIds).length;
+  const limit = discardHistorySummary.limit;
+  const limitText = limit && limit > 0 ? `，上限 ${limit}` : "，不限制";
+  const selectedText = selected > 0 ? `，已选 ${selected}` : "";
+  return `共 ${batches} 批，记录 ${total} 条${limitText}${selectedText}`;
+});
+
 function setStatus(target, message, type) {
   target.message = message;
   target.type = type || "";
@@ -1163,6 +1173,7 @@ function closeMoveModal() {
 
 function openAiModal() {
   setStatus(aiStatus, "", "");
+  aiContextView.value = view.value;
   showAiModal.value = true;
 }
 
@@ -1172,6 +1183,7 @@ function closeAiModal() {
 
 function openSaveModal() {
   setStatus(status, "", "");
+  saveContextView.value = view.value;
   showSaveModal.value = true;
 }
 
@@ -1201,7 +1213,7 @@ function setView(nextView) {
   showMoveModal.value = false;
   showCreateListModal.value = false;
   if (nextView === "discard") {
-    loadDiscardCandidates();
+    loadDiscardHistory();
   }
 }
 
@@ -1343,10 +1355,24 @@ function setVisibleSelection(checked) {
   });
 }
 
+function setHistorySelection(checked) {
+  historyTabsFlat.value.forEach((tab) => {
+    if (checked) {
+      historySelectedTabIds[tab.id] = true;
+    } else {
+      delete historySelectedTabIds[tab.id];
+    }
+  });
+}
+
 function selectAllListItems() {
   listItems.value.forEach((item) => {
     selectedListItemKeys[item.key] = true;
   });
+}
+
+function clearHistorySelection() {
+  Object.keys(historySelectedTabIds).forEach((key) => delete historySelectedTabIds[key]);
 }
 
 function clearListSelection() {
@@ -1366,6 +1392,23 @@ function toggleListItemSelection(key) {
     delete selectedListItemKeys[key];
   } else {
     selectedListItemKeys[key] = true;
+  }
+}
+
+function toggleHistoryTab(tabId, checked) {
+  if (checked) {
+    historySelectedTabIds[tabId] = true;
+  } else {
+    delete historySelectedTabIds[tabId];
+  }
+}
+
+function toggleHistoryTabSelection(tabId) {
+  const key = String(tabId);
+  if (historySelectedTabIds[key]) {
+    delete historySelectedTabIds[key];
+  } else {
+    historySelectedTabIds[key] = true;
   }
 }
 
@@ -1457,17 +1500,44 @@ function openSavedInNewWindow(item) {
   chrome.windows.create({ url });
 }
 
-function getSelectedTabs() {
-  const selected = new Set(Object.keys(selectedTabIds));
+function getSelectedTabsFrom(selectionMap, sourceTabs) {
+  const selected = new Set(Object.keys(selectionMap));
+  const results = [];
+  const seen = new Set();
+  sourceTabs.forEach((tab) => {
+    const key = String(tab.id);
+    if (!selected.has(key) || seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    results.push(tab);
+  });
+  return results;
+}
+
+function getWindowTabsFlat() {
   const results = [];
   windows.value.forEach((win) => {
     (win.tabs || []).forEach((tab) => {
-      if (selected.has(String(tab.id))) {
-        results.push(tab);
-      }
+      results.push(tab);
     });
   });
   return results;
+}
+
+function getSelectedWindowTabs() {
+  return getSelectedTabsFrom(selectedTabIds, getWindowTabsFlat());
+}
+
+function getSelectedHistoryTabs() {
+  return getSelectedTabsFrom(historySelectedTabIds, historyTabsFlat.value);
+}
+
+function getSelectedTabsForView(targetView) {
+  if (targetView === "discard") {
+    return getSelectedHistoryTabs();
+  }
+  return getSelectedWindowTabs();
 }
 
 function getBaseDomain(url) {
@@ -1528,7 +1598,7 @@ function discardTab(tab) {
       loadWindows();
     }
     if (view.value === "discard") {
-      loadDiscardCandidates();
+      loadDiscardHistory();
     }
   });
 }
@@ -1543,20 +1613,33 @@ async function closeTab(tab) {
 }
 
 async function closeSelectedTabs() {
-  const selectedTabs = getSelectedTabs();
+  await closeSelectedTabsForView("windows");
+}
+
+async function closeSelectedHistoryTabs() {
+  await closeSelectedTabsForView("discard");
+}
+
+async function closeSelectedTabsForView(targetView) {
+  const selectedTabs = getSelectedTabsForView(targetView);
+  const statusTarget = targetView === "discard" ? discardDebugStatus : status;
   if (selectedTabs.length === 0) {
-    setStatus(status, "请先选择要关闭的标签页。", "error");
+    setStatus(statusTarget, "请先选择要关闭的标签页。", "error");
     return;
   }
   const ids = selectedTabs.map((tab) => tab.id).filter(Boolean);
-  chrome.tabs.remove(ids, () => {
-    setStatus(status, `已关闭 ${ids.length} 个标签页。`, "ok");
-    loadWindows();
+  chrome.tabs.remove(ids, async () => {
+    setStatus(statusTarget, `已关闭 ${ids.length} 个标签页。`, "ok");
+    if (targetView === "discard") {
+      clearHistorySelection();
+      await loadDiscardHistory();
+    }
+    await loadWindows();
   });
 }
 
 async function runAiGrouping() {
-  const selectedTabs = getSelectedTabs();
+  const selectedTabs = getSelectedTabsForView(aiContextView.value);
   if (selectedTabs.length === 0) {
     setStatus(aiStatus, "请先选择需要分组的标签页。", "error");
     return;
@@ -1600,7 +1683,7 @@ async function applyAiGrouping() {
 }
 
 async function saveSelectedTabs() {
-  const selectedTabs = getSelectedTabs();
+  const selectedTabs = getSelectedTabsForView(saveContextView.value);
   if (selectedTabs.length === 0) {
     setStatus(status, "请至少选择一个标签页。", "error");
     return;
@@ -1867,6 +1950,9 @@ function applyDiscardConfig(config) {
   discardConfig.batchLimit = Number.isFinite(Number(config.batchLimit))
     ? Number(config.batchLimit)
     : 20;
+  discardConfig.historyLimit = Number.isFinite(Number(config.historyLimit))
+    ? Number(config.historyLimit)
+    : 0;
   discardConfig.allowPinned = Boolean(config.allowPinned);
   discardConfig.allowAudible = Boolean(config.allowAudible);
   discardConfig.matchMode =
@@ -1893,6 +1979,7 @@ async function saveDiscardConfig() {
     idleMinutes: Number(discardConfig.idleMinutes),
     sweepMinutes: Number(discardConfig.sweepMinutes),
     batchLimit: Number(discardConfig.batchLimit),
+    historyLimit: Number(discardConfig.historyLimit),
     allowPinned: Boolean(discardConfig.allowPinned),
     allowAudible: Boolean(discardConfig.allowAudible),
     matchMode: discardConfig.matchMode,
@@ -1906,6 +1993,9 @@ async function saveDiscardConfig() {
   }
   applyDiscardConfig(response.config || payload);
   setStatus(discardConfigStatus, "自动冻结配置已保存。", "ok");
+  if (view.value === "discard") {
+    await loadDiscardHistory();
+  }
 }
 
 function formatLocalTime(timestamp) {
@@ -1919,32 +2009,31 @@ function formatLocalTime(timestamp) {
   return date.toLocaleString();
 }
 
-async function loadDiscardCandidates() {
-  setStatus(discardDebugStatus, "正在刷新候选标签页...", "");
-  const response = await request("getDiscardCandidates", { limit: 200 });
+async function loadDiscardHistory() {
+  setStatus(discardDebugStatus, "正在刷新冻结历史...", "");
+  const response = await request("getDiscardHistory");
   if (!response.ok) {
-    setStatus(discardDebugStatus, response.error || "候选列表加载失败。", "error");
-    discardCandidates.value = [];
-    discardSummary.total = 0;
+    setStatus(discardDebugStatus, response.error || "冻结历史加载失败。", "error");
+    discardHistoryBatches.value = [];
+    discardHistorySummary.total = 0;
+    discardHistorySummary.batches = 0;
     return;
   }
-  discardCandidates.value = (response.candidates || []).map((item) => ({
-    ...item,
-    key: `discard-${item.id}`,
-  }));
-  discardSummary.total = Number(response.total) || 0;
-  discardSummary.updatedAt = new Date().toISOString();
-  discardLastBatch.value = (response.lastDiscarded || []).map((item, index) => ({
-    ...item,
-    key: `discard-last-${item.id || index}`,
-  }));
-  discardLastSummary.count = discardLastBatch.value.length;
-  discardLastSummary.at = response.lastDiscardedAt ? formatLocalTime(response.lastDiscardedAt) : "";
+  discardHistoryBatches.value = response.historyBatches || [];
+  discardHistorySummary.total = Number(response.historyTotal) || 0;
+  discardHistorySummary.batches = Number(response.historyBatchesCount) || 0;
+  discardHistorySummary.limit = Number(response.historyLimit) || 0;
+  const existing = new Set(historyTabsFlat.value.map((tab) => String(tab.id)));
+  Object.keys(historySelectedTabIds).forEach((tabId) => {
+    if (!existing.has(String(tabId))) {
+      delete historySelectedTabIds[tabId];
+    }
+  });
   if (!response.enabled) {
     setStatus(discardDebugStatus, "自动冻结未开启，请先在设置中启用。", "error");
     return;
   }
-  setStatus(discardDebugStatus, "候选列表已更新。", "ok");
+  setStatus(discardDebugStatus, "冻结历史已更新。", "ok");
 }
 
 onMounted(async () => {
