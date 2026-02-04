@@ -1,6 +1,16 @@
 const STORAGE_KEY = "lists";
 const AI_CONFIG_KEY = "aiConfig";
+const DISCARD_CONFIG_KEY = "discardConfig";
+const DISCARD_ALARM = "discardSweep";
 const MANAGER_PAGE = "ui/manager.html";
+
+const tabLastActive = new Map();
+const activeTabByWindow = new Map();
+let focusedWindowId = null;
+let tabActivityReady = false;
+let tabActivityPromise = null;
+let discardSweepRunning = false;
+let discardConfigCache = null;
 
 function clearActionPopup() {
   if (chrome.action && chrome.action.setPopup) {
@@ -53,6 +63,49 @@ function sanitizeAiConfig(raw) {
   };
 }
 
+function normalizeWhitelist(raw) {
+  if (Array.isArray(raw)) {
+    return raw.map((item) => String(item || "").trim()).filter(Boolean);
+  }
+  if (typeof raw === "string") {
+    return raw
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+  }
+  return [];
+}
+
+function sanitizeDiscardConfig(raw) {
+  const config = raw && typeof raw === "object" ? raw : {};
+  const enabled = Boolean(config.enabled);
+  const idleMinutes = Number.isFinite(Number(config.idleMinutes))
+    ? Math.max(1, Math.min(1440, Number(config.idleMinutes)))
+    : 20;
+  const sweepMinutes = Number.isFinite(Number(config.sweepMinutes))
+    ? Math.max(1, Math.min(120, Number(config.sweepMinutes)))
+    : 3;
+  const batchLimit = Number.isFinite(Number(config.batchLimit))
+    ? Math.max(1, Math.min(200, Number(config.batchLimit)))
+    : 20;
+  const allowPinned = Boolean(config.allowPinned);
+  const allowAudible = Boolean(config.allowAudible);
+  const matchMode = config.matchMode === "url" || config.matchMode === "full" ? config.matchMode : "domain";
+  const regexMode = Boolean(config.regexMode);
+  const whitelist = normalizeWhitelist(config.whitelist);
+  return {
+    enabled,
+    idleMinutes,
+    sweepMinutes,
+    batchLimit,
+    allowPinned,
+    allowAudible,
+    matchMode,
+    regexMode,
+    whitelist,
+  };
+}
+
 async function getAiConfig() {
   const stored = await storageGet(AI_CONFIG_KEY);
   return sanitizeAiConfig(stored || {});
@@ -64,6 +117,35 @@ async function setAiConfig(config) {
   return sanitized;
 }
 
+function resetTabActivity() {
+  tabLastActive.clear();
+  activeTabByWindow.clear();
+  focusedWindowId = null;
+  tabActivityReady = false;
+  tabActivityPromise = null;
+}
+
+async function getDiscardConfig() {
+  if (discardConfigCache) {
+    return discardConfigCache;
+  }
+  const stored = await storageGet(DISCARD_CONFIG_KEY);
+  discardConfigCache = sanitizeDiscardConfig(stored || {});
+  return discardConfigCache;
+}
+
+async function setDiscardConfig(config) {
+  const sanitized = sanitizeDiscardConfig(config);
+  const prevEnabled = discardConfigCache ? discardConfigCache.enabled : false;
+  discardConfigCache = sanitized;
+  await storageSet({ [DISCARD_CONFIG_KEY]: sanitized });
+  if (sanitized.enabled && !prevEnabled) {
+    resetTabActivity();
+  }
+  await ensureDiscardAlarm(sanitized);
+  return sanitized;
+}
+
 function ensureUniqueListName(existingNames, baseName) {
   let name = baseName;
   let counter = 2;
@@ -72,6 +154,285 @@ function ensureUniqueListName(existingNames, baseName) {
     counter += 1;
   }
   return name;
+}
+
+function getBaseDomain(url) {
+  if (!url) {
+    return "";
+  }
+  try {
+    const hostname = new URL(url).hostname || "";
+    const cleaned = hostname.replace(/^www\./, "");
+    const parts = cleaned.split(".");
+    if (parts.length <= 2) {
+      return cleaned;
+    }
+    return parts.slice(-2).join(".");
+  } catch (error) {
+    return "";
+  }
+}
+
+function getUrlWithoutParams(url) {
+  if (!url) {
+    return "";
+  }
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch (error) {
+    return "";
+  }
+}
+
+function isDiscardableUrl(url) {
+  if (!url) {
+    return false;
+  }
+  const lower = String(url).toLowerCase();
+  if (lower.startsWith("chrome://")) {
+    return false;
+  }
+  if (lower.startsWith("edge://")) {
+    return false;
+  }
+  if (lower.startsWith("about:")) {
+    return false;
+  }
+  if (lower.startsWith("chrome-extension://")) {
+    return false;
+  }
+  if (lower.startsWith("moz-extension://")) {
+    return false;
+  }
+  if (lower.startsWith("extension://")) {
+    return false;
+  }
+  return true;
+}
+
+function getWhitelistTarget(tab, mode) {
+  if (!tab || !tab.url) {
+    return "";
+  }
+  if (mode === "url") {
+    return getUrlWithoutParams(tab.url);
+  }
+  if (mode === "full") {
+    return String(tab.url);
+  }
+  return getBaseDomain(tab.url);
+}
+
+function isTabWhitelisted(tab, config) {
+  const entries = Array.isArray(config.whitelist) ? config.whitelist : [];
+  if (!tab || entries.length === 0) {
+    return false;
+  }
+  const target = getWhitelistTarget(tab, config.matchMode);
+  if (!target) {
+    return false;
+  }
+  if (config.regexMode) {
+    for (let i = 0; i < entries.length; i += 1) {
+      const pattern = entries[i];
+      if (!pattern) {
+        continue;
+      }
+      try {
+        const regex = new RegExp(pattern);
+        if (regex.test(target)) {
+          return true;
+        }
+      } catch (error) {
+        continue;
+      }
+    }
+    return false;
+  }
+  const lowerTarget = target.toLowerCase();
+  for (let i = 0; i < entries.length; i += 1) {
+    const entry = entries[i];
+    if (!entry) {
+      continue;
+    }
+    if (lowerTarget.includes(String(entry).toLowerCase())) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function touchTab(tabId, time) {
+  if (!tabId) {
+    return;
+  }
+  tabLastActive.set(String(tabId), time || Date.now());
+}
+
+function getLastActive(tabId, now) {
+  const key = String(tabId);
+  if (!tabLastActive.has(key)) {
+    tabLastActive.set(key, now);
+    return now;
+  }
+  return tabLastActive.get(key);
+}
+
+function queryAllTabs() {
+  return new Promise((resolve) => {
+    chrome.tabs.query({}, (tabs) => resolve(tabs || []));
+  });
+}
+
+async function ensureTabActivity() {
+  if (tabActivityReady) {
+    return;
+  }
+  if (tabActivityPromise) {
+    await tabActivityPromise;
+    return;
+  }
+  tabActivityPromise = new Promise((resolve) => {
+    queryAllTabs().then((tabs) => {
+      const now = Date.now();
+      tabs.forEach((tab) => {
+        if (tab && tab.id !== undefined) {
+          tabLastActive.set(String(tab.id), now);
+          if (tab.active && tab.windowId !== undefined) {
+            activeTabByWindow.set(tab.windowId, tab.id);
+          }
+        }
+      });
+      tabActivityReady = true;
+      resolve();
+    });
+  });
+  await tabActivityPromise;
+}
+
+function evaluateDiscardCandidate(tab, config, now) {
+  if (!tab || !tab.id) {
+    return null;
+  }
+  if (!isDiscardableUrl(tab.url)) {
+    return null;
+  }
+  if (tab.active) {
+    touchTab(tab.id, now);
+    return null;
+  }
+  if (tab.discarded) {
+    return null;
+  }
+  if (!config.allowPinned && tab.pinned) {
+    return null;
+  }
+  if (!config.allowAudible && tab.audible) {
+    return null;
+  }
+  if (isTabWhitelisted(tab, config)) {
+    return null;
+  }
+  const lastActive = getLastActive(tab.id, now);
+  const idleMs = now - lastActive;
+  if (idleMs < config.idleMinutes * 60 * 1000) {
+    return null;
+  }
+  return { lastActive, idleMinutes: Math.floor(idleMs / 60000) };
+}
+
+async function discardTabs(tabIds) {
+  await Promise.all(
+    tabIds.map(
+      (tabId) =>
+        new Promise((resolve) => {
+          chrome.tabs.discard(tabId, () => resolve());
+        })
+    )
+  );
+}
+
+async function runDiscardSweep() {
+  if (discardSweepRunning) {
+    return;
+  }
+  discardSweepRunning = true;
+  try {
+    const config = await getDiscardConfig();
+    if (!config.enabled) {
+      return;
+    }
+    await ensureTabActivity();
+    const now = Date.now();
+    const tabs = await queryAllTabs();
+    const candidates = [];
+    for (let i = 0; i < tabs.length; i += 1) {
+      const tab = tabs[i];
+      const result = evaluateDiscardCandidate(tab, config, now);
+      if (!result) {
+        continue;
+      }
+      candidates.push(tab.id);
+      if (candidates.length >= config.batchLimit) {
+        break;
+      }
+    }
+    if (candidates.length > 0) {
+      await discardTabs(candidates);
+    }
+  } finally {
+    discardSweepRunning = false;
+  }
+}
+
+async function getDiscardCandidates(limit) {
+  const config = await getDiscardConfig();
+  if (!config.enabled) {
+    return { candidates: [], total: 0, enabled: false };
+  }
+  await ensureTabActivity();
+  const now = Date.now();
+  const tabs = await queryAllTabs();
+  const candidates = [];
+  let total = 0;
+  for (let i = 0; i < tabs.length; i += 1) {
+    const tab = tabs[i];
+    const result = evaluateDiscardCandidate(tab, config, now);
+    if (!result) {
+      continue;
+    }
+    total += 1;
+    if (candidates.length < limit) {
+      candidates.push({
+        id: tab.id,
+        windowId: tab.windowId,
+        title: tab.title || tab.url || "未命名",
+        url: tab.url || "",
+        favIconUrl: tab.favIconUrl || "",
+        idleMinutes: result.idleMinutes,
+        lastActive: result.lastActive,
+        pinned: Boolean(tab.pinned),
+        audible: Boolean(tab.audible),
+      });
+    }
+  }
+  return { candidates, total, enabled: config.enabled };
+}
+
+function ensureDiscardAlarm(config) {
+  if (!config.enabled) {
+    chrome.alarms.clear(DISCARD_ALARM);
+    return;
+  }
+  const period = Math.max(1, Number(config.sweepMinutes) || 3);
+  chrome.alarms.create(DISCARD_ALARM, { periodInMinutes: period, delayInMinutes: 1 });
+}
+
+function initializeDiscardSystem() {
+  getDiscardConfig()
+    .then((config) => ensureDiscardAlarm(config))
+    .catch(() => {});
 }
 
 function normalizeTabItems(items) {
@@ -699,11 +1060,84 @@ async function rebuildContextMenus() {
 chrome.runtime.onInstalled.addListener(() => {
   clearActionPopup();
   rebuildContextMenus();
+  resetTabActivity();
+  initializeDiscardSystem();
 });
 
 chrome.runtime.onStartup.addListener(() => {
   clearActionPopup();
   rebuildContextMenus();
+  resetTabActivity();
+  initializeDiscardSystem();
+});
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm && alarm.name === DISCARD_ALARM) {
+    runDiscardSweep();
+  }
+});
+
+chrome.tabs.onActivated.addListener((activeInfo) => {
+  if (!activeInfo || activeInfo.tabId === undefined) {
+    return;
+  }
+  const now = Date.now();
+  const previous = activeTabByWindow.get(activeInfo.windowId);
+  if (previous && previous !== activeInfo.tabId) {
+    touchTab(previous, now);
+  }
+  activeTabByWindow.set(activeInfo.windowId, activeInfo.tabId);
+  touchTab(activeInfo.tabId, now);
+});
+
+chrome.windows.onFocusChanged.addListener((windowId) => {
+  const now = Date.now();
+  if (focusedWindowId && focusedWindowId !== chrome.windows.WINDOW_ID_NONE) {
+    const previousActive = activeTabByWindow.get(focusedWindowId);
+    if (previousActive) {
+      touchTab(previousActive, now);
+    }
+  }
+  focusedWindowId = windowId;
+  if (windowId === chrome.windows.WINDOW_ID_NONE) {
+    return;
+  }
+  chrome.tabs.query({ active: true, windowId }, (tabs) => {
+    if (tabs && tabs[0] && tabs[0].id !== undefined) {
+      activeTabByWindow.set(windowId, tabs[0].id);
+      touchTab(tabs[0].id, now);
+    }
+  });
+});
+
+chrome.tabs.onCreated.addListener((tab) => {
+  if (tab && tab.id !== undefined) {
+    touchTab(tab.id);
+  }
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  tabLastActive.delete(String(tabId));
+  activeTabByWindow.forEach((value, key) => {
+    if (value === tabId) {
+      activeTabByWindow.delete(key);
+    }
+  });
+});
+
+chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
+  const key = String(removedTabId);
+  if (tabLastActive.has(key)) {
+    const lastActive = tabLastActive.get(key);
+    tabLastActive.delete(key);
+    tabLastActive.set(String(addedTabId), lastActive);
+  }
+  activeTabByWindow.forEach((value, winId) => {
+    if (value === removedTabId) {
+      activeTabByWindow.set(winId, addedTabId);
+    }
+  });
+  touchTab(addedTabId);
 });
 
 chrome.action.onClicked.addListener(() => {
@@ -724,8 +1158,15 @@ chrome.action.onClicked.addListener(() => {
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "local" && changes[STORAGE_KEY]) {
+  if (area !== "local") {
+    return;
+  }
+  if (changes[STORAGE_KEY]) {
     rebuildContextMenus();
+  }
+  if (changes[DISCARD_CONFIG_KEY]) {
+    discardConfigCache = sanitizeDiscardConfig(changes[DISCARD_CONFIG_KEY].newValue || {});
+    ensureDiscardAlarm(discardConfigCache);
   }
 });
 
@@ -855,6 +1296,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (action === "getDiscardConfig") {
+    getDiscardConfig()
+      .then((config) => sendResponse({ ok: true, config }))
+      .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
+    return true;
+  }
+
+  if (action === "saveDiscardConfig") {
+    setDiscardConfig(message.config || {})
+      .then((config) => sendResponse({ ok: true, config }))
+      .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
+    return true;
+  }
+
+  if (action === "getDiscardCandidates") {
+    const limit = Number.isFinite(Number(message.limit)) ? Math.max(1, Number(message.limit)) : 200;
+    getDiscardCandidates(limit)
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
+    return true;
+  }
+
   if (action === "aiGroupTabs") {
     const rawItems = Array.isArray(message.items) ? message.items : [];
     if (rawItems.length === 0) {
@@ -936,3 +1399,5 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   return false;
 });
+
+initializeDiscardSystem();

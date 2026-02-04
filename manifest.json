@@ -3,7 +3,7 @@
   "name": "Nesoi 标签管理器",
   "version": "0.1.0",
   "description": "管理海量标签页，将其保存到列表中。",
-  "permissions": ["tabs", "storage", "contextMenus"],
+  "permissions": ["tabs", "storage", "contextMenus", "alarms"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"

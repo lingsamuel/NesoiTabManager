@@ -23,7 +23,7 @@
       </nav>
     </aside>
 
-    <aside class="sub-sidebar" :class="{ hidden: view === 'settings' }">
+    <aside class="sub-sidebar" :class="{ hidden: view === 'settings' || view === 'discard' }">
       <div class="sub-title">{{ view === "windows" ? "窗口" : "列表" }}</div>
       <div class="sub-items">
         <template v-if="view === 'windows'">
@@ -153,6 +153,7 @@
                 />
                 <div class="tab-body">
                   <div class="tab-title">
+                    <span v-if="item.tab.discarded" class="discard-dot" aria-hidden="true"></span>
                     <span class="tab-link" @click.stop="activateTab(item.tab)">
                       {{ item.tab.title || item.tab.url || "未命名" }}
                     </span>
@@ -185,6 +186,14 @@
                       </svg>
                     </span>
                     关闭
+                  </button>
+                  <button class="ghost tab-action btn-icon" @click.stop="discardTab(item.tab)">
+                    <span class="icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24">
+                        <path d="M7 5h4v14H7zM13 5h4v14h-4z" />
+                      </svg>
+                    </span>
+                    冻结
                   </button>
                 </div>
               </div>
@@ -620,6 +629,71 @@
         </div>
       </div>
 
+      <section v-show="view === 'discard'" class="view view-discard">
+        <div class="content-header">
+          <div>
+            <h1>自动冻结调试</h1>
+            <div class="content-subtitle">显示满足条件且即将被冻结的标签页</div>
+          </div>
+          <div class="content-actions">
+            <button class="ghost btn-icon" @click="loadDiscardCandidates">
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M4 4v6h6M20 20v-6h-6M20 8a8 8 0 0 0-14-3M4 16a8 8 0 0 0 14 3" />
+                </svg>
+              </span>
+              刷新
+            </button>
+          </div>
+        </div>
+        <div class="panel discard-panel">
+          <div class="panel-header">
+            <h2>候选标签页</h2>
+            <div class="panel-actions">
+              <div class="discard-summary">
+                共 {{ discardSummary.total }} 个，展示前 {{ discardCandidates.length }} 个
+              </div>
+            </div>
+          </div>
+          <div class="status" :class="discardDebugStatus.type">{{ discardDebugStatus.message }}</div>
+          <div v-if="discardCandidates.length === 0" class="virtual-empty">暂无候选标签页。</div>
+          <VirtualList
+            v-else
+            class="discard-list"
+            :items="discardCandidates"
+            :item-height="60"
+          >
+            <template #default="{ item }">
+              <div class="tab-row discard-row">
+                <img
+                  class="tab-icon"
+                  :class="{ hidden: !item.favIconUrl }"
+                  :src="item.favIconUrl || ''"
+                  @error="handleIconError($event)"
+                />
+                <div class="tab-body">
+                  <div class="tab-title">{{ item.title || item.url || "未命名" }}</div>
+                  <div class="tab-url">{{ item.url || "" }}</div>
+                  <div class="discard-meta">
+                    闲置 {{ item.idleMinutes }} 分钟 · 最后活跃：{{ formatLocalTime(item.lastActive) }}
+                  </div>
+                </div>
+                <div class="tab-actions">
+                  <button class="ghost tab-action btn-icon" @click.stop="discardTab(item)">
+                    <span class="icon" aria-hidden="true">
+                      <svg viewBox="0 0 24 24">
+                        <path d="M7 5h4v14H7zM13 5h4v14h-4z" />
+                      </svg>
+                    </span>
+                    冻结
+                  </button>
+                </div>
+              </div>
+            </template>
+          </VirtualList>
+        </div>
+      </section>
+
       <section v-show="view === 'settings'" class="view view-settings">
         <div class="content-header">
           <div>
@@ -689,6 +763,97 @@
           </div>
           <div class="status" :class="settingsStatus.type">{{ settingsStatus.message }}</div>
         </section>
+        <section class="panel">
+          <div class="panel-header">
+            <h2>自动冻结</h2>
+          </div>
+          <div class="form-row checkbox-row">
+            <label>
+              <input type="checkbox" v-model="discardConfig.enabled" />
+              启用自动冻结（闲置时自动 discard）
+            </label>
+          </div>
+          <div class="panel-grid">
+            <div class="form-row">
+              <label for="discard-idle">闲置阈值（分钟）</label>
+              <input
+                id="discard-idle"
+                type="number"
+                min="1"
+                max="1440"
+                v-model.number="discardConfig.idleMinutes"
+              />
+            </div>
+            <div class="form-row">
+              <label for="discard-sweep">扫描间隔（分钟）</label>
+              <input
+                id="discard-sweep"
+                type="number"
+                min="1"
+                max="120"
+                v-model.number="discardConfig.sweepMinutes"
+              />
+            </div>
+            <div class="form-row">
+              <label for="discard-batch">每次最多冻结</label>
+              <input
+                id="discard-batch"
+                type="number"
+                min="1"
+                max="200"
+                v-model.number="discardConfig.batchLimit"
+              />
+            </div>
+          </div>
+          <div class="panel-grid">
+            <div class="form-row checkbox-row">
+              <label>
+                <input type="checkbox" v-model="discardConfig.allowPinned" />
+                允许冻结已固定的标签页
+              </label>
+            </div>
+            <div class="form-row checkbox-row">
+              <label>
+                <input type="checkbox" v-model="discardConfig.allowAudible" />
+                允许冻结正在发声的标签页
+              </label>
+            </div>
+          </div>
+          <div class="form-row">
+            <label for="discard-match-mode">白名单匹配方式</label>
+            <select id="discard-match-mode" v-model="discardConfig.matchMode">
+              <option value="domain">基础域名（默认）</option>
+              <option value="url">URL（不含参数）</option>
+              <option value="full">完整链接（含参数）</option>
+            </select>
+          </div>
+          <div class="form-row checkbox-row">
+            <label>
+              <input type="checkbox" v-model="discardConfig.regexMode" />
+              使用正则匹配（性能较差）
+            </label>
+          </div>
+          <div class="form-row">
+            <label for="discard-whitelist">白名单（每行一条，命中后不自动冻结）</label>
+            <textarea
+              id="discard-whitelist"
+              rows="5"
+              placeholder="例如：github.com&#10;notion.so"
+              v-model="discardConfig.whitelist"
+            ></textarea>
+          </div>
+          <div class="form-row">
+            <button class="primary btn-icon" @click="saveDiscardConfig">
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M6 20h12V8l-4-4H6zM9 20v-6h6v6" />
+                </svg>
+              </span>
+              保存配置
+            </button>
+          </div>
+          <div class="status" :class="discardConfigStatus.type">{{ discardConfigStatus.message }}</div>
+        </section>
       </section>
     </main>
   </div>
@@ -713,6 +878,11 @@ const navItems = [
     icon: "M4 6h16M4 12h16M4 18h16",
   },
   {
+    key: "discard",
+    label: "自动冻结调试",
+    icon: "M7 5h4v14H7zM13 5h4v14h-4z",
+  },
+  {
     key: "settings",
     label: "插件设置",
     icon:
@@ -734,6 +904,8 @@ const status = reactive({ message: "", type: "" });
 const aiStatus = reactive({ message: "", type: "" });
 const listStatus = reactive({ message: "", type: "" });
 const settingsStatus = reactive({ message: "", type: "" });
+const discardConfigStatus = reactive({ message: "", type: "" });
+const discardDebugStatus = reactive({ message: "", type: "" });
 
 const aiConfig = reactive({
   endpoint: "",
@@ -743,6 +915,21 @@ const aiConfig = reactive({
   maxTabs: 120,
   includeListTitles: true,
 });
+
+const discardConfig = reactive({
+  enabled: false,
+  idleMinutes: 20,
+  sweepMinutes: 3,
+  batchLimit: 20,
+  allowPinned: false,
+  allowAudible: false,
+  whitelist: "",
+  matchMode: "domain",
+  regexMode: false,
+});
+
+const discardCandidates = ref([]);
+const discardSummary = reactive({ total: 0, updatedAt: "" });
 
 const selectedListTarget = ref(NEW_LIST_VALUE);
 const newListName = ref("");
@@ -845,6 +1032,7 @@ const windowRows = computed(() => {
           title: tab.title,
           url: tab.url,
           favIconUrl: tab.favIconUrl,
+          discarded: Boolean(tab.discarded),
           index: globalIndex,
         },
       });
@@ -988,6 +1176,9 @@ function setView(nextView) {
   showSaveModal.value = false;
   showMoveModal.value = false;
   showCreateListModal.value = false;
+  if (nextView === "discard") {
+    loadDiscardCandidates();
+  }
 }
 
 function setSelectedWindow(windowId) {
@@ -1301,6 +1492,20 @@ async function request(action, payload) {
     chrome.runtime.sendMessage({ action, ...payload }, (response) => {
       resolve(response || { ok: false, error: "无响应" });
     });
+  });
+}
+
+function discardTab(tab) {
+  if (!tab || !tab.id) {
+    return;
+  }
+  chrome.tabs.discard(tab.id, () => {
+    if (view.value === "windows") {
+      loadWindows();
+    }
+    if (view.value === "discard") {
+      loadDiscardCandidates();
+    }
   });
 }
 
@@ -1620,9 +1825,102 @@ async function saveAiConfig() {
   setStatus(settingsStatus, "AI 配置已保存。", "ok");
 }
 
+function normalizeWhitelistInput(text) {
+  return String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function applyDiscardConfig(config) {
+  discardConfig.enabled = Boolean(config.enabled);
+  discardConfig.idleMinutes = Number.isFinite(Number(config.idleMinutes))
+    ? Number(config.idleMinutes)
+    : 20;
+  discardConfig.sweepMinutes = Number.isFinite(Number(config.sweepMinutes))
+    ? Number(config.sweepMinutes)
+    : 3;
+  discardConfig.batchLimit = Number.isFinite(Number(config.batchLimit))
+    ? Number(config.batchLimit)
+    : 20;
+  discardConfig.allowPinned = Boolean(config.allowPinned);
+  discardConfig.allowAudible = Boolean(config.allowAudible);
+  discardConfig.matchMode =
+    config.matchMode === "url" || config.matchMode === "full" ? config.matchMode : "domain";
+  discardConfig.regexMode = Boolean(config.regexMode);
+  discardConfig.whitelist = Array.isArray(config.whitelist)
+    ? config.whitelist.join("\n")
+    : "";
+}
+
+async function loadDiscardConfig() {
+  const response = await request("getDiscardConfig");
+  if (!response.ok) {
+    setStatus(discardConfigStatus, response.error || "自动冻结配置加载失败。", "error");
+    return;
+  }
+  applyDiscardConfig(response.config || {});
+}
+
+async function saveDiscardConfig() {
+  const whitelist = normalizeWhitelistInput(discardConfig.whitelist);
+  const payload = {
+    enabled: Boolean(discardConfig.enabled),
+    idleMinutes: Number(discardConfig.idleMinutes),
+    sweepMinutes: Number(discardConfig.sweepMinutes),
+    batchLimit: Number(discardConfig.batchLimit),
+    allowPinned: Boolean(discardConfig.allowPinned),
+    allowAudible: Boolean(discardConfig.allowAudible),
+    matchMode: discardConfig.matchMode,
+    regexMode: Boolean(discardConfig.regexMode),
+    whitelist,
+  };
+  const response = await request("saveDiscardConfig", { config: payload });
+  if (!response.ok) {
+    setStatus(discardConfigStatus, response.error || "保存失败。", "error");
+    return;
+  }
+  applyDiscardConfig(response.config || payload);
+  setStatus(discardConfigStatus, "自动冻结配置已保存。", "ok");
+}
+
+function formatLocalTime(timestamp) {
+  if (!timestamp) {
+    return "";
+  }
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return date.toLocaleString();
+}
+
+async function loadDiscardCandidates() {
+  setStatus(discardDebugStatus, "正在刷新候选标签页...", "");
+  const response = await request("getDiscardCandidates", { limit: 200 });
+  if (!response.ok) {
+    setStatus(discardDebugStatus, response.error || "候选列表加载失败。", "error");
+    discardCandidates.value = [];
+    discardSummary.total = 0;
+    return;
+  }
+  discardCandidates.value = (response.candidates || []).map((item) => ({
+    ...item,
+    key: `discard-${item.id}`,
+  }));
+  discardSummary.total = Number(response.total) || 0;
+  discardSummary.updatedAt = new Date().toISOString();
+  if (!response.enabled) {
+    setStatus(discardDebugStatus, "自动冻结未开启，请先在设置中启用。", "error");
+    return;
+  }
+  setStatus(discardDebugStatus, "候选列表已更新。", "ok");
+}
+
 onMounted(async () => {
   await loadWindows();
   await loadLists();
   await loadAiConfig();
+  await loadDiscardConfig();
 });
 </script>
