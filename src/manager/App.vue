@@ -83,12 +83,14 @@
         :on-select-all="() => setVisibleSelection(true)"
         :on-clear="() => setVisibleSelection(false)"
         :on-close-selected="closeSelectedTabs"
+        :on-discard-selected="discardSelectedTabs"
         :on-open-move-modal="openWindowMoveModal"
         :on-open-ai="openAiModal"
         :on-open-save="openSaveModal"
         :on-toggle-hide-discarded="toggleHideDiscarded"
         :on-toggle-selection="toggleTabSelection"
         :on-toggle-tab="toggleTab"
+        :on-drop-tab="handleWindowDrop"
         :on-activate="activateTab"
         :on-close="closeTab"
         :on-discard="discardTab"
@@ -571,7 +573,6 @@ const showAiModal = ref(false);
 const showSaveModal = ref(false);
 const closeAfter = ref(false);
 const windowMoveTargetId = ref(NEW_WINDOW_VALUE);
-
 const windowMoveTargets = computed(() =>
   windows.value.map((win, index) => ({
     id: String(win.id),
@@ -592,6 +593,17 @@ const getSelectedTabsForView = (targetView) => {
   }
   return getSelectedWindowTabs();
 };
+
+function getWindowTabOrder(windowId) {
+  const win = windows.value.find((item) => String(item.id) === String(windowId));
+  if (!win || !Array.isArray(win.tabs)) {
+    return [];
+  }
+  return win.tabs
+    .slice()
+    .sort((a, b) => (a.index || 0) - (b.index || 0))
+    .map((tab) => tab.id);
+}
 
 const {
   aiConfig,
@@ -711,6 +723,51 @@ async function confirmMoveSelected() {
   await moveSelectedListItems();
   if (listStatus.type !== "error") {
     closeMoveModal();
+  }
+}
+
+async function handleWindowDrop(targetTab, selectedTabs) {
+  if (!targetTab || !targetTab.id) {
+    return;
+  }
+  const tabIds = Array.isArray(selectedTabs)
+    ? selectedTabs.map((tab) => tab.id).filter(Boolean)
+    : [];
+  if (tabIds.length === 0) {
+    return;
+  }
+  const targetId = String(targetTab.id);
+  const dragSet = new Set(tabIds.map((id) => String(id)));
+  if (dragSet.has(targetId)) {
+    return;
+  }
+  if (selectedWindowId.value !== "all") {
+    if (String(targetTab.windowId) !== String(selectedWindowId.value)) {
+      return;
+    }
+  }
+  const targetWindowId = targetTab.windowId;
+  if (targetWindowId === undefined || targetWindowId === null) {
+    return;
+  }
+  const order = getWindowTabOrder(targetWindowId);
+  if (order.length === 0) {
+    return;
+  }
+  const remaining = order.filter((id) => !dragSet.has(String(id)));
+  const targetPos = remaining.findIndex((id) => String(id) === targetId);
+  if (targetPos === -1) {
+    return;
+  }
+  const insertIndex = targetPos + 1;
+  setStatus(status, "正在移动标签页...", "");
+  try {
+    await moveTabsInBatches(tabIds, targetWindowId, { index: insertIndex });
+    setStatus(status, `已移动 ${tabIds.length} 个标签页。`, "ok");
+    clearWindowSelection();
+    await refreshWindows();
+  } catch (error) {
+    setStatus(status, error.message || "移动失败。", "error");
   }
 }
 
@@ -853,6 +910,27 @@ async function closeSelectedTabsForView(targetView) {
     clearHistorySelection();
     await loadDiscardHistory();
   }
+  await refreshWindows();
+}
+
+async function discardSelectedTabs() {
+  const selectedTabs = getSelectedWindowTabs();
+  if (selectedTabs.length === 0) {
+    setStatus(status, "请先选择要冻结的标签页。", "error");
+    return;
+  }
+  const ids = selectedTabs.map((tab) => tab.id).filter(Boolean);
+  setStatus(status, "正在冻结标签页...", "");
+  const response = await request("manualDiscardTabs", { tabIds: ids });
+  if (!response.ok) {
+    setStatus(status, response.error || "冻结失败。", "error");
+    return;
+  }
+  const discarded = response.discarded || 0;
+  const skipped = response.skipped || 0;
+  const skippedText = skipped > 0 ? `，跳过 ${skipped} 个` : "";
+  setStatus(status, `已冻结 ${discarded} 个标签页${skippedText}。`, "ok");
+  clearWindowSelection();
   await refreshWindows();
 }
 

@@ -78,6 +78,23 @@ function updateViewportHeight() {
   viewportHeight.value = container.value.clientHeight || 0;
 }
 
+function scrollToTop() {
+  if (!container.value) {
+    return;
+  }
+  container.value.scrollTop = 0;
+  scrollTop.value = 0;
+}
+
+function scrollToBottom() {
+  if (!container.value) {
+    return;
+  }
+  const maxScroll = Math.max(0, totalHeight.value - viewportHeight.value);
+  container.value.scrollTop = maxScroll;
+  scrollTop.value = maxScroll;
+}
+
 watch(
   () => props.items.length,
   () => {
@@ -91,6 +108,11 @@ watch(
     }
   }
 );
+
+defineExpose({
+  scrollToTop,
+  scrollToBottom,
+});
 
 onMounted(() => {
   updateViewportHeight();

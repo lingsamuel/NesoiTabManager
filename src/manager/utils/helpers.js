@@ -19,12 +19,15 @@ async function removeTabsInBatches(ids, options = {}) {
 async function moveTabsInBatches(tabIds, windowId, options = {}) {
   const batchSize = Number.isFinite(options.batchSize) ? options.batchSize : 100;
   const gapMs = Number.isFinite(options.gapMs) ? options.gapMs : 150;
+  const baseIndex = Number.isFinite(options.index) ? options.index : -1;
+  let offset = 0;
   for (let i = 0; i < tabIds.length; i += batchSize) {
     const batch = tabIds.slice(i, i + batchSize);
+    const targetIndex = baseIndex === -1 ? -1 : baseIndex + offset;
     await new Promise((resolve, reject) => {
       chrome.tabs.move(
         batch,
-        { windowId, index: -1 },
+        { windowId, index: targetIndex },
         () => {
           if (chrome.runtime.lastError) {
             reject(new Error(chrome.runtime.lastError.message || "移动失败"));
@@ -34,6 +37,7 @@ async function moveTabsInBatches(tabIds, windowId, options = {}) {
         }
       );
     });
+    offset += batch.length;
     if (i + batchSize < tabIds.length) {
       await delay(gapMs);
     }

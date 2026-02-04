@@ -5,7 +5,7 @@ import {
 } from "./constants.js";
 import { storageGet, storageSet, storageSessionGet, storageSessionSet } from "./storage.js";
 import { delay, getBaseDomain, getUrlWithoutParams, isDiscardableUrl } from "./utils.js";
-import { getTabById } from "./lists.js";
+import { getTabById, getTabsByIds } from "./lists.js";
 
 const tabLastActive = new Map();
 const activeTabByWindow = new Map();
@@ -461,6 +461,53 @@ async function manualDiscard(tabId) {
   return { item };
 }
 
+async function manualDiscardTabs(tabIds) {
+  if (!Array.isArray(tabIds) || tabIds.length === 0) {
+    throw new Error("缺少标签页 ID。");
+  }
+  await ensureDiscardSession();
+  const config = await getDiscardConfig();
+  const tabs = await getTabsByIds(tabIds);
+  if (tabs.length === 0) {
+    throw new Error("未找到标签页。");
+  }
+  const now = Date.now();
+  const counts = discardSession.freezeCounts || {};
+  const items = [];
+  const discardIds = [];
+  tabs.forEach((tab) => {
+    if (!tab || !tab.id) {
+      return;
+    }
+    if (tab.discarded) {
+      return;
+    }
+    const lastActive = getLastActive(tab, now);
+    const idleMinutes = Math.max(0, Math.floor((now - lastActive) / 60000));
+    const nextCount = (counts[tab.id] || 0) + 1;
+    counts[tab.id] = nextCount;
+    discardIds.push(tab.id);
+    items.push({
+      id: tab.id,
+      windowId: tab.windowId,
+      title: tab.title || tab.url || "未命名",
+      url: tab.url || "",
+      favIconUrl: tab.favIconUrl || "",
+      idleMinutes,
+      lastActive,
+      discardedAt: now,
+      freezeCount: nextCount,
+    });
+  });
+  if (discardIds.length === 0) {
+    return { discarded: 0, skipped: tabIds.length };
+  }
+  await discardTabs(discardIds);
+  discardSession.freezeCounts = counts;
+  await recordDiscardBatch(items, now, config);
+  return { discarded: discardIds.length, skipped: tabIds.length - discardIds.length };
+}
+
 async function getDiscardCandidates(limit) {
   await ensureDiscardSession();
   const config = await getDiscardConfig();
@@ -644,6 +691,7 @@ export {
   getDiscardCandidates,
   getDiscardHistory,
   manualDiscard,
+  manualDiscardTabs,
   initializeDiscardSystem,
   resetTabActivity,
   resetDiscardSession,

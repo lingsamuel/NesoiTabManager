@@ -38,6 +38,14 @@
           </span>
           关闭所选
         </button>
+        <button class="ghost btn-icon" @click="onDiscardSelected">
+          <span class="icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M7 5h4v14H7zM13 5h4v14h-4z" />
+            </svg>
+          </span>
+          冻结所选
+        </button>
         <button class="ghost btn-icon" @click="onOpenMoveModal">
           <span class="icon" aria-hidden="true">
             <svg viewBox="0 0 24 24">
@@ -70,6 +78,7 @@
       :item-height="44"
       :selected-map="selectedTabIds"
       :ai-tags="aiTags"
+      :enable-drag="true"
       empty-text="未找到打开的标签页。"
       empty-row-text="此窗口没有标签页。"
       :on-toggle-selection="onToggleSelection"
@@ -78,6 +87,7 @@
       :on-close="onClose"
       :on-discard="onDiscard"
       :on-save-ai-group="onSaveAiGroup"
+      :on-drop-tab="onDropTab"
     />
   </section>
 </template>
@@ -122,6 +132,10 @@ const props = defineProps({
     type: Function,
     default: null,
   },
+  onDiscardSelected: {
+    type: Function,
+    default: null,
+  },
   onOpenAi: {
     type: Function,
     default: null,
@@ -155,6 +169,10 @@ const props = defineProps({
     default: null,
   },
   onSaveAiGroup: {
+    type: Function,
+    default: null,
+  },
+  onDropTab: {
     type: Function,
     default: null,
   },

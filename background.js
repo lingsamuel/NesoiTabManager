@@ -12,6 +12,7 @@ import {
   handleWindowFocusChanged,
   initializeDiscardSystem,
   manualDiscard,
+  manualDiscardTabs,
   resetDiscardSession,
   resetTabActivity,
   setDiscardConfig,
@@ -281,6 +282,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (action === "manualDiscard") {
     const tabId = message.tabId;
     manualDiscard(tabId)
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
+    return true;
+  }
+
+  if (action === "manualDiscardTabs") {
+    const tabIds = Array.isArray(message.tabIds) ? message.tabIds : [];
+    manualDiscardTabs(tabIds)
       .then((result) => sendResponse({ ok: true, ...result }))
       .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
     return true;

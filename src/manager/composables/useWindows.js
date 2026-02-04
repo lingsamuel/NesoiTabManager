@@ -91,6 +91,7 @@ function useWindows(options = {}) {
           favIconUrl: tab.favIconUrl,
           discarded: Boolean(tab.discarded),
           pinned: Boolean(tab.pinned),
+          windowIndex: tab.index,
           index: globalIndex,
         },
       });

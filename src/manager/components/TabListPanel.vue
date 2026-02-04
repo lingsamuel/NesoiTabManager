@@ -2,6 +2,7 @@
   <div class="panel tabs-panel">
     <div v-if="rows.length === 0" class="virtual-empty">{{ emptyText }}</div>
     <VirtualList
+      ref="listRef"
       v-else
       class="tabs"
       :items="rows"
@@ -15,7 +16,22 @@
         <div v-else-if="item.type === 'empty'" class="empty-row">
           {{ emptyRowText }}
         </div>
-        <div v-else class="tab-row" @click="handleToggleSelection(item.tab.id)">
+        <div
+          v-else
+          class="tab-row"
+          :class="{
+            draggable: enableDrag,
+            dragging: draggingTabId === item.tab.id,
+            'drag-target': dragOverTabId === item.tab.id,
+          }"
+          :draggable="enableDrag"
+          @click="handleToggleSelection(item.tab.id, $event)"
+          @dragstart="handleDragStart(item.tab, $event)"
+          @dragover="handleDragOver(item.tab, $event)"
+          @dragleave="handleDragLeave(item.tab)"
+          @drop="handleDrop(item.tab, $event)"
+          @dragend="handleDragEnd"
+        >
           <input
             type="checkbox"
             :checked="Boolean(selectedMap[item.tab.id])"
@@ -90,10 +106,29 @@
         </div>
       </template>
     </VirtualList>
+    <div class="list-fab">
+      <button class="ghost btn-icon fab-btn" @click="scrollToTop">
+        <span class="icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24">
+            <path d="M12 5l-6 6m6-6 6 6M12 5v14" />
+          </svg>
+        </span>
+        顶部
+      </button>
+      <button class="ghost btn-icon fab-btn" @click="scrollToBottom">
+        <span class="icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24">
+            <path d="M12 19l6-6m-6 6-6-6M12 5v14" />
+          </svg>
+        </span>
+        底部
+      </button>
+    </div>
   </div>
 </template>
 
 <script setup>
+import { ref } from "vue";
 import VirtualList from "./VirtualList.vue";
 
 const props = defineProps({
@@ -116,6 +151,10 @@ const props = defineProps({
   showAiTags: {
     type: Boolean,
     default: true,
+  },
+  enableDrag: {
+    type: Boolean,
+    default: false,
   },
   emptyText: {
     type: String,
@@ -149,9 +188,21 @@ const props = defineProps({
     type: Function,
     default: null,
   },
+  onDropTab: {
+    type: Function,
+    default: null,
+  },
 });
 
+const dragOverTabId = ref(null);
+const draggingTabId = ref(null);
+const dragInProgress = ref(false);
+const listRef = ref(null);
+
 function handleToggleSelection(tabId) {
+  if (dragInProgress.value) {
+    return;
+  }
   if (props.onToggleSelection) {
     props.onToggleSelection(tabId);
   }
@@ -184,6 +235,106 @@ function handleDiscard(tab) {
 function handleSaveAi(tab, closeTab) {
   if (props.onSaveAiGroup) {
     props.onSaveAiGroup(tab, closeTab);
+  }
+}
+
+function isInteractiveTarget(target) {
+  if (!target) {
+    return false;
+  }
+  return Boolean(
+    target.closest("button") ||
+      target.closest("input") ||
+      target.closest(".tab-link") ||
+      target.closest(".tab-tag")
+  );
+}
+
+function handleDragStart(tab, event) {
+  if (!props.enableDrag) {
+    return;
+  }
+  if (isInteractiveTarget(event.target)) {
+    event.preventDefault();
+    return;
+  }
+  draggingTabId.value = tab.id;
+  dragInProgress.value = true;
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", String(tab.id));
+  }
+}
+
+function handleDragOver(tab, event) {
+  if (!props.enableDrag) {
+    return;
+  }
+  event.preventDefault();
+  dragOverTabId.value = tab.id;
+}
+
+function handleDragLeave(tab) {
+  if (!props.enableDrag) {
+    return;
+  }
+  if (dragOverTabId.value === tab.id) {
+    dragOverTabId.value = null;
+  }
+}
+
+function handleDrop(tab, event) {
+  if (!props.enableDrag) {
+    return;
+  }
+  event.preventDefault();
+  dragOverTabId.value = null;
+  if (props.onDropTab) {
+    const draggedId = draggingTabId.value
+      ? String(draggingTabId.value)
+      : event.dataTransfer
+        ? String(event.dataTransfer.getData("text/plain") || "")
+        : "";
+    if (!draggedId) {
+      props.onDropTab(tab, []);
+      return;
+    }
+    const orderedTabs = props.rows
+      .filter((row) => row.type === "tab" && row.tab && row.tab.id)
+      .map((row) => row.tab);
+    const draggedTab = orderedTabs.find((rowTab) => String(rowTab.id) === draggedId);
+    if (!draggedTab) {
+      props.onDropTab(tab, []);
+      return;
+    }
+    const selectedTabs = orderedTabs.filter((rowTab) =>
+      Boolean(props.selectedMap[String(rowTab.id)])
+    );
+    const isDraggedSelected = selectedTabs.some(
+      (rowTab) => String(rowTab.id) === draggedId
+    );
+    const selection = isDraggedSelected ? selectedTabs : [draggedTab];
+    props.onDropTab(tab, selection);
+  }
+}
+
+function handleDragEnd() {
+  draggingTabId.value = null;
+  dragOverTabId.value = null;
+  setTimeout(() => {
+    dragInProgress.value = false;
+  }, 0);
+}
+
+function scrollToTop() {
+  if (listRef.value && listRef.value.scrollToTop) {
+    listRef.value.scrollToTop();
+  }
+}
+
+function scrollToBottom() {
+  if (listRef.value && listRef.value.scrollToBottom) {
+    listRef.value.scrollToBottom();
   }
 }
 

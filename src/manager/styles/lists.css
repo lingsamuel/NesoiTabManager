@@ -14,6 +14,11 @@
   flex: 1;
 }
 
+.tabs,
+.discard-list {
+  padding-bottom: 56px;
+}
+
 .virtual-content {
   position: relative;
   width: 100%;
@@ -76,6 +81,18 @@
 
 .tab-row:hover {
   background: #f8fafc;
+}
+
+.tab-row.draggable {
+  cursor: grab;
+}
+
+.tab-row.dragging {
+  opacity: 0.6;
+}
+
+.tab-row.drag-target {
+  box-shadow: inset 0 -2px 0 #cbd5f5;
 }
 
 .tab-body {
@@ -192,6 +209,22 @@
   align-items: center;
   gap: 4px;
   justify-content: flex-end;
+}
+
+.list-fab {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 3;
+}
+
+.fab-btn {
+  padding: 6px 10px;
+  font-size: 10px;
+  box-shadow: 0 6px 12px rgba(15, 23, 42, 0.12);
 }
 
 .tab-action {
