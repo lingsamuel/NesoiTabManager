@@ -1,0 +1,24 @@
+:root {
+  --bg: #ffffff;
+  --panel: #ffffff;
+  --ink: #3f3f3f;
+  --muted: #8a8a8a;
+  --accent: #4b5563;
+  --accent-dark: #374151;
+  --stroke: #e5e7eb;
+  --shadow: 0 6px 12px rgba(0, 0, 0, 0.08);
+  --radius: 14px;
+  --list-row-height: 110px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: "IBM Plex Sans", "Segoe UI", Tahoma, sans-serif;
+  color: var(--ink);
+  background: var(--bg);
+}

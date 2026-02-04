@@ -1,0 +1,127 @@
+.brand-title {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.brand-subtitle {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.nav-item {
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  padding: 10px 12px;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.nav-item.active {
+  background: var(--accent);
+  color: #f9fafb;
+}
+
+.nav-icon {
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+}
+
+.nav-icon svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.sub-sidebar {
+  padding: 20px 14px;
+  background: #ffffff;
+  border-right: 1px solid var(--stroke);
+}
+
+.sub-sidebar.hidden {
+  display: none;
+}
+
+.sub-title {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.sub-items {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.sub-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  background: #f3f4f6;
+  border: 1px solid transparent;
+  padding: 6px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  cursor: pointer;
+  color: var(--ink);
+}
+
+.sub-item.add {
+  justify-content: flex-start;
+  gap: 8px;
+  color: var(--muted);
+}
+
+.sub-icon {
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+}
+
+.sub-icon svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.sub-item.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #f9fafb;
+}
+
+.sub-item small {
+  opacity: 0.75;
+}

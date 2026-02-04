@@ -1,0 +1,43 @@
+button,
+.import-label {
+  border: none;
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+button.primary {
+  background: var(--accent);
+  color: #f9fafb;
+  box-shadow: 0 6px 14px rgba(75, 85, 99, 0.25);
+}
+
+button.primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(75, 85, 99, 0.3);
+}
+
+button.ghost,
+.import-label.ghost {
+  background: #f3f4f6;
+  color: var(--ink);
+}
+
+button.ghost.danger,
+.import-label.ghost.danger,
+button.tab-action.danger,
+button.list-action.danger {
+  color: #b42318;
+}
+
+button.ghost:hover,
+.import-label.ghost:hover {
+  transform: translateY(-1px);
+}
