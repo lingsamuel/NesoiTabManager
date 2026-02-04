@@ -134,6 +134,10 @@ function useWindows(options = {}) {
     }
   }
 
+  function clearWindowSelection() {
+    Object.keys(selectedTabIds).forEach((key) => delete selectedTabIds[key]);
+  }
+
   function getWindowTabsFlat() {
     const results = [];
     windows.value.forEach((win) => {
@@ -190,6 +194,7 @@ function useWindows(options = {}) {
     setVisibleSelection,
     toggleTab,
     toggleTabSelection,
+    clearWindowSelection,
     getSelectedWindowTabs,
     loadWindows,
   };

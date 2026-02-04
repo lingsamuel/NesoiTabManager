@@ -83,6 +83,7 @@
         :on-select-all="() => setVisibleSelection(true)"
         :on-clear="() => setVisibleSelection(false)"
         :on-close-selected="closeSelectedTabs"
+        :on-open-move-modal="openWindowMoveModal"
         :on-open-ai="openAiModal"
         :on-open-save="openSaveModal"
         :on-toggle-hide-discarded="toggleHideDiscarded"
@@ -175,6 +176,54 @@
               取消
             </button>
             <button class="primary btn-icon" @click="confirmMoveSelected">
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M5 12h14M13 6l6 6-6 6" />
+                </svg>
+              </span>
+              确认移动
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="showWindowMoveModal" class="modal-backdrop" @click.self="closeWindowMoveModal">
+        <div class="modal">
+          <div class="modal-header">
+            <h3>移动到窗口</h3>
+            <button class="ghost btn-icon" @click="closeWindowMoveModal">
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M6 6l12 12M18 6l-12 12" />
+                </svg>
+              </span>
+              关闭
+            </button>
+          </div>
+          <div class="modal-body">
+            <div class="form-row">
+              <label for="move-window-select">目标窗口</label>
+              <select id="move-window-select" v-model="windowMoveTargetId">
+                <option v-for="win in windowMoveTargets" :key="win.id" :value="win.id">
+                  {{ win.label }}（{{ win.count }}）
+                </option>
+                <option :value="NEW_WINDOW_VALUE">新建窗口</option>
+              </select>
+            </div>
+            <div class="status" :class="windowMoveStatus.type">
+              {{ windowMoveStatus.message }}
+            </div>
+          </div>
+          <div class="modal-actions">
+            <button class="ghost btn-icon" @click="closeWindowMoveModal">
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M6 6l12 12M18 6l-12 12" />
+                </svg>
+              </span>
+              取消
+            </button>
+            <button class="primary btn-icon" @click="confirmMoveWindowTabs">
               <span class="icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24">
                   <path d="M5 12h14M13 6l6 6-6 6" />
@@ -397,7 +446,7 @@ import { useDiscard } from "./composables/useDiscard.js";
 import { MOVE_NEW_LIST_VALUE, NEW_LIST_VALUE, useLists } from "./composables/useLists.js";
 import { useWindows } from "./composables/useWindows.js";
 import { request } from "./utils/request.js";
-import { removeTabsInBatches } from "./utils/helpers.js";
+import { moveTabsInBatches, removeTabsInBatches } from "./utils/helpers.js";
 
 const navItems = [
   {
@@ -423,11 +472,14 @@ const navItems = [
   },
 ];
 
+const NEW_WINDOW_VALUE = "__new_window__";
+
 const view = ref("windows");
 const hideDiscarded = ref(false);
 const hasSubSidebar = computed(() => view.value === "windows" || view.value === "lists");
 const status = reactive({ message: "", type: "" });
 const settingsStatus = reactive({ message: "", type: "" });
+const windowMoveStatus = reactive({ message: "", type: "" });
 
 const {
   windows,
@@ -441,6 +493,7 @@ const {
   setVisibleSelection,
   toggleTab,
   toggleTabSelection,
+  clearWindowSelection,
   getSelectedWindowTabs,
   loadWindows,
 } = useWindows({ hideDiscarded });
@@ -512,10 +565,20 @@ const {
 const aiContextView = ref("windows");
 const saveContextView = ref("windows");
 const showMoveModal = ref(false);
+const showWindowMoveModal = ref(false);
 const showCreateListModal = ref(false);
 const showAiModal = ref(false);
 const showSaveModal = ref(false);
 const closeAfter = ref(false);
+const windowMoveTargetId = ref(NEW_WINDOW_VALUE);
+
+const windowMoveTargets = computed(() =>
+  windows.value.map((win, index) => ({
+    id: String(win.id),
+    label: `窗口 ${index + 1}`,
+    count: win.tabs ? win.tabs.length : 0,
+  }))
+);
 
 let resetAiTags = () => {};
 const refreshWindows = async () => {
@@ -562,6 +625,7 @@ function setView(nextView) {
   showAiModal.value = false;
   showSaveModal.value = false;
   showMoveModal.value = false;
+  showWindowMoveModal.value = false;
   showCreateListModal.value = false;
   if (nextView === "discard") {
     loadDiscardHistory();
@@ -591,6 +655,21 @@ function openMoveModal() {
 
 function closeMoveModal() {
   showMoveModal.value = false;
+}
+
+function setWindowMoveStatus(message, type) {
+  windowMoveStatus.message = message;
+  windowMoveStatus.type = type || "";
+}
+
+function openWindowMoveModal() {
+  setWindowMoveStatus("", "");
+  windowMoveTargetId.value = NEW_WINDOW_VALUE;
+  showWindowMoveModal.value = true;
+}
+
+function closeWindowMoveModal() {
+  showWindowMoveModal.value = false;
 }
 
 function openAiModal() {
@@ -632,6 +711,67 @@ async function confirmMoveSelected() {
   await moveSelectedListItems();
   if (listStatus.type !== "error") {
     closeMoveModal();
+  }
+}
+
+async function createWindowWithTab(tabId) {
+  return new Promise((resolve, reject) => {
+    chrome.windows.create({ tabId }, (win) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message || "创建窗口失败"));
+        return;
+      }
+      if (!win || win.id === undefined) {
+        reject(new Error("创建窗口失败"));
+        return;
+      }
+      resolve(win);
+    });
+  });
+}
+
+async function moveSelectedTabsToWindow() {
+  const selectedTabs = getSelectedWindowTabs();
+  if (selectedTabs.length === 0) {
+    setWindowMoveStatus("请先选择要移动的标签页。", "error");
+    return false;
+  }
+  const tabIds = selectedTabs.map((tab) => tab.id).filter(Boolean);
+  if (tabIds.length === 0) {
+    setWindowMoveStatus("未找到可移动的标签页。", "error");
+    return false;
+  }
+  setWindowMoveStatus("正在移动标签页...", "");
+  try {
+    if (windowMoveTargetId.value === NEW_WINDOW_VALUE) {
+      const firstTabId = tabIds[0];
+      const targetWindow = await createWindowWithTab(firstTabId);
+      const rest = tabIds.slice(1);
+      if (rest.length > 0) {
+        await moveTabsInBatches(rest, targetWindow.id);
+      }
+    } else {
+      const targetWindowId = Number(windowMoveTargetId.value);
+      if (!Number.isFinite(targetWindowId)) {
+        setWindowMoveStatus("目标窗口无效。", "error");
+        return false;
+      }
+      await moveTabsInBatches(tabIds, targetWindowId);
+    }
+    setWindowMoveStatus(`已移动 ${tabIds.length} 个标签页。`, "ok");
+    clearWindowSelection();
+    await refreshWindows();
+    return true;
+  } catch (error) {
+    setWindowMoveStatus(error.message || "移动失败。", "error");
+    return false;
+  }
+}
+
+async function confirmMoveWindowTabs() {
+  const ok = await moveSelectedTabsToWindow();
+  if (ok) {
+    closeWindowMoveModal();
   }
 }
 

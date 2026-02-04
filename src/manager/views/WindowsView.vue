@@ -38,6 +38,14 @@
           </span>
           关闭所选
         </button>
+        <button class="ghost btn-icon" @click="onOpenMoveModal">
+          <span class="icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M5 12h14M13 6l6 6-6 6" />
+            </svg>
+          </span>
+          移动到
+        </button>
         <button class="ghost btn-icon" @click="onOpenAi">
           <span class="icon" aria-hidden="true">
             <svg viewBox="0 0 24 24">
@@ -107,6 +115,10 @@ const props = defineProps({
     default: null,
   },
   onCloseSelected: {
+    type: Function,
+    default: null,
+  },
+  onOpenMoveModal: {
     type: Function,
     default: null,
   },

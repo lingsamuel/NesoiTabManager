@@ -16,6 +16,30 @@ async function removeTabsInBatches(ids, options = {}) {
   }
 }
 
+async function moveTabsInBatches(tabIds, windowId, options = {}) {
+  const batchSize = Number.isFinite(options.batchSize) ? options.batchSize : 100;
+  const gapMs = Number.isFinite(options.gapMs) ? options.gapMs : 150;
+  for (let i = 0; i < tabIds.length; i += batchSize) {
+    const batch = tabIds.slice(i, i + batchSize);
+    await new Promise((resolve, reject) => {
+      chrome.tabs.move(
+        batch,
+        { windowId, index: -1 },
+        () => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message || "移动失败"));
+            return;
+          }
+          resolve();
+        }
+      );
+    });
+    if (i + batchSize < tabIds.length) {
+      await delay(gapMs);
+    }
+  }
+}
+
 function getSelectedTabsFrom(selectionMap, sourceTabs) {
   const selected = new Set(Object.keys(selectionMap));
   const results = [];
@@ -72,5 +96,6 @@ export {
   getBaseDomain,
   getSelectedTabsFrom,
   normalizeWhitelistInput,
+  moveTabsInBatches,
   removeTabsInBatches,
 };
