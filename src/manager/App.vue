@@ -656,6 +656,28 @@
             </div>
           </div>
           <div class="status" :class="discardDebugStatus.type">{{ discardDebugStatus.message }}</div>
+          <div v-if="discardLastBatch.length > 0" class="discard-last">
+            <div class="discard-last-header">
+              上次冻结（{{ discardLastSummary.count }}）{{ discardLastSummary.at ? " · " + discardLastSummary.at : "" }}
+            </div>
+            <div class="discard-last-list">
+              <div v-for="item in discardLastBatch" :key="item.key" class="tab-row discard-row">
+                <img
+                  class="tab-icon"
+                  :class="{ hidden: !item.favIconUrl }"
+                  :src="item.favIconUrl || ''"
+                  @error="handleIconError($event)"
+                />
+                <div class="tab-body">
+                  <div class="tab-title">{{ item.title || item.url || "未命名" }}</div>
+                  <div class="tab-url">{{ item.url || "" }}</div>
+                  <div class="discard-meta">
+                    冻结时间：{{ formatLocalTime(item.discardedAt) }} · 闲置 {{ item.idleMinutes }} 分钟
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
           <div v-if="discardCandidates.length === 0" class="virtual-empty">暂无候选标签页。</div>
           <VirtualList
             v-else
@@ -930,6 +952,8 @@ const discardConfig = reactive({
 
 const discardCandidates = ref([]);
 const discardSummary = reactive({ total: 0, updatedAt: "" });
+const discardLastBatch = ref([]);
+const discardLastSummary = reactive({ count: 0, at: "" });
 
 const selectedListTarget = ref(NEW_LIST_VALUE);
 const newListName = ref("");
@@ -1910,6 +1934,12 @@ async function loadDiscardCandidates() {
   }));
   discardSummary.total = Number(response.total) || 0;
   discardSummary.updatedAt = new Date().toISOString();
+  discardLastBatch.value = (response.lastDiscarded || []).map((item, index) => ({
+    ...item,
+    key: `discard-last-${item.id || index}`,
+  }));
+  discardLastSummary.count = discardLastBatch.value.length;
+  discardLastSummary.at = response.lastDiscardedAt ? formatLocalTime(response.lastDiscardedAt) : "";
   if (!response.enabled) {
     setStatus(discardDebugStatus, "自动冻结未开启，请先在设置中启用。", "error");
     return;

@@ -5,12 +5,19 @@ const DISCARD_ALARM = "discardSweep";
 const MANAGER_PAGE = "ui/manager.html";
 
 const tabLastActive = new Map();
+const discardSession = {
+  startEpoch: 0,
+  lastDiscarded: [],
+  lastDiscardedAt: "",
+};
 const activeTabByWindow = new Map();
 let focusedWindowId = null;
 let tabActivityReady = false;
 let tabActivityPromise = null;
 let discardSweepRunning = false;
 let discardConfigCache = null;
+const DISCARD_SESSION_KEY = "discardSession";
+const HAS_SESSION_STORAGE = Boolean(chrome.storage && chrome.storage.session);
 
 function clearActionPopup() {
   if (chrome.action && chrome.action.setPopup) {
@@ -27,6 +34,24 @@ function storageGet(key) {
 function storageSet(obj) {
   return new Promise((resolve) => {
     chrome.storage.local.set(obj, () => resolve());
+  });
+}
+
+function storageSessionGet(key) {
+  if (!HAS_SESSION_STORAGE) {
+    return Promise.resolve(undefined);
+  }
+  return new Promise((resolve) => {
+    chrome.storage.session.get(key, (result) => resolve(result[key]));
+  });
+}
+
+function storageSessionSet(obj) {
+  if (!HAS_SESSION_STORAGE) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    chrome.storage.session.set(obj, () => resolve());
   });
 }
 
@@ -125,6 +150,53 @@ function resetTabActivity() {
   tabActivityPromise = null;
 }
 
+async function resetDiscardSession() {
+  const now = Date.now();
+  discardSession.startEpoch = now;
+  discardSession.lastDiscarded = [];
+  discardSession.lastDiscardedAt = "";
+  await storageSessionSet({
+    [DISCARD_SESSION_KEY]: {
+      startEpoch: now,
+      lastDiscarded: [],
+      lastDiscardedAt: "",
+    },
+  });
+}
+
+async function ensureDiscardSession() {
+  if (discardSession.startEpoch) {
+    return;
+  }
+  const stored = await storageSessionGet(DISCARD_SESSION_KEY);
+  const now = Date.now();
+  const startEpoch = stored && Number.isFinite(Number(stored.startEpoch)) ? Number(stored.startEpoch) : 0;
+  discardSession.startEpoch = startEpoch > 0 ? startEpoch : now;
+  discardSession.lastDiscarded = Array.isArray(stored && stored.lastDiscarded)
+    ? stored.lastDiscarded
+    : [];
+  discardSession.lastDiscardedAt = stored && stored.lastDiscardedAt ? String(stored.lastDiscardedAt) : "";
+  if (!startEpoch) {
+    await storageSessionSet({
+      [DISCARD_SESSION_KEY]: {
+        startEpoch: discardSession.startEpoch,
+        lastDiscarded: discardSession.lastDiscarded,
+        lastDiscardedAt: discardSession.lastDiscardedAt,
+      },
+    });
+  }
+}
+
+async function saveDiscardSession() {
+  await storageSessionSet({
+    [DISCARD_SESSION_KEY]: {
+      startEpoch: discardSession.startEpoch,
+      lastDiscarded: discardSession.lastDiscarded,
+      lastDiscardedAt: discardSession.lastDiscardedAt,
+    },
+  });
+}
+
 async function getDiscardConfig() {
   if (discardConfigCache) {
     return discardConfigCache;
@@ -141,6 +213,7 @@ async function setDiscardConfig(config) {
   await storageSet({ [DISCARD_CONFIG_KEY]: sanitized });
   if (sanitized.enabled && !prevEnabled) {
     resetTabActivity();
+    await resetDiscardSession();
   }
   await ensureDiscardAlarm(sanitized);
   return sanitized;
@@ -270,13 +343,21 @@ function touchTab(tabId, time) {
   tabLastActive.set(String(tabId), time || Date.now());
 }
 
-function getLastActive(tabId, now) {
-  const key = String(tabId);
-  if (!tabLastActive.has(key)) {
-    tabLastActive.set(key, now);
-    return now;
+function getLastActive(tab, now) {
+  const key = String(tab.id);
+  let value = tabLastActive.has(key) ? tabLastActive.get(key) : 0;
+  const lastAccessed = Number.isFinite(Number(tab.lastAccessed)) ? Number(tab.lastAccessed) : 0;
+  if (lastAccessed > value) {
+    value = lastAccessed;
   }
-  return tabLastActive.get(key);
+  const fallback = discardSession.startEpoch || now;
+  if (!value) {
+    value = fallback;
+  } else if (fallback > value) {
+    value = fallback;
+  }
+  tabLastActive.set(key, value);
+  return value;
 }
 
 function queryAllTabs() {
@@ -294,11 +375,12 @@ async function ensureTabActivity() {
     return;
   }
   tabActivityPromise = new Promise((resolve) => {
-    queryAllTabs().then((tabs) => {
-      const now = Date.now();
+    queryAllTabs().then(async (tabs) => {
+      await ensureDiscardSession();
+      const baseTime = discardSession.startEpoch || Date.now();
       tabs.forEach((tab) => {
         if (tab && tab.id !== undefined) {
-          tabLastActive.set(String(tab.id), now);
+          tabLastActive.set(String(tab.id), baseTime);
           if (tab.active && tab.windowId !== undefined) {
             activeTabByWindow.set(tab.windowId, tab.id);
           }
@@ -334,7 +416,7 @@ function evaluateDiscardCandidate(tab, config, now) {
   if (isTabWhitelisted(tab, config)) {
     return null;
   }
-  const lastActive = getLastActive(tab.id, now);
+  const lastActive = getLastActive(tab, now);
   const idleMs = now - lastActive;
   if (idleMs < config.idleMinutes * 60 * 1000) {
     return null;
@@ -363,10 +445,12 @@ async function runDiscardSweep() {
     if (!config.enabled) {
       return;
     }
+    await ensureDiscardSession();
     await ensureTabActivity();
     const now = Date.now();
     const tabs = await queryAllTabs();
     const candidates = [];
+    const candidateDetails = [];
     for (let i = 0; i < tabs.length; i += 1) {
       const tab = tabs[i];
       const result = evaluateDiscardCandidate(tab, config, now);
@@ -374,12 +458,25 @@ async function runDiscardSweep() {
         continue;
       }
       candidates.push(tab.id);
+      candidateDetails.push({
+        id: tab.id,
+        windowId: tab.windowId,
+        title: tab.title || tab.url || "未命名",
+        url: tab.url || "",
+        favIconUrl: tab.favIconUrl || "",
+        idleMinutes: result.idleMinutes,
+        lastActive: result.lastActive,
+        discardedAt: now,
+      });
       if (candidates.length >= config.batchLimit) {
         break;
       }
     }
     if (candidates.length > 0) {
       await discardTabs(candidates);
+      discardSession.lastDiscarded = candidateDetails;
+      discardSession.lastDiscardedAt = new Date(now).toISOString();
+      await saveDiscardSession();
     }
   } finally {
     discardSweepRunning = false;
@@ -387,9 +484,16 @@ async function runDiscardSweep() {
 }
 
 async function getDiscardCandidates(limit) {
+  await ensureDiscardSession();
   const config = await getDiscardConfig();
   if (!config.enabled) {
-    return { candidates: [], total: 0, enabled: false };
+    return {
+      candidates: [],
+      total: 0,
+      enabled: false,
+      lastDiscarded: discardSession.lastDiscarded || [],
+      lastDiscardedAt: discardSession.lastDiscardedAt || "",
+    };
   }
   await ensureTabActivity();
   const now = Date.now();
@@ -417,7 +521,13 @@ async function getDiscardCandidates(limit) {
       });
     }
   }
-  return { candidates, total, enabled: config.enabled };
+  return {
+    candidates,
+    total,
+    enabled: config.enabled,
+    lastDiscarded: discardSession.lastDiscarded || [],
+    lastDiscardedAt: discardSession.lastDiscardedAt || "",
+  };
 }
 
 function ensureDiscardAlarm(config) {
@@ -431,7 +541,10 @@ function ensureDiscardAlarm(config) {
 
 function initializeDiscardSystem() {
   getDiscardConfig()
-    .then((config) => ensureDiscardAlarm(config))
+    .then(async (config) => {
+      await ensureDiscardSession();
+      await ensureDiscardAlarm(config);
+    })
     .catch(() => {});
 }
 
@@ -1061,14 +1174,14 @@ chrome.runtime.onInstalled.addListener(() => {
   clearActionPopup();
   rebuildContextMenus();
   resetTabActivity();
-  initializeDiscardSystem();
+  resetDiscardSession().then(() => initializeDiscardSystem());
 });
 
 chrome.runtime.onStartup.addListener(() => {
   clearActionPopup();
   rebuildContextMenus();
   resetTabActivity();
-  initializeDiscardSystem();
+  resetDiscardSession().then(() => initializeDiscardSystem());
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
