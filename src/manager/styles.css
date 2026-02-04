@@ -168,11 +168,23 @@ body {
 
 .content {
   padding: 24px;
-  overflow-y: auto;
+  overflow: hidden;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
 }
 
 .view {
-  display: block;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.view-settings {
+  overflow-y: auto;
 }
 
 .content-header {
@@ -255,6 +267,14 @@ body {
   box-shadow: 0 6px 12px rgba(0, 0, 0, 0.06);
 }
 
+.tabs-panel,
+.list-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .panel-header {
   display: flex;
   align-items: center;
@@ -295,10 +315,18 @@ body {
 }
 
 .virtual-scroller {
-  max-height: 520px;
+  height: 100%;
+  max-height: none;
+  flex: 1;
   overflow-y: auto;
   padding-right: 4px;
   position: relative;
+}
+
+.tabs,
+.list-items {
+  min-height: 0;
+  flex: 1;
 }
 
 .virtual-content {
@@ -427,7 +455,8 @@ body {
 }
 
 .list-items {
-  max-height: 520px;
+  height: 100%;
+  max-height: none;
   overflow-y: auto;
   padding-right: 4px;
   position: relative;

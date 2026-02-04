@@ -73,7 +73,7 @@
     </aside>
 
     <main class="content">
-      <section v-show="view === 'windows'" class="view active">
+      <section v-show="view === 'windows'" class="view view-windows">
         <div class="content-header">
           <div>
             <h1>打开的窗口</h1>
@@ -104,10 +104,26 @@
               </span>
               关闭所选
             </button>
+            <button class="ghost btn-icon" @click="openAiModal">
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M12 3l2.2 4.4L19 9l-4.8 1.6L12 15l-2.2-4.4L5 9l4.8-1.6z" />
+                </svg>
+              </span>
+              AI 分组
+            </button>
+            <button class="ghost btn-icon" @click="openSaveModal">
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M6 20h12V8l-4-4H6zM9 20v-6h6v6" />
+                </svg>
+              </span>
+              保存所选
+            </button>
           </div>
         </div>
 
-        <div class="panel">
+        <div class="panel tabs-panel">
           <div v-if="windowRows.length === 0" class="virtual-empty">未找到打开的标签页。</div>
           <VirtualList
             v-else
@@ -176,91 +192,10 @@
           </VirtualList>
         </div>
 
-        <div class="panel-grid">
-          <section class="panel">
-            <div class="panel-header">
-              <h2>AI 分组</h2>
-            </div>
-            <div class="form-row">
-              <div class="hint">仅使用标题与基础域名，并结合打开顺序生成标签。</div>
-            </div>
-            <div class="form-row ai-actions">
-              <button class="ghost btn-icon" @click="runAiGrouping">
-                <span class="icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24">
-                    <path d="M12 3l2.2 4.4L19 9l-4.8 1.6L12 15l-2.2-4.4L5 9l4.8-1.6z" />
-                  </svg>
-                </span>
-                AI 分组
-              </button>
-              <button class="primary btn-icon" @click="applyAiGrouping">
-                <span class="icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24">
-                    <path d="M4 7h10M4 12h16M4 17h12" />
-                  </svg>
-                </span>
-                应用分组生成新列表
-              </button>
-            </div>
-            <div class="status" :class="aiStatus.type">{{ aiStatus.message }}</div>
-          </section>
-
-          <section class="panel">
-            <div class="panel-header">
-              <h2>保存选择</h2>
-            </div>
-            <div class="form-row">
-              <label for="list-select">目标列表</label>
-              <select id="list-select" v-model="selectedListTarget">
-                <option v-if="lists.length === 0" :value="NEW_LIST_VALUE">新建列表</option>
-                <template v-else>
-                  <option v-for="list in lists" :key="list.id" :value="list.id">
-                    {{ list.name }}（{{ list.items ? list.items.length : 0 }}）
-                  </option>
-                  <option :value="NEW_LIST_VALUE">新建列表</option>
-                </template>
-              </select>
-            </div>
-            <div class="form-row" :class="{ hidden: selectedListTarget !== NEW_LIST_VALUE }">
-              <label for="new-list-name">新建列表名称</label>
-              <input
-                id="new-list-name"
-                type="text"
-                placeholder="例如：研究资料"
-                v-model="newListName"
-              />
-            </div>
-            <div class="form-row" :class="{ hidden: selectedListTarget !== NEW_LIST_VALUE }">
-              <label for="new-list-description">新建列表描述（可选）</label>
-              <textarea
-                id="new-list-description"
-                rows="3"
-                placeholder="用于指导 AI 分组，例如：工作相关、学习资料"
-                v-model="newListDescription"
-              ></textarea>
-            </div>
-            <div class="form-row checkbox-row">
-              <label>
-                <input type="checkbox" v-model="closeAfter" />
-                保存后关闭标签页
-              </label>
-            </div>
-            <div class="form-row">
-              <button class="primary btn-icon" @click="saveSelectedTabs">
-                <span class="icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24">
-                    <path d="M6 20h12V8l-4-4H6zM9 20v-6h6v6" />
-                  </svg>
-                </span>
-                保存所选标签页
-              </button>
-            </div>
-            <div class="status" :class="status.type">{{ status.message }}</div>
-          </section>
-        </div>
+        
       </section>
 
-      <section v-show="view === 'lists'" class="view">
+      <section v-show="view === 'lists'" class="view view-lists">
         <div class="content-header">
           <div class="content-title">
             <div v-if="isEditingListName" class="title-edit">
@@ -394,7 +329,7 @@
           </div>
         </section>
 
-        <div class="panel">
+        <div class="panel list-panel">
           <div v-if="listItems.length === 0" class="virtual-empty">暂无已保存的列表。</div>
           <VirtualList
             v-else
@@ -519,6 +454,117 @@
         </div>
       </div>
 
+      <div v-if="showAiModal" class="modal-backdrop" @click.self="closeAiModal">
+        <div class="modal">
+          <div class="modal-header">
+            <h3>AI 分组</h3>
+            <button class="ghost btn-icon" @click="closeAiModal">
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M6 6l12 12M18 6l-12 12" />
+                </svg>
+              </span>
+              关闭
+            </button>
+          </div>
+          <div class="modal-body">
+            <div class="hint">仅使用标题与基础域名，并结合打开顺序生成标签。</div>
+            <div class="form-row ai-actions">
+              <button class="ghost btn-icon" @click="runAiGrouping">
+                <span class="icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <path d="M12 3l2.2 4.4L19 9l-4.8 1.6L12 15l-2.2-4.4L5 9l4.8-1.6z" />
+                  </svg>
+                </span>
+                AI 分组
+              </button>
+              <button class="primary btn-icon" @click="applyAiGrouping">
+                <span class="icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <path d="M4 7h10M4 12h16M4 17h12" />
+                  </svg>
+                </span>
+                应用分组生成新列表
+              </button>
+            </div>
+            <div class="status" :class="aiStatus.type">{{ aiStatus.message }}</div>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="showSaveModal" class="modal-backdrop" @click.self="closeSaveModal">
+        <div class="modal">
+          <div class="modal-header">
+            <h3>保存所选标签页</h3>
+            <button class="ghost btn-icon" @click="closeSaveModal">
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M6 6l12 12M18 6l-12 12" />
+                </svg>
+              </span>
+              关闭
+            </button>
+          </div>
+          <div class="modal-body">
+            <div class="form-row">
+              <label for="list-select">目标列表</label>
+              <select id="list-select" v-model="selectedListTarget">
+                <option v-if="lists.length === 0" :value="NEW_LIST_VALUE">新建列表</option>
+                <template v-else>
+                  <option v-for="list in lists" :key="list.id" :value="list.id">
+                    {{ list.name }}（{{ list.items ? list.items.length : 0 }}）
+                  </option>
+                  <option :value="NEW_LIST_VALUE">新建列表</option>
+                </template>
+              </select>
+            </div>
+            <div class="form-row" :class="{ hidden: selectedListTarget !== NEW_LIST_VALUE }">
+              <label for="new-list-name">新建列表名称</label>
+              <input
+                id="new-list-name"
+                type="text"
+                placeholder="例如：研究资料"
+                v-model="newListName"
+              />
+            </div>
+            <div class="form-row" :class="{ hidden: selectedListTarget !== NEW_LIST_VALUE }">
+              <label for="new-list-description">新建列表描述（可选）</label>
+              <textarea
+                id="new-list-description"
+                rows="3"
+                placeholder="用于指导 AI 分组，例如：工作相关、学习资料"
+                v-model="newListDescription"
+              ></textarea>
+            </div>
+            <div class="form-row checkbox-row">
+              <label>
+                <input type="checkbox" v-model="closeAfter" />
+                保存后关闭标签页
+              </label>
+            </div>
+            <div class="status" :class="status.type">{{ status.message }}</div>
+          </div>
+          <div class="modal-actions">
+            <button class="ghost btn-icon" @click="closeSaveModal">
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M6 6l12 12M18 6l-12 12" />
+                </svg>
+              </span>
+              取消
+            </button>
+            <button class="primary btn-icon" @click="saveSelectedTabs">
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M6 20h12V8l-4-4H6zM9 20v-6h6v6" />
+                </svg>
+              </span>
+              保存
+            </button>
+          </div>
+        </div>
+      </div>
+
       <div v-if="showCreateListModal" class="modal-backdrop" @click.self="closeCreateListModal">
         <div class="modal">
           <div class="modal-header">
@@ -574,7 +620,7 @@
         </div>
       </div>
 
-      <section v-show="view === 'settings'" class="view">
+      <section v-show="view === 'settings'" class="view view-settings">
         <div class="content-header">
           <div>
             <h1>插件设置</h1>
@@ -713,6 +759,8 @@ const showMoveModal = ref(false);
 const showCreateListModal = ref(false);
 const createListName = ref("");
 const createListDescription = ref("");
+const showAiModal = ref(false);
+const showSaveModal = ref(false);
 
 const totalTabCount = computed(() =>
   windows.value.reduce((sum, win) => sum + (win.tabs ? win.tabs.length : 0), 0)
@@ -901,6 +949,24 @@ function closeMoveModal() {
   showMoveModal.value = false;
 }
 
+function openAiModal() {
+  setStatus(aiStatus, "", "");
+  showAiModal.value = true;
+}
+
+function closeAiModal() {
+  showAiModal.value = false;
+}
+
+function openSaveModal() {
+  setStatus(status, "", "");
+  showSaveModal.value = true;
+}
+
+function closeSaveModal() {
+  showSaveModal.value = false;
+}
+
 function openCreateListModal() {
   createListName.value = "";
   createListDescription.value = "";
@@ -918,6 +984,10 @@ function clearAiTags() {
 
 function setView(nextView) {
   view.value = nextView;
+  showAiModal.value = false;
+  showSaveModal.value = false;
+  showMoveModal.value = false;
+  showCreateListModal.value = false;
 }
 
 function setSelectedWindow(windowId) {
