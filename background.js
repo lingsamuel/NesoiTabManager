@@ -374,11 +374,12 @@ function getLastActive(tab, now) {
   if (lastAccessed > value) {
     value = lastAccessed;
   }
-  const fallback = discardSession.startEpoch || now;
+  const minBaseline = discardSession.startEpoch || now;
   if (!value) {
-    value = fallback;
-  } else if (fallback > value) {
-    value = fallback;
+    value = lastAccessed || now;
+  }
+  if (minBaseline > value) {
+    value = minBaseline;
   }
   tabLastActive.set(key, value);
   return value;
@@ -401,13 +402,28 @@ async function ensureTabActivity() {
   tabActivityPromise = new Promise((resolve) => {
     queryAllTabs().then(async (tabs) => {
       await ensureDiscardSession();
-      const baseTime = discardSession.startEpoch || Date.now();
+      const now = Date.now();
+      const baseTime = discardSession.startEpoch || now;
       tabs.forEach((tab) => {
-        if (tab && tab.id !== undefined) {
-          tabLastActive.set(String(tab.id), baseTime);
-          if (tab.active && tab.windowId !== undefined) {
-            activeTabByWindow.set(tab.windowId, tab.id);
+        if (!tab || tab.id === undefined) {
+          return;
+        }
+        const key = String(tab.id);
+        const existing = tabLastActive.get(key) || 0;
+        const lastAccessed = Number.isFinite(Number(tab.lastAccessed)) ? Number(tab.lastAccessed) : 0;
+        if (existing) {
+          if (lastAccessed > existing) {
+            tabLastActive.set(key, lastAccessed);
           }
+        } else {
+          let initial = lastAccessed || now;
+          if (baseTime > initial) {
+            initial = baseTime;
+          }
+          tabLastActive.set(key, initial);
+        }
+        if (tab.active && tab.windowId !== undefined) {
+          activeTabByWindow.set(tab.windowId, tab.id);
         }
       });
       tabActivityReady = true;
@@ -459,6 +475,24 @@ async function discardTabs(tabIds) {
   );
 }
 
+async function recordDiscardBatch(items, at, config) {
+  if (!Array.isArray(items) || items.length === 0) {
+    return;
+  }
+  const timestamp = at || Date.now();
+  discardSession.lastDiscarded = items;
+  discardSession.lastDiscardedAt = new Date(timestamp).toISOString();
+  const batch = {
+    id: `batch_${timestamp}_${Math.random().toString(36).slice(2, 8)}`,
+    at: discardSession.lastDiscardedAt,
+    items,
+  };
+  discardSession.historyBatches = discardSession.historyBatches || [];
+  discardSession.historyBatches.unshift(batch);
+  trimDiscardHistory(config.historyLimit);
+  await saveDiscardSession();
+}
+
 async function runDiscardSweep() {
   if (discardSweepRunning) {
     return;
@@ -502,22 +536,56 @@ async function runDiscardSweep() {
     }
     if (candidates.length > 0) {
       await discardTabs(candidates);
-      discardSession.lastDiscarded = candidateDetails;
-      discardSession.lastDiscardedAt = new Date(now).toISOString();
-      const batch = {
-        id: `batch_${now}_${Math.random().toString(36).slice(2, 8)}`,
-        at: discardSession.lastDiscardedAt,
-        items: candidateDetails,
-      };
-      discardSession.historyBatches = discardSession.historyBatches || [];
-      discardSession.historyBatches.unshift(batch);
       discardSession.freezeCounts = counts;
-      trimDiscardHistory(config.historyLimit);
-      await saveDiscardSession();
+      await recordDiscardBatch(candidateDetails, now, config);
     }
   } finally {
     discardSweepRunning = false;
   }
+}
+
+async function manualDiscard(tabId) {
+  if (!tabId) {
+    throw new Error("缺少标签页 ID。");
+  }
+  await ensureDiscardSession();
+  const config = await getDiscardConfig();
+  const tab = await getTabById(tabId);
+  if (!tab) {
+    throw new Error("未找到标签页。");
+  }
+  if (tab.discarded) {
+    return { skipped: true };
+  }
+  const now = Date.now();
+  const lastActive = getLastActive(tab, now);
+  const idleMinutes = Math.max(0, Math.floor((now - lastActive) / 60000));
+  const counts = discardSession.freezeCounts || {};
+  const nextCount = (counts[tabId] || 0) + 1;
+  counts[tabId] = nextCount;
+  const item = {
+    id: tab.id,
+    windowId: tab.windowId,
+    title: tab.title || tab.url || "未命名",
+    url: tab.url || "",
+    favIconUrl: tab.favIconUrl || "",
+    idleMinutes,
+    lastActive,
+    discardedAt: now,
+    freezeCount: nextCount,
+  };
+  await new Promise((resolve, reject) => {
+    chrome.tabs.discard(tabId, () => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message || "冻结失败"));
+        return;
+      }
+      resolve();
+    });
+  });
+  discardSession.freezeCounts = counts;
+  await recordDiscardBatch([item], now, config);
+  return { item };
 }
 
 async function getDiscardCandidates(limit) {
@@ -1146,6 +1214,18 @@ async function getTabsByIds(tabIds) {
   return results.filter(Boolean);
 }
 
+function getTabById(tabId) {
+  return new Promise((resolve) => {
+    chrome.tabs.get(tabId, (tab) => {
+      if (chrome.runtime.lastError) {
+        resolve(null);
+        return;
+      }
+      resolve(tab || null);
+    });
+  });
+}
+
 async function saveTabs({ tabIds, listId, newListName, closeTabs, newListDescription }) {
   const lists = await getLists();
   let targetList = null;
@@ -1517,6 +1597,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (action === "getDiscardHistory") {
     getDiscardHistory()
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
+    return true;
+  }
+
+  if (action === "manualDiscard") {
+    const tabId = message.tabId;
+    manualDiscard(tabId)
       .then((result) => sendResponse({ ok: true, ...result }))
       .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
     return true;

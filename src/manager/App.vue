@@ -1589,18 +1589,25 @@ async function request(action, payload) {
   });
 }
 
-function discardTab(tab) {
+async function discardTab(tab) {
   if (!tab || !tab.id) {
     return;
   }
-  chrome.tabs.discard(tab.id, () => {
-    if (view.value === "windows") {
-      loadWindows();
-    }
-    if (view.value === "discard") {
-      loadDiscardHistory();
-    }
-  });
+  const response = await request("manualDiscard", { tabId: tab.id });
+  const statusTarget = view.value === "discard" ? discardDebugStatus : status;
+  if (!response.ok) {
+    setStatus(statusTarget, response.error || "冻结失败。", "error");
+    return;
+  }
+  if (response.skipped) {
+    setStatus(statusTarget, "该标签已冻结。", "ok");
+  } else {
+    setStatus(statusTarget, "已冻结标签页。", "ok");
+  }
+  await loadWindows();
+  if (view.value === "discard") {
+    await loadDiscardHistory();
+  }
 }
 
 async function closeTab(tab) {
