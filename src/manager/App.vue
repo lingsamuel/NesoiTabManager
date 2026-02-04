@@ -73,273 +73,57 @@
     </aside>
 
     <main class="content">
-      <section v-show="view === 'windows'" class="view view-windows">
-        <div class="content-header">
-          <div>
-            <h1>打开的窗口</h1>
-            <div class="content-subtitle">{{ windowSubtitle }}</div>
-          </div>
-          <div class="content-actions">
-            <button class="ghost btn-icon" @click="setVisibleSelection(true)">
-              <span class="icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24">
-                  <path d="M20 6L9 17l-5-5" />
-                </svg>
-              </span>
-              全选
-            </button>
-            <button class="ghost btn-icon" @click="setVisibleSelection(false)">
-              <span class="icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24">
-                  <path d="M6 6l12 12M18 6l-12 12" />
-                </svg>
-              </span>
-              清空
-            </button>
-            <button class="ghost danger btn-icon" @click="closeSelectedTabs">
-              <span class="icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24">
-                  <path d="M6 6l12 12M18 6l-12 12" />
-                </svg>
-              </span>
-              关闭所选
-            </button>
-            <button class="ghost btn-icon" @click="openAiModal">
-              <span class="icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24">
-                  <path d="M12 3l2.2 4.4L19 9l-4.8 1.6L12 15l-2.2-4.4L5 9l4.8-1.6z" />
-                </svg>
-              </span>
-              AI 分组
-            </button>
-            <button class="ghost btn-icon" @click="openSaveModal">
-              <span class="icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24">
-                  <path d="M6 20h12V8l-4-4H6zM9 20v-6h6v6" />
-                </svg>
-              </span>
-              保存所选
-            </button>
-          </div>
-        </div>
+      <WindowsView
+        v-show="view === 'windows'"
+        :window-subtitle="windowSubtitle"
+        :window-rows="windowRows"
+        :selected-tab-ids="selectedTabIds"
+        :ai-tags="aiTags"
+        :on-select-all="() => setVisibleSelection(true)"
+        :on-clear="() => setVisibleSelection(false)"
+        :on-close-selected="closeSelectedTabs"
+        :on-open-ai="openAiModal"
+        :on-open-save="openSaveModal"
+        :on-toggle-selection="toggleTabSelection"
+        :on-toggle-tab="toggleTab"
+        :on-activate="activateTab"
+        :on-close="closeTab"
+        :on-discard="discardTab"
+        :on-save-ai-group="saveTabToAiGroup"
+      />
 
-        <TabListPanel
-          :rows="windowRows"
-          :item-height="44"
-          :selected-map="selectedTabIds"
-          :ai-tags="aiTags"
-          empty-text="未找到打开的标签页。"
-          empty-row-text="此窗口没有标签页。"
-          :on-toggle-selection="toggleTabSelection"
-          :on-toggle-tab="toggleTab"
-          :on-activate="activateTab"
-          :on-close="closeTab"
-          :on-discard="discardTab"
-          :on-save-ai-group="saveTabToAiGroup"
-        />
-
-        
-      </section>
-
-      <section v-show="view === 'lists'" class="view view-lists">
-        <div class="content-header">
-          <div class="content-title">
-            <div v-if="isEditingListName" class="title-edit">
-              <input
-                ref="listNameInput"
-                class="title-input"
-                type="text"
-                v-model="listNameDraft"
-                @keydown.enter.prevent="saveListName"
-                @keydown.esc.prevent="cancelEditListName"
-              />
-              <button class="ghost btn-icon" @click="cancelEditListName">
-                <span class="icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24">
-                    <path d="M6 6l12 12M18 6l-12 12" />
-                  </svg>
-                </span>
-                取消
-              </button>
-              <button class="primary btn-icon" @click="saveListName">
-                <span class="icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24">
-                    <path d="M6 20h12V8l-4-4H6zM9 20v-6h6v6" />
-                  </svg>
-                </span>
-                保存
-              </button>
-            </div>
-            <h1
-              v-else
-              class="clickable"
-              :class="{ disabled: !selectedList }"
-              @click="startEditListName"
-            >
-              {{ listTitle }}
-            </h1>
-            <div class="content-subtitle">{{ listSubtitle }}</div>
-          </div>
-          <div class="content-actions">
-            <button class="ghost btn-icon" @click="selectAllListItems">
-              <span class="icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24">
-                  <path d="M20 6L9 17l-5-5" />
-                </svg>
-              </span>
-              全选
-            </button>
-            <button class="ghost btn-icon" @click="clearListSelection">
-              <span class="icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24">
-                  <path d="M6 6l12 12M18 6l-12 12" />
-                </svg>
-              </span>
-              清空
-            </button>
-            <button class="ghost danger btn-icon" @click="deleteSelectedListItems">
-              <span class="icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24">
-                  <path d="M4 7h16M9 7v10M15 7v10M6 7l1-3h10l1 3M7 20h10" />
-                </svg>
-              </span>
-              删除所选
-            </button>
-            <button class="ghost btn-icon" :disabled="!selectedList" @click="openMoveModal">
-              <span class="icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24">
-                  <path d="M5 12h14M13 6l6 6-6 6" />
-                </svg>
-              </span>
-              移动所选
-            </button>
-            <button class="ghost danger btn-icon" @click="deleteList">
-              <span class="icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24">
-                  <path d="M4 7h16M9 7v10M15 7v10M6 7l1-3h10l1 3M7 20h10" />
-                </svg>
-              </span>
-              删除列表
-            </button>
-            <button class="ghost btn-icon" @click="exportLists">
-              <span class="icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24">
-                  <path d="M12 3v12M8 11l4 4 4-4M5 21h14" />
-                </svg>
-              </span>
-              导出列表
-            </button>
-            <label class="ghost import-label btn-icon" for="import-file">
-              <span class="icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24">
-                  <path d="M12 21V9M8 13l4-4 4 4M5 3h14" />
-                </svg>
-              </span>
-              导入列表
-            </label>
-            <input id="import-file" type="file" accept="application/json" @change="importLists" />
-          </div>
-        </div>
-
-        <section class="panel">
-          <div class="panel-header">
-            <h2>列表描述</h2>
-            <div class="panel-actions">
-              <button class="ghost btn-icon" :disabled="!selectedList" @click="clearListDescription">
-                <span class="icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24">
-                    <path d="M6 6l12 12M18 6l-12 12" />
-                  </svg>
-                </span>
-                清空
-              </button>
-              <button class="primary btn-icon" :disabled="!selectedList" @click="saveListDescription">
-                <span class="icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24">
-                    <path d="M6 20h12V8l-4-4H6zM9 20v-6h6v6" />
-                  </svg>
-                </span>
-                保存描述
-              </button>
-            </div>
-          </div>
-          <div class="form-row">
-            <label for="list-description">用于指导 AI 分组，可留空</label>
-            <textarea
-              id="list-description"
-              rows="4"
-              :disabled="!selectedList"
-              placeholder="例如：客户调研、竞品分析"
-              v-model="listDescriptionDraft"
-            ></textarea>
-          </div>
-        </section>
-
-        <div class="panel list-panel">
-          <div v-if="listItems.length === 0" class="virtual-empty">暂无已保存的列表。</div>
-          <VirtualList
-            v-else
-            class="list-items"
-            :items="listItems"
-            :item-height="60"
-          >
-            <template #default="{ item }">
-              <div
-                class="list-item"
-                :class="{ selected: Boolean(selectedListItemKeys[item.key]) }"
-                @click="toggleListItemSelection(item.key)"
-              >
-                <input
-                  type="checkbox"
-                  :checked="Boolean(selectedListItemKeys[item.key])"
-                  @click.stop
-                  @change="toggleListItem(item.key, $event.target.checked)"
-                />
-                <img
-                  class="list-icon"
-                  :class="{ hidden: !item.favIconUrl }"
-                  :src="item.favIconUrl || ''"
-                  @error="handleIconError($event)"
-                />
-                <div class="list-body">
-                  <div class="list-title">
-                    <span class="list-link" @click.stop="openSavedInNewWindow(item)">
-                      {{ item.title || item.url || "未命名" }}
-                    </span>
-                  </div>
-                  <div class="list-url">
-                    <span class="list-link" @click.stop="openSavedInNewWindow(item)">
-                      {{ item.url || "" }}
-                    </span>
-                  </div>
-                  <div v-if="item.savedAt" class="list-meta">保存时间：{{ item.savedAt }}</div>
-                </div>
-                <button class="ghost list-action danger btn-icon" @click.stop="deleteListItem(item)">
-                  <span class="icon" aria-hidden="true">
-                    <svg viewBox="0 0 24 24">
-                      <path d="M4 7h16M9 7v10M15 7v10M6 7l1-3h10l1 3M7 20h10" />
-                    </svg>
-                  </span>
-                  删除
-                </button>
-              </div>
-            </template>
-          </VirtualList>
-        </div>
-
-        <section class="panel">
-          <div class="panel-header">
-            <h2>导入选项</h2>
-          </div>
-          <div class="form-row checkbox-row">
-            <label>
-              <input type="checkbox" v-model="importReplace" />
-              导入时替换现有列表
-            </label>
-          </div>
-          <div class="status" :class="listStatus.type">{{ listStatus.message }}</div>
-        </section>
-      </section>
+      <ListsView
+        v-show="view === 'lists'"
+        :is-editing-list-name="isEditingListName"
+        :list-name-draft="listNameDraft"
+        :list-title="listTitle"
+        :list-subtitle="listSubtitle"
+        :selected-list="selectedList"
+        :list-items="listItems"
+        :selected-list-item-keys="selectedListItemKeys"
+        :list-description-draft="listDescriptionDraft"
+        :list-status="listStatus"
+        :import-replace="importReplace"
+        :on-update-list-name-draft="updateListNameDraft"
+        :on-update-list-description-draft="updateListDescriptionDraft"
+        :on-update-import-replace="updateImportReplace"
+        :on-start-edit-list-name="startEditListName"
+        :on-cancel-edit-list-name="cancelEditListName"
+        :on-save-list-name="saveListName"
+        :on-select-all-list-items="selectAllListItems"
+        :on-clear-list-selection="clearListSelection"
+        :on-delete-selected-list-items="deleteSelectedListItems"
+        :on-open-move-modal="openMoveModal"
+        :on-delete-list="deleteList"
+        :on-export-lists="exportLists"
+        :on-import-lists="importLists"
+        :on-open-saved-in-new-window="openSavedInNewWindow"
+        :on-toggle-list-item-selection="toggleListItemSelection"
+        :on-toggle-list-item="toggleListItem"
+        :on-delete-list-item="deleteListItem"
+        :on-clear-list-description="clearListDescription"
+        :on-save-list-description="saveListDescription"
+      />
 
       <div v-if="showMoveModal" class="modal-backdrop" @click.self="closeMoveModal">
         <div class="modal">
@@ -566,262 +350,46 @@
         </div>
       </div>
 
-      <section v-show="view === 'discard'" class="view view-discard">
-        <div class="content-header">
-          <div>
-            <h1>冻结历史</h1>
-            <div class="content-subtitle">{{ historySubtitle }}</div>
-          </div>
-          <div class="content-actions">
-            <button class="ghost btn-icon" @click="setHistorySelection(true)">
-              <span class="icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24">
-                  <path d="M20 6L9 17l-5-5" />
-                </svg>
-              </span>
-              全选
-            </button>
-            <button class="ghost btn-icon" @click="clearHistorySelection">
-              <span class="icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24">
-                  <path d="M6 6l12 12M18 6l-12 12" />
-                </svg>
-              </span>
-              清空
-            </button>
-            <button class="ghost danger btn-icon" @click="closeSelectedHistoryTabs">
-              <span class="icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24">
-                  <path d="M6 6l12 12M18 6l-12 12" />
-                </svg>
-              </span>
-              关闭所选
-            </button>
-            <button class="ghost btn-icon" @click="openAiModal">
-              <span class="icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24">
-                  <path d="M12 3l2.2 4.4L19 9l-4.8 1.6L12 15l-2.2-4.4L5 9l4.8-1.6z" />
-                </svg>
-              </span>
-              AI 分组
-            </button>
-            <button class="ghost btn-icon" @click="openSaveModal">
-              <span class="icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24">
-                  <path d="M6 20h12V8l-4-4H6zM9 20v-6h6v6" />
-                </svg>
-              </span>
-              保存所选
-            </button>
-            <button class="ghost btn-icon" @click="loadDiscardHistory">
-              <span class="icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24">
-                  <path d="M4 4v6h6M20 20v-6h-6M20 8a8 8 0 0 0-14-3M4 16a8 8 0 0 0 14 3" />
-                </svg>
-              </span>
-              刷新
-            </button>
-          </div>
-        </div>
-        <div class="status" :class="discardDebugStatus.type">{{ discardDebugStatus.message }}</div>
-        <TabListPanel
-          :rows="historyRows"
-          :item-height="44"
-          :selected-map="historySelectedTabIds"
-          :ai-tags="aiTags"
-          empty-text="暂无冻结历史。"
-          empty-row-text="暂无冻结记录。"
-          :on-toggle-selection="toggleHistoryTabSelection"
-          :on-toggle-tab="toggleHistoryTab"
-          :on-activate="activateTab"
-          :on-close="closeTab"
-          :on-discard="discardTab"
-          :on-save-ai-group="saveTabToAiGroup"
-        />
-      </section>
+      <HistoryView
+        v-show="view === 'discard'"
+        :history-subtitle="historySubtitle"
+        :history-rows="historyRows"
+        :history-selected-tab-ids="historySelectedTabIds"
+        :ai-tags="aiTags"
+        :status="discardDebugStatus"
+        :on-select-all="() => setHistorySelection(true)"
+        :on-clear="clearHistorySelection"
+        :on-close-selected="closeSelectedHistoryTabs"
+        :on-open-ai="openAiModal"
+        :on-open-save="openSaveModal"
+        :on-refresh="loadDiscardHistory"
+        :on-toggle-selection="toggleHistoryTabSelection"
+        :on-toggle-tab="toggleHistoryTab"
+        :on-activate="activateTab"
+        :on-close="closeTab"
+        :on-discard="discardTab"
+        :on-save-ai-group="saveTabToAiGroup"
+      />
 
-      <section v-show="view === 'settings'" class="view view-settings">
-        <div class="content-header">
-          <div>
-            <h1>插件设置</h1>
-            <div class="content-subtitle">配置与偏好设置</div>
-          </div>
-        </div>
-        <section class="panel">
-          <div class="panel-header">
-            <h2>AI 配置</h2>
-          </div>
-          <div class="settings-grid">
-            <div class="form-row full">
-              <label for="ai-endpoint">API 端点</label>
-              <input
-                id="ai-endpoint"
-                type="text"
-                v-model="aiConfig.endpoint"
-                placeholder="填写完整请求地址（如 https://api.openai.com/v1/responses）"
-              />
-            </div>
-            <div class="form-row">
-              <label for="ai-mode">API 格式</label>
-              <select id="ai-mode" v-model="aiConfig.apiMode">
-                <option value="responses">Responses</option>
-                <option value="codex">Codex CLI</option>
-                <option value="chat">Chat Completions</option>
-              </select>
-            </div>
-            <div class="form-row">
-              <label for="ai-key">API Key</label>
-              <input
-                id="ai-key"
-                type="password"
-                v-model="aiConfig.apiKey"
-                placeholder="sk-..."
-              />
-            </div>
-            <div class="form-row">
-              <label for="ai-model">模型名称</label>
-              <input id="ai-model" type="text" v-model="aiConfig.model" placeholder="gpt-4.1-mini" />
-            </div>
-            <div class="form-row">
-              <label for="ai-max-tabs">单次最多标签数</label>
-              <input
-                id="ai-max-tabs"
-                type="number"
-                min="10"
-                max="500"
-                v-model.number="aiConfig.maxTabs"
-              />
-            </div>
-            <div class="form-row checkbox-row full">
-              <label>
-                <input type="checkbox" v-model="aiConfig.includeListTitles" />
-                发送已有列表标题/描述作为参考
-              </label>
-            </div>
-            <div class="form-row full">
-              <button class="primary btn-icon" @click="saveAiConfig">
-                <span class="icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24">
-                    <path d="M6 20h12V8l-4-4H6zM9 20v-6h6v6" />
-                  </svg>
-                </span>
-                保存配置
-              </button>
-            </div>
-            <div class="form-row full">
-              <div class="status" :class="settingsStatus.type">{{ settingsStatus.message }}</div>
-            </div>
-          </div>
-        </section>
-        <section class="panel">
-          <div class="panel-header">
-            <h2>自动冻结</h2>
-          </div>
-          <div class="settings-grid">
-            <div class="form-row checkbox-row full">
-              <label>
-                <input type="checkbox" v-model="discardConfig.enabled" />
-                启用自动冻结（闲置时自动 discard）
-              </label>
-            </div>
-            <div class="form-row">
-              <label for="discard-idle">闲置阈值（分钟）</label>
-              <input
-                id="discard-idle"
-                type="number"
-                min="1"
-                max="1440"
-                v-model.number="discardConfig.idleMinutes"
-              />
-            </div>
-            <div class="form-row">
-              <label for="discard-sweep">扫描间隔（分钟）</label>
-              <input
-                id="discard-sweep"
-                type="number"
-                min="1"
-                max="120"
-                v-model.number="discardConfig.sweepMinutes"
-              />
-            </div>
-            <div class="form-row">
-              <label for="discard-batch">每次最多冻结</label>
-              <input
-                id="discard-batch"
-                type="number"
-                min="1"
-                max="200"
-                v-model.number="discardConfig.batchLimit"
-              />
-            </div>
-            <div class="form-row">
-              <label for="discard-history-limit">最大冻结历史记录数（0 不限制）</label>
-              <input
-                id="discard-history-limit"
-                type="number"
-                min="0"
-                v-model.number="discardConfig.historyLimit"
-              />
-            </div>
-            <div class="form-row checkbox-row">
-              <label>
-                <input type="checkbox" v-model="discardConfig.allowPinned" />
-                允许冻结已固定的标签页
-              </label>
-            </div>
-            <div class="form-row checkbox-row">
-              <label>
-                <input type="checkbox" v-model="discardConfig.allowAudible" />
-                允许冻结正在发声的标签页
-              </label>
-            </div>
-            <div class="form-row">
-              <label for="discard-match-mode">白名单匹配方式</label>
-              <select id="discard-match-mode" v-model="discardConfig.matchMode">
-                <option value="domain">基础域名（默认）</option>
-                <option value="url">URL（不含参数）</option>
-                <option value="full">完整链接（含参数）</option>
-              </select>
-            </div>
-            <div class="form-row checkbox-row">
-              <label>
-                <input type="checkbox" v-model="discardConfig.regexMode" />
-                使用正则匹配（性能较差）
-              </label>
-            </div>
-            <div class="form-row full">
-              <label for="discard-whitelist">白名单（每行一条，命中后不自动冻结）</label>
-              <textarea
-                id="discard-whitelist"
-                rows="5"
-                placeholder="例如：github.com&#10;notion.so"
-                v-model="discardConfig.whitelist"
-              ></textarea>
-            </div>
-            <div class="form-row full">
-              <button class="primary btn-icon" @click="saveDiscardConfig">
-                <span class="icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24">
-                    <path d="M6 20h12V8l-4-4H6zM9 20v-6h6v6" />
-                  </svg>
-                </span>
-                保存配置
-              </button>
-            </div>
-            <div class="form-row full">
-              <div class="status" :class="discardConfigStatus.type">{{ discardConfigStatus.message }}</div>
-            </div>
-          </div>
-        </section>
-      </section>
+      <SettingsView
+        v-show="view === 'settings'"
+        :ai-config="aiConfig"
+        :discard-config="discardConfig"
+        :settings-status="settingsStatus"
+        :discard-config-status="discardConfigStatus"
+        :on-save-ai-config="saveAiConfig"
+        :on-save-discard-config="saveDiscardConfig"
+      />
     </main>
   </div>
 </template>
 
 <script setup>
-import { computed, nextTick, onMounted, reactive, ref } from "vue";
-import VirtualList from "./components/VirtualList.vue";
-import TabListPanel from "./components/TabListPanel.vue";
+import { computed, onMounted, reactive, ref } from "vue";
+import WindowsView from "./views/WindowsView.vue";
+import ListsView from "./views/ListsView.vue";
+import HistoryView from "./views/HistoryView.vue";
+import SettingsView from "./views/SettingsView.vue";
 
 const NEW_LIST_VALUE = "__new__";
 const MOVE_NEW_LIST_VALUE = "__move_new__";
@@ -902,7 +470,6 @@ const importReplace = ref(false);
 const listDescriptionDraft = ref("");
 const isEditingListName = ref(false);
 const listNameDraft = ref("");
-const listNameInput = ref(null);
 const moveTargetListId = ref(MOVE_NEW_LIST_VALUE);
 const moveNewListName = ref("");
 const showMoveModal = ref(false);
@@ -1121,6 +688,18 @@ function setStatus(target, message, type) {
   target.type = type || "";
 }
 
+function updateListNameDraft(value) {
+  listNameDraft.value = value;
+}
+
+function updateListDescriptionDraft(value) {
+  listDescriptionDraft.value = value;
+}
+
+function updateImportReplace(value) {
+  importReplace.value = value;
+}
+
 function resetAiTags() {
   clearAiTags();
   aiGroups.value = [];
@@ -1240,12 +819,6 @@ function startEditListName() {
   }
   isEditingListName.value = true;
   syncListName();
-  nextTick(() => {
-    if (listNameInput.value) {
-      listNameInput.value.focus();
-      listNameInput.value.select();
-    }
-  });
 }
 
 function cancelEditListName() {
@@ -1476,10 +1049,6 @@ async function saveTabToAiGroup(tab, closeTab) {
   if (closeTab) {
     await loadWindows();
   }
-}
-
-function handleIconError(event) {
-  event.target.classList.add("hidden");
 }
 
 function activateTab(tab) {
