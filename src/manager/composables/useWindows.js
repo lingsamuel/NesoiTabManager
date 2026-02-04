@@ -1,20 +1,33 @@
 import { computed, reactive, ref } from "vue";
 import { getSelectedTabsFrom } from "../utils/helpers.js";
 
-function useWindows() {
+function useWindows(options = {}) {
+  const hideDiscarded = options.hideDiscarded;
   const windows = ref([]);
   const selectedWindowId = ref("all");
   const selectedTabIds = reactive({});
 
+  function shouldHideDiscarded() {
+    return Boolean(hideDiscarded && hideDiscarded.value);
+  }
+
+  function getVisibleTabs(tabs) {
+    const list = Array.isArray(tabs) ? tabs : [];
+    if (!shouldHideDiscarded()) {
+      return list;
+    }
+    return list.filter((tab) => !tab.discarded);
+  }
+
   const totalTabCount = computed(() =>
-    windows.value.reduce((sum, win) => sum + (win.tabs ? win.tabs.length : 0), 0)
+    windows.value.reduce((sum, win) => sum + getVisibleTabs(win.tabs).length, 0)
   );
 
   const windowSubItems = computed(() =>
     windows.value.map((win, index) => ({
       id: win.id,
       label: `窗口 ${index + 1}`,
-      count: win.tabs ? win.tabs.length : 0,
+      count: getVisibleTabs(win.tabs).length,
     }))
   );
 
@@ -29,7 +42,7 @@ function useWindows() {
 
   const windowSubtitle = computed(() => {
     const tabCount = windowsToRender.value.reduce(
-      (sum, win) => sum + (win.tabs ? win.tabs.length : 0),
+      (sum, win) => sum + getVisibleTabs(win.tabs).length,
       0
     );
     if (selectedWindowId.value === "all") {
@@ -57,29 +70,30 @@ function useWindows() {
         count: win.tabs ? win.tabs.length : 0,
       });
 
-      const tabs = Array.isArray(win.tabs) ? win.tabs : [];
-      if (tabs.length === 0) {
-        rows.push({
-          type: "empty",
-          key: `empty-${win.id}`,
+    const tabs = getVisibleTabs(win.tabs);
+    if (tabs.length === 0) {
+      rows.push({
+        type: "empty",
+        key: `empty-${win.id}`,
         });
         return;
       }
 
-      tabs.forEach((tab) => {
-        rows.push({
-          type: "tab",
-          key: `tab-${tab.id}`,
-          tab: {
-            id: tab.id,
-            windowId: tab.windowId,
-            title: tab.title,
-            url: tab.url,
-            favIconUrl: tab.favIconUrl,
-            discarded: Boolean(tab.discarded),
-            index: globalIndex,
-          },
-        });
+    tabs.forEach((tab) => {
+      rows.push({
+        type: "tab",
+        key: `tab-${tab.id}`,
+        tab: {
+          id: tab.id,
+          windowId: tab.windowId,
+          title: tab.title,
+          url: tab.url,
+          favIconUrl: tab.favIconUrl,
+          discarded: Boolean(tab.discarded),
+          pinned: Boolean(tab.pinned),
+          index: globalIndex,
+        },
+      });
         globalIndex += 1;
       });
     });
@@ -93,7 +107,7 @@ function useWindows() {
 
   function setVisibleSelection(checked) {
     windowsToRender.value.forEach((win) => {
-      (win.tabs || []).forEach((tab) => {
+      getVisibleTabs(win.tabs).forEach((tab) => {
         if (checked) {
           selectedTabIds[tab.id] = true;
         } else {
@@ -131,7 +145,11 @@ function useWindows() {
   }
 
   function getSelectedWindowTabs() {
-    return getSelectedTabsFrom(selectedTabIds, getWindowTabsFlat());
+    const selected = getSelectedTabsFrom(selectedTabIds, getWindowTabsFlat());
+    if (!shouldHideDiscarded()) {
+      return selected;
+    }
+    return selected.filter((tab) => !tab.discarded);
   }
 
   async function loadWindows() {

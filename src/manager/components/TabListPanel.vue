@@ -30,6 +30,12 @@
           />
           <div class="tab-body">
             <div class="tab-title">
+              <span v-if="item.tab.pinned" class="pinned-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M8 4h8l-2 4v4l2 4H8l2-4V8z" />
+                  <path d="M12 16v5" />
+                </svg>
+              </span>
               <span v-if="item.tab.discarded" class="discard-dot" aria-hidden="true"></span>
               <span class="tab-link" @click.stop="handleActivate(item.tab)">
                 {{ item.tab.title || item.tab.url || "未命名" }}

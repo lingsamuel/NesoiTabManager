@@ -79,11 +79,13 @@
         :window-rows="windowRows"
         :selected-tab-ids="selectedTabIds"
         :ai-tags="aiTags"
+        :hide-discarded="hideDiscarded"
         :on-select-all="() => setVisibleSelection(true)"
         :on-clear="() => setVisibleSelection(false)"
         :on-close-selected="closeSelectedTabs"
         :on-open-ai="openAiModal"
         :on-open-save="openSaveModal"
+        :on-toggle-hide-discarded="toggleHideDiscarded"
         :on-toggle-selection="toggleTabSelection"
         :on-toggle-tab="toggleTab"
         :on-activate="activateTab"
@@ -422,6 +424,7 @@ const navItems = [
 ];
 
 const view = ref("windows");
+const hideDiscarded = ref(false);
 const hasSubSidebar = computed(() => view.value === "windows" || view.value === "lists");
 const status = reactive({ message: "", type: "" });
 const settingsStatus = reactive({ message: "", type: "" });
@@ -440,7 +443,7 @@ const {
   toggleTabSelection,
   getSelectedWindowTabs,
   loadWindows,
-} = useWindows();
+} = useWindows({ hideDiscarded });
 
 const {
   lists,
@@ -604,6 +607,10 @@ function openSaveModal() {
   setStatus(status, "", "");
   saveContextView.value = view.value;
   showSaveModal.value = true;
+}
+
+function toggleHideDiscarded(checked) {
+  hideDiscarded.value = checked;
 }
 
 function closeSaveModal() {

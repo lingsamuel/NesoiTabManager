@@ -140,6 +140,27 @@
   flex: 0 0 6px;
 }
 
+.pinned-icon {
+  width: 12px;
+  height: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #6b7280;
+  flex: 0 0 12px;
+}
+
+.pinned-icon svg {
+  width: 12px;
+  height: 12px;
+  display: block;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .tab-tag {
   font-size: 9px;
   font-weight: 600;

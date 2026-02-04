@@ -29,6 +29,24 @@
   flex-wrap: wrap;
 }
 
+.content-actions .checkbox-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: #f3f4f6;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid var(--stroke);
+  cursor: pointer;
+}
+
+.content-actions .checkbox-toggle input {
+  margin: 0;
+}
+
 .icon-button,
 .btn-icon {
   gap: 6px;

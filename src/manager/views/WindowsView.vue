@@ -22,6 +22,14 @@
           </span>
           清空
         </button>
+        <label class="checkbox-toggle">
+          <input
+            type="checkbox"
+            :checked="hideDiscarded"
+            @change="handleToggleHideDiscarded($event.target.checked)"
+          />
+          隐藏已冻结
+        </label>
         <button class="ghost danger btn-icon" @click="onCloseSelected">
           <span class="icon" aria-hidden="true">
             <svg viewBox="0 0 24 24">
@@ -69,7 +77,7 @@
 <script setup>
 import TabListPanel from "../components/TabListPanel.vue";
 
-defineProps({
+const props = defineProps({
   windowSubtitle: {
     type: String,
     default: "",
@@ -85,6 +93,10 @@ defineProps({
   aiTags: {
     type: Object,
     default: () => ({}),
+  },
+  hideDiscarded: {
+    type: Boolean,
+    default: false,
   },
   onSelectAll: {
     type: Function,
@@ -103,6 +115,10 @@ defineProps({
     default: null,
   },
   onOpenSave: {
+    type: Function,
+    default: null,
+  },
+  onToggleHideDiscarded: {
     type: Function,
     default: null,
   },
@@ -131,4 +147,10 @@ defineProps({
     default: null,
   },
 });
+
+function handleToggleHideDiscarded(checked) {
+  if (props.onToggleHideDiscarded) {
+    props.onToggleHideDiscarded(checked);
+  }
+}
 </script>
