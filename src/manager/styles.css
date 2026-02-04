@@ -420,7 +420,7 @@ body {
 }
 
 .tab-row:hover {
-  background: #f3f4f6;
+  background: #f8fafc;
 }
 
 .tab-body {
@@ -455,10 +455,6 @@ body {
   cursor: pointer;
 }
 
-.tab-title .tab-link {
-  flex: 1 1 auto;
-  min-width: 0;
-}
 
 .freeze-badge {
   font-size: 9px;
@@ -555,7 +551,7 @@ body {
 }
 
 .list-item:hover {
-  background: #f3f4f6;
+  background: #f8fafc;
 }
 
 .list-item.selected {
