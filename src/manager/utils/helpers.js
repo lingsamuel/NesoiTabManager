@@ -5,15 +5,39 @@ function delay(ms) {
 async function removeTabsInBatches(ids, options = {}) {
   const batchSize = Number.isFinite(options.batchSize) ? options.batchSize : 100;
   const gapMs = Number.isFinite(options.gapMs) ? options.gapMs : 150;
+  let removed = 0;
+  let skipped = 0;
   for (let i = 0; i < ids.length; i += batchSize) {
     const batch = ids.slice(i, i + batchSize);
     await new Promise((resolve) => {
-      chrome.tabs.remove(batch, () => resolve());
+      chrome.tabs.remove(batch, () => {
+        if (!chrome.runtime.lastError) {
+          removed += batch.length;
+          resolve();
+          return;
+        }
+        Promise.all(
+          batch.map(
+            (tabId) =>
+              new Promise((innerResolve) => {
+                chrome.tabs.remove(tabId, () => {
+                  if (chrome.runtime.lastError) {
+                    skipped += 1;
+                  } else {
+                    removed += 1;
+                  }
+                  innerResolve();
+                });
+              })
+          )
+        ).then(resolve);
+      });
     });
     if (i + batchSize < ids.length) {
       await delay(gapMs);
     }
   }
+  return { removed, skipped };
 }
 
 async function moveTabsInBatches(tabIds, windowId, options = {}) {

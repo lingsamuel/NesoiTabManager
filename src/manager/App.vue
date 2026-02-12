@@ -632,6 +632,22 @@ function setStatus(target, message, type) {
   target.type = type || "";
 }
 
+function normalizeTabId(tabId) {
+  const id = Number(tabId);
+  return Number.isFinite(id) ? id : null;
+}
+
+function collectTabIds(tabs) {
+  const ids = [];
+  (Array.isArray(tabs) ? tabs : []).forEach((tab) => {
+    const id = normalizeTabId(tab && tab.id);
+    if (id !== null) {
+      ids.push(id);
+    }
+  });
+  return ids;
+}
+
 function setView(nextView) {
   view.value = nextView;
   showAiModal.value = false;
@@ -730,17 +746,23 @@ async function handleWindowDrop(targetTab, selectedTabs) {
   if (!targetTab || !targetTab.id) {
     return;
   }
-  const tabIds = Array.isArray(selectedTabs)
-    ? selectedTabs.map((tab) => tab.id).filter(Boolean)
-    : [];
-  if (tabIds.length === 0) {
+  const selectionList = Array.isArray(selectedTabs) ? selectedTabs : [];
+  let tabsToMove = selectionList;
+  if (selectionList.length === 1 && selectionList[0] && selectionList[0].id) {
+    const draggedId = String(selectionList[0].id);
+    const allSelected = getSelectedWindowTabs();
+    const draggedIsSelected = allSelected.some(
+      (tab) => String(tab.id) === draggedId
+    );
+    if (draggedIsSelected && allSelected.length > 1) {
+      tabsToMove = allSelected;
+    }
+  }
+  const tabIdsRaw = tabsToMove.map((tab) => tab.id).filter(Boolean);
+  if (tabIdsRaw.length === 0) {
     return;
   }
   const targetId = String(targetTab.id);
-  const dragSet = new Set(tabIds.map((id) => String(id)));
-  if (dragSet.has(targetId)) {
-    return;
-  }
   if (selectedWindowId.value !== "all") {
     if (String(targetTab.windowId) !== String(selectedWindowId.value)) {
       return;
@@ -752,6 +774,20 @@ async function handleWindowDrop(targetTab, selectedTabs) {
   }
   const order = getWindowTabOrder(targetWindowId);
   if (order.length === 0) {
+    return;
+  }
+  const tabIdsSet = new Set(tabIdsRaw.map((id) => String(id)));
+  const sameWindowOnly = tabsToMove.every(
+    (tab) => String(tab.windowId) === String(targetWindowId)
+  );
+  const tabIds = sameWindowOnly
+    ? order.filter((id) => tabIdsSet.has(String(id)))
+    : tabIdsRaw;
+  if (tabIds.length === 0) {
+    return;
+  }
+  const dragSet = new Set(tabIds.map((id) => String(id)));
+  if (dragSet.has(targetId)) {
     return;
   }
   const remaining = order.filter((id) => !dragSet.has(String(id)));
@@ -879,12 +915,19 @@ async function discardTab(tab) {
 }
 
 async function closeTab(tab) {
-  if (!tab || !tab.id) {
+  const tabId = normalizeTabId(tab && tab.id);
+  if (tabId === null) {
     return;
   }
-  chrome.tabs.remove(tab.id, () => {
-    refreshWindows();
-  });
+  const result = await removeTabsInBatches([tabId]);
+  if (view.value === "discard") {
+    if (!result || result.removed === 0) {
+      setStatus(discardDebugStatus, "标签页已关闭或不存在。", "error");
+    } else {
+      setStatus(discardDebugStatus, "已关闭标签页。", "ok");
+    }
+  }
+  await refreshWindows();
 }
 
 async function closeSelectedTabs() {
@@ -902,10 +945,17 @@ async function closeSelectedTabsForView(targetView) {
     setStatus(statusTarget, "请先选择要关闭的标签页。", "error");
     return;
   }
-  const ids = selectedTabs.map((tab) => tab.id).filter(Boolean);
+  const ids = collectTabIds(selectedTabs);
+  if (ids.length === 0) {
+    setStatus(statusTarget, "没有可关闭的标签页。", "error");
+    return;
+  }
   setStatus(statusTarget, "正在关闭标签页...", "");
-  await removeTabsInBatches(ids);
-  setStatus(statusTarget, `已关闭 ${ids.length} 个标签页。`, "ok");
+  const result = await removeTabsInBatches(ids);
+  const removed = result && Number.isFinite(result.removed) ? result.removed : ids.length;
+  const skipped = result && Number.isFinite(result.skipped) ? result.skipped : 0;
+  const skippedText = skipped > 0 ? `，跳过 ${skipped} 个` : "";
+  setStatus(statusTarget, `已关闭 ${removed} 个标签页${skippedText}。`, "ok");
   if (targetView === "discard") {
     clearHistorySelection();
     await loadDiscardHistory();
