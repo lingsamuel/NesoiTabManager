@@ -1,0 +1,45 @@
+# 近期标签页与回收提醒
+
+## 目标与入口
+- 目标：提示用户回收近期打开但未关闭的标签页，减少长期堆积。
+- 入口：
+  - 页面气泡：每个可注入页面左上角出现提示气泡。
+  - 管理页侧边栏：新增“近期标签页”页签（与“打开的窗口/保存的列表”同级）。
+
+## 近期标签页定义
+- 过滤条件：`openAt > lastReviewedAt` 且标签仍打开。
+- 排除：已固定标签页（pinned）、扩展页面（`chrome-extension://`/`edge-extension://`）。
+- 包含：空白页（如 `about:blank`、新标签页）。
+- 口径：全局统计（跨所有窗口）。
+
+## 气泡提醒
+- 触发：按 `reminderIntervalMin` 周期提醒，仅在可注入页面显示。
+- 内容：显示“过去 X 分钟新增未关闭标签页：N”，其中 X 为 `now - lastReviewedAt` 的分钟数。
+- 交互：
+  - 点击气泡：展开页面内浮层面板，展示近期标签列表。
+  - 点击 ×：关闭气泡（延后处理），不更新 `lastReviewedAt`，下次提示会累计显示。
+  - 点击“已阅”：更新 `lastReviewedAt = now`，并关闭气泡与面板。
+
+## 浮层面板
+- 位置：页面内浮层（不打开新窗口），可复用管理页的列表组件。
+- 列表能力：与“打开的窗口”一致的操作（关闭/保存/移动等）。
+- 批量操作：支持全选、批量保存、批量关闭等。
+
+## 管理页“近期标签页”
+- 展示口径与气泡一致，实时展示当前 `openAt > lastReviewedAt` 的标签。
+- 顶部提供“已阅”操作，行为与气泡一致。
+- 操作能力与“打开的窗口”一致（复用列表渲染与批量动作）。
+
+## 启动期处理（恢复标签页）
+- 启动时进入 startup 期，记录 `startupAt`。
+- 若用户手动点击“已阅”：立即结束 startup 期，`lastReviewedAt = now`。
+- 若用户未手动介入：
+  - startup 期结束时刻 `startupEndAt`：连续 `startupQuietSec` 无新增标签或达到 `startupMaxGraceSec`。
+  - 自动设置 `lastReviewedAt = startupEndAt + startupDelaySec`。
+- 目的：恢复期间产生的标签页均被视为“已阅”，不进入近期列表。
+
+## 配置项（设置页）
+- `reminderIntervalMin`：提醒间隔（分钟）。
+- `startupDelaySec`：startup 期结束后的额外延后（秒，默认 60）。
+- `startupQuietSec`：无新标签的静默窗口（秒，默认 15）。
+- `startupMaxGraceSec`：startup 最长宽限（秒，默认 900）。

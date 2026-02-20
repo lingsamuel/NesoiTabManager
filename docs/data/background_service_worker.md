@@ -10,6 +10,7 @@
 - 扩展按钮：点击后打开 `ui/manager.html`；若已打开则聚焦现有窗口与标签页。
 - 右键菜单：根据列表动态生成“保存到列表 / 关闭并保存到列表”子项。
 - 自动冻结：监听 `chrome.alarms`、标签激活与窗口焦点变化、标签增删替换，用于计算闲置与冻结候选。
+- 近期标签页提醒：监听标签新增/关闭、维护打开时间与启动期状态、按间隔触发提醒，并向内容脚本广播气泡展示。
 - 消息接口：统一处理 UI 与内容脚本的运行时消息（保存标签、列表管理、AI 分组、冻结配置等）。
 
 ## 消息协议（runtime message）
@@ -27,6 +28,9 @@
 - `getDiscardConfig` / `saveDiscardConfig`：读取/保存自动冻结配置。
 - `getDiscardCandidates` / `getDiscardHistory`：查询冻结候选与历史记录。
 - `manualDiscard` / `manualDiscardTabs`：手动冻结单个或批量标签。
+- `getRecentTabs`：读取近期标签页列表与统计信息。
+- `markRecentReviewed`：标记“已阅”，更新 `lastReviewedAt` 并结束 startup 期。
+- `getRecentConfig` / `saveRecentConfig`：读取/保存近期标签页提醒配置。
 
 ## 存储模型
 - 详细存储结构与字段说明见：`docs/data/storage_model.md`。

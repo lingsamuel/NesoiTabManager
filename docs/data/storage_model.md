@@ -44,6 +44,27 @@
   - `regexMode`：是否使用正则匹配。
   - `whitelist`：白名单条目数组或文本行。
 
+### 近期标签页配置（recentTabsConfig）
+- 存放在 `chrome.storage.local` 的 `recentTabsConfig` 键。
+- 字段：
+  - `reminderIntervalMin`：提醒间隔（分钟）。
+  - `startupDelaySec`：startup 期结束后的额外延后（秒）。
+  - `startupQuietSec`：无新标签的静默窗口（秒）。
+  - `startupMaxGraceSec`：startup 最长宽限（秒）。
+
+### 近期标签页状态（recentTabsState）
+- 存放在 `chrome.storage.local` 的 `recentTabsState` 键。
+- 字段：
+  - `lastReviewedAt`：最近一次“已阅”的时间戳（毫秒）。
+  - `startupAt`：本次启动期开始时间戳（毫秒）。
+  - `startupActive`：是否处于 startup 期。
+  - `startupEndAt`：startup 期结束时间戳（毫秒，自动结束时写入）。
+
+### 近期标签页打开时间（recentTabsOpenAt）
+- 存放在 `chrome.storage.session` 的 `recentTabsOpenAt` 键。
+- 结构：`{ [tabId]: openAtEpochMs }`。
+- 用途：记录每个标签页打开时间，用于筛选 `openAt > lastReviewedAt`。
+
 ### 冻结会话（discardSession）
 - 存放在 `chrome.storage.session` 的 `discardSession` 键。
 - 字段：
@@ -63,3 +84,4 @@
 - 列表管理：`createList / renameList / deleteList / moveListItems` -> 更新 `lists`。
 - AI 分组：`aiGroupTabs` -> 生成分组 -> `saveGroupedTabs` 写入新列表。
 - 自动冻结：定时扫描 -> `discardSession` + `historyBatches` 更新。
+- 近期标签页：监听 tabs 事件 -> 更新 `recentTabsOpenAt`；“已阅”更新 `recentTabsState.lastReviewedAt`；提醒定时器读取统计并触发气泡。

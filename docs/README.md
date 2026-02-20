@@ -7,6 +7,7 @@
 - `docs/ui/quick_actions.md`：右键菜单与页面悬浮组件的快捷操作。
 - `docs/ui/ai_grouping.md`：AI 分组能力与使用流程。
 - `docs/ui/auto_discard.md`：自动冻结与冻结历史交互。
+- `docs/ui/recent_tabs.md`：近期标签页与回收提醒。
 
 ## 系统与数据（docs/data）
 - `docs/data/background_service_worker.md`：后台服务、事件与消息协议。
