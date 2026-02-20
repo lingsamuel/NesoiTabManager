@@ -149,6 +149,111 @@
       color: #6d6256;
     }
 
+    #nesoi-recent-bubble {
+      position: fixed;
+      top: 16px;
+      left: 16px;
+      z-index: 2147483647;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 10px 8px 12px;
+      border-radius: 12px;
+      border: 1px solid #d1d5db;
+      background: rgba(255, 255, 255, 0.96);
+      box-shadow: 0 10px 20px rgba(15, 23, 42, 0.16);
+      font-family: "Space Grotesk", "Segoe UI", Tahoma, sans-serif;
+      color: #1f2937;
+      cursor: pointer;
+      transition: transform 0.18s ease, opacity 0.18s ease;
+    }
+
+    #nesoi-recent-bubble.hidden {
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(-6px);
+    }
+
+    #nesoi-recent-bubble .ntm-bubble-count {
+      font-weight: 700;
+      font-size: 13px;
+      color: #0f766e;
+    }
+
+    #nesoi-recent-bubble .ntm-bubble-message {
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    #nesoi-recent-bubble .ntm-bubble-close {
+      border: none;
+      background: transparent;
+      color: #6b7280;
+      font-size: 14px;
+      cursor: pointer;
+      padding: 0 4px;
+    }
+
+    #nesoi-recent-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 2147483647;
+      display: none;
+      font-family: "Space Grotesk", "Segoe UI", Tahoma, sans-serif;
+    }
+
+    #nesoi-recent-overlay.active {
+      display: block;
+    }
+
+    #nesoi-recent-overlay .ntm-overlay-backdrop {
+      position: absolute;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.2);
+    }
+
+    #nesoi-recent-overlay .ntm-overlay-panel {
+      position: absolute;
+      top: 56px;
+      left: 20px;
+      width: min(620px, 92vw);
+      height: min(760px, calc(100vh - 80px));
+      background: #ffffff;
+      border-radius: 18px;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      box-shadow: 0 20px 48px rgba(15, 23, 42, 0.24);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    #nesoi-recent-overlay .ntm-overlay-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      background: #f8fafc;
+      border-bottom: 1px solid #e2e8f0;
+      font-size: 12px;
+      font-weight: 600;
+      color: #1f2937;
+    }
+
+    #nesoi-recent-overlay .ntm-overlay-close {
+      border: none;
+      background: transparent;
+      cursor: pointer;
+      font-size: 14px;
+      color: #6b7280;
+      padding: 4px 6px;
+    }
+
+    #nesoi-recent-overlay .ntm-overlay-frame {
+      border: none;
+      width: 100%;
+      flex: 1;
+    }
+
   `;
   document.head.appendChild(style);
 
@@ -168,6 +273,65 @@
   const panel = widget.querySelector(".ntm-panel");
   const listsContainer = widget.querySelector(".ntm-lists");
   const handle = widget.querySelector(".ntm-handle");
+
+  const bubble = document.createElement("div");
+  bubble.id = "nesoi-recent-bubble";
+  bubble.className = "hidden";
+  bubble.innerHTML = `
+    <div class="ntm-bubble-message">
+      过去 <span class="ntm-bubble-minutes">15</span> 分钟新增未关闭标签页：
+      <span class="ntm-bubble-count">0</span>
+    </div>
+    <button class="ntm-bubble-close" aria-label="关闭">×</button>
+  `;
+  document.body.appendChild(bubble);
+
+  const overlay = document.createElement("div");
+  overlay.id = "nesoi-recent-overlay";
+  overlay.innerHTML = `
+    <div class="ntm-overlay-backdrop"></div>
+    <div class="ntm-overlay-panel">
+      <div class="ntm-overlay-header">
+        <span>近期标签页</span>
+        <button class="ntm-overlay-close" aria-label="关闭">×</button>
+      </div>
+      <iframe class="ntm-overlay-frame" title="近期标签页面板"></iframe>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  const bubbleMinutes = bubble.querySelector(".ntm-bubble-minutes");
+  const bubbleCount = bubble.querySelector(".ntm-bubble-count");
+  const bubbleClose = bubble.querySelector(".ntm-bubble-close");
+  const overlayBackdrop = overlay.querySelector(".ntm-overlay-backdrop");
+  const overlayClose = overlay.querySelector(".ntm-overlay-close");
+  const overlayFrame = overlay.querySelector(".ntm-overlay-frame");
+  const overlayUrl = chrome.runtime.getURL("ui/manager.html?mode=overlay");
+
+  function hideBubble() {
+    bubble.classList.add("hidden");
+  }
+
+  function showBubble(minutes, count) {
+    if (bubbleMinutes) {
+      bubbleMinutes.textContent = String(minutes);
+    }
+    if (bubbleCount) {
+      bubbleCount.textContent = String(count);
+    }
+    bubble.classList.remove("hidden");
+  }
+
+  function openOverlay() {
+    overlay.classList.add("active");
+    if (overlayFrame && overlayFrame.src !== overlayUrl) {
+      overlayFrame.src = overlayUrl;
+    }
+  }
+
+  function closeOverlay() {
+    overlay.classList.remove("active");
+  }
 
   let isOpen = false;
   let isExpanded = false;
@@ -314,5 +478,39 @@
     } else {
       flashHandle("保存失败");
     }
+  });
+
+  bubbleClose.addEventListener("click", (event) => {
+    event.stopPropagation();
+    hideBubble();
+  });
+
+  bubble.addEventListener("click", () => {
+    openOverlay();
+    hideBubble();
+  });
+
+  overlayBackdrop.addEventListener("click", () => {
+    closeOverlay();
+  });
+
+  overlayClose.addEventListener("click", () => {
+    closeOverlay();
+  });
+
+  chrome.runtime.onMessage.addListener((message) => {
+    if (!message || message.action !== "recentReminder") {
+      return;
+    }
+    if (overlay.classList.contains("active")) {
+      return;
+    }
+    const count = Number(message.count) || 0;
+    const minutes = Number(message.minutes) || 0;
+    if (count <= 0 || minutes <= 0) {
+      hideBubble();
+      return;
+    }
+    showBubble(minutes, count);
   });
 })();

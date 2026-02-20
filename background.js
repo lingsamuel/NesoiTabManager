@@ -1,4 +1,9 @@
-import { DISCARD_CONFIG_KEY, MANAGER_PAGE, STORAGE_KEY } from "./background/constants.js";
+import {
+  DISCARD_CONFIG_KEY,
+  MANAGER_PAGE,
+  RECENT_CONFIG_KEY,
+  STORAGE_KEY,
+} from "./background/constants.js";
 import {
   getDiscardCandidates,
   getDiscardConfig,
@@ -35,12 +40,25 @@ import {
   updateListDescription,
 } from "./background/lists.js";
 import { aiGroupTabs, getAiConfig, setAiConfig } from "./background/ai.js";
+import {
+  getRecentConfig,
+  getRecentTabsSnapshot,
+  handleRecentAlarm,
+  handleRecentConfigChanged,
+  handleRecentTabCreated,
+  handleRecentTabRemoved,
+  handleRecentTabReplaced,
+  initializeRecentSystem,
+  markRecentReviewed,
+  setRecentConfig,
+} from "./background/recent_tabs.js";
 
 chrome.runtime.onInstalled.addListener(() => {
   clearActionPopup();
   rebuildContextMenus();
   resetTabActivity();
   resetDiscardSession().then(() => initializeDiscardSystem());
+  initializeRecentSystem({ forceStartup: true });
 });
 
 chrome.runtime.onStartup.addListener(() => {
@@ -48,6 +66,7 @@ chrome.runtime.onStartup.addListener(() => {
   rebuildContextMenus();
   resetTabActivity();
   resetDiscardSession().then(() => initializeDiscardSystem());
+  initializeRecentSystem({ forceStartup: true });
 });
 
 chrome.action.onClicked.addListener(() => {
@@ -77,6 +96,9 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (changes[DISCARD_CONFIG_KEY]) {
     handleDiscardConfigChanged(changes[DISCARD_CONFIG_KEY].newValue || {});
   }
+  if (changes[RECENT_CONFIG_KEY]) {
+    handleRecentConfigChanged(changes[RECENT_CONFIG_KEY].newValue || {});
+  }
 });
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
@@ -85,6 +107,7 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   handleDiscardAlarm(alarm);
+  handleRecentAlarm(alarm);
 });
 
 chrome.tabs.onActivated.addListener((activeInfo) => {
@@ -97,14 +120,17 @@ chrome.windows.onFocusChanged.addListener((windowId) => {
 
 chrome.tabs.onCreated.addListener((tab) => {
   handleTabCreated(tab);
+  handleRecentTabCreated(tab);
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   handleTabRemoved(tabId);
+  handleRecentTabRemoved(tabId);
 });
 
 chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
   handleTabReplaced(addedTabId, removedTabId);
+  handleRecentTabReplaced(addedTabId, removedTabId);
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -295,7 +321,36 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (action === "getRecentTabs") {
+    getRecentTabsSnapshot()
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
+    return true;
+  }
+
+  if (action === "markRecentReviewed") {
+    markRecentReviewed()
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
+    return true;
+  }
+
+  if (action === "getRecentConfig") {
+    getRecentConfig()
+      .then((config) => sendResponse({ ok: true, config }))
+      .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
+    return true;
+  }
+
+  if (action === "saveRecentConfig") {
+    setRecentConfig(message.config || {})
+      .then((config) => sendResponse({ ok: true, config }))
+      .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
+    return true;
+  }
+
   return false;
 });
 
 initializeDiscardSystem();
+initializeRecentSystem();

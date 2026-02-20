@@ -1,6 +1,6 @@
 <template>
-  <div class="app" :class="{ 'no-sub': !hasSubSidebar }">
-    <aside class="sidebar">
+  <div class="app" :class="{ 'no-sub': !hasSubSidebar, overlay: isOverlay }">
+    <aside v-if="!isOverlay" class="sidebar">
       <div class="brand">
         <div class="brand-title">Nesoi 标签管理器</div>
         <div class="brand-subtitle">管理海量标签页</div>
@@ -23,7 +23,11 @@
       </nav>
     </aside>
 
-    <aside class="sub-sidebar" :class="{ hidden: view === 'settings' || view === 'discard' }">
+    <aside
+      v-if="!isOverlay"
+      class="sub-sidebar"
+      :class="{ hidden: view === 'settings' || view === 'discard' || view === 'recent' }"
+    >
       <div class="sub-title">{{ view === "windows" ? "窗口" : "列表" }}</div>
       <div class="sub-items">
         <template v-if="view === 'windows'">
@@ -83,7 +87,7 @@
         :on-select-all="() => setVisibleSelection(true)"
         :on-clear="() => setVisibleSelection(false)"
         :on-close-selected="closeSelectedTabs"
-        :on-discard-selected="discardSelectedTabs"
+        :on-discard-selected="() => discardSelectedTabsForView('windows')"
         :on-open-move-modal="openWindowMoveModal"
         :on-open-ai="openAiModal"
         :on-open-save="openSaveModal"
@@ -128,6 +132,28 @@
         :on-delete-list-item="deleteListItem"
         :on-clear-list-description="clearListDescription"
         :on-save-list-description="saveListDescription"
+      />
+
+      <RecentView
+        v-show="view === 'recent'"
+        :subtitle="recentSubtitle"
+        :rows="recentRows"
+        :selected-tab-ids="selectedRecentTabIds"
+        :ai-tags="aiTags"
+        :on-select-all="() => setRecentSelection(true)"
+        :on-clear="clearRecentSelection"
+        :on-close-selected="() => closeSelectedTabsForView('recent')"
+        :on-discard-selected="() => discardSelectedTabsForView('recent')"
+        :on-open-move-modal="openWindowMoveModal"
+        :on-open-ai="openAiModal"
+        :on-open-save="openSaveModal"
+        :on-mark-reviewed="markRecentReviewed"
+        :on-toggle-selection="toggleRecentTabSelection"
+        :on-toggle-tab="toggleRecentTab"
+        :on-activate="activateTab"
+        :on-close="closeTab"
+        :on-discard="discardTab"
+        :on-save-ai-group="saveTabToAiGroup"
       />
 
       <div v-if="showMoveModal" class="modal-backdrop" @click.self="closeMoveModal">
@@ -428,10 +454,13 @@
         v-show="view === 'settings'"
         :ai-config="aiConfig"
         :discard-config="discardConfig"
+        :recent-config="recentConfig"
         :settings-status="settingsStatus"
         :discard-config-status="discardConfigStatus"
+        :recent-config-status="recentConfigStatus"
         :on-save-ai-config="saveAiConfig"
         :on-save-discard-config="saveDiscardConfig"
+        :on-save-recent-config="saveRecentConfig"
       />
     </main>
   </div>
@@ -441,10 +470,12 @@
 import { computed, onMounted, reactive, ref } from "vue";
 import WindowsView from "./views/WindowsView.vue";
 import ListsView from "./views/ListsView.vue";
+import RecentView from "./views/RecentView.vue";
 import HistoryView from "./views/HistoryView.vue";
 import SettingsView from "./views/SettingsView.vue";
 import { useAiGrouping } from "./composables/useAiGrouping.js";
 import { useDiscard } from "./composables/useDiscard.js";
+import { useRecent } from "./composables/useRecent.js";
 import { MOVE_NEW_LIST_VALUE, NEW_LIST_VALUE, useLists } from "./composables/useLists.js";
 import { useWindows } from "./composables/useWindows.js";
 import { request } from "./utils/request.js";
@@ -462,6 +493,11 @@ const navItems = [
     icon: "M4 6h16M4 12h16M4 18h16",
   },
   {
+    key: "recent",
+    label: "近期标签页",
+    icon: "M5 7h14M7 11h10M9 15h6",
+  },
+  {
     key: "discard",
     label: "冻结历史",
     icon: "M7 5h4v14H7zM13 5h4v14h-4z",
@@ -476,12 +512,30 @@ const navItems = [
 
 const NEW_WINDOW_VALUE = "__new_window__";
 
-const view = ref("windows");
+const appMode = (() => {
+  try {
+    const url = new URL(window.location.href);
+    return url.searchParams.get("mode") || "";
+  } catch (error) {
+    return "";
+  }
+})();
+const isOverlay = computed(() => appMode === "overlay");
+const view = ref(isOverlay.value ? "recent" : "windows");
 const hideDiscarded = ref(false);
-const hasSubSidebar = computed(() => view.value === "windows" || view.value === "lists");
+const hasSubSidebar = computed(
+  () => !isOverlay.value && (view.value === "windows" || view.value === "lists")
+);
 const status = reactive({ message: "", type: "" });
 const settingsStatus = reactive({ message: "", type: "" });
 const windowMoveStatus = reactive({ message: "", type: "" });
+const recentConfig = reactive({
+  reminderIntervalMin: 15,
+  startupDelaySec: 60,
+  startupQuietSec: 15,
+  startupMaxGraceSec: 900,
+});
+const recentConfigStatus = reactive({ message: "", type: "" });
 
 const {
   windows,
@@ -564,6 +618,20 @@ const {
   loadDiscardHistory,
 } = useDiscard({ request, view });
 
+const {
+  recentTabs,
+  selectedRecentTabIds,
+  recentSubtitle,
+  recentRows,
+  setRecentSelection,
+  toggleRecentTab,
+  toggleRecentTabSelection,
+  clearRecentSelection,
+  getSelectedRecentTabs,
+  loadRecentTabs,
+  markReviewed: markRecentReviewed,
+} = useRecent({ request });
+
 const aiContextView = ref("windows");
 const saveContextView = ref("windows");
 const showMoveModal = ref(false);
@@ -573,6 +641,7 @@ const showAiModal = ref(false);
 const showSaveModal = ref(false);
 const closeAfter = ref(false);
 const windowMoveTargetId = ref(NEW_WINDOW_VALUE);
+const windowMoveContextView = ref("windows");
 const windowMoveTargets = computed(() =>
   windows.value.map((win, index) => ({
     id: String(win.id),
@@ -590,6 +659,9 @@ const refreshWindows = async () => {
 const getSelectedTabsForView = (targetView) => {
   if (targetView === "discard") {
     return getSelectedHistoryTabs();
+  }
+  if (targetView === "recent") {
+    return getSelectedRecentTabs();
   }
   return getSelectedWindowTabs();
 };
@@ -632,6 +704,46 @@ function setStatus(target, message, type) {
   target.type = type || "";
 }
 
+function applyRecentConfig(config) {
+  recentConfig.reminderIntervalMin = Number.isFinite(Number(config.reminderIntervalMin))
+    ? Number(config.reminderIntervalMin)
+    : 15;
+  recentConfig.startupDelaySec = Number.isFinite(Number(config.startupDelaySec))
+    ? Number(config.startupDelaySec)
+    : 60;
+  recentConfig.startupQuietSec = Number.isFinite(Number(config.startupQuietSec))
+    ? Number(config.startupQuietSec)
+    : 15;
+  recentConfig.startupMaxGraceSec = Number.isFinite(Number(config.startupMaxGraceSec))
+    ? Number(config.startupMaxGraceSec)
+    : 900;
+}
+
+async function loadRecentConfig() {
+  const response = await request("getRecentConfig");
+  if (!response.ok) {
+    setStatus(recentConfigStatus, response.error || "近期标签页配置加载失败。", "error");
+    return;
+  }
+  applyRecentConfig(response.config || {});
+}
+
+async function saveRecentConfig() {
+  const payload = {
+    reminderIntervalMin: Number(recentConfig.reminderIntervalMin),
+    startupDelaySec: Number(recentConfig.startupDelaySec),
+    startupQuietSec: Number(recentConfig.startupQuietSec),
+    startupMaxGraceSec: Number(recentConfig.startupMaxGraceSec),
+  };
+  const response = await request("saveRecentConfig", { config: payload });
+  if (!response.ok) {
+    setStatus(recentConfigStatus, response.error || "保存失败。", "error");
+    return;
+  }
+  applyRecentConfig(response.config || payload);
+  setStatus(recentConfigStatus, "近期标签页提醒已保存。", "ok");
+}
+
 function normalizeTabId(tabId) {
   const id = Number(tabId);
   return Number.isFinite(id) ? id : null;
@@ -657,6 +769,9 @@ function setView(nextView) {
   showCreateListModal.value = false;
   if (nextView === "discard") {
     loadDiscardHistory();
+  }
+  if (nextView === "recent") {
+    loadRecentTabs();
   }
 }
 
@@ -693,6 +808,7 @@ function setWindowMoveStatus(message, type) {
 function openWindowMoveModal() {
   setWindowMoveStatus("", "");
   windowMoveTargetId.value = NEW_WINDOW_VALUE;
+  windowMoveContextView.value = view.value;
   showWindowMoveModal.value = true;
 }
 
@@ -824,7 +940,7 @@ async function createWindowWithTab(tabId) {
 }
 
 async function moveSelectedTabsToWindow() {
-  const selectedTabs = getSelectedWindowTabs();
+  const selectedTabs = getSelectedTabsForView(windowMoveContextView.value);
   if (selectedTabs.length === 0) {
     setWindowMoveStatus("请先选择要移动的标签页。", "error");
     return false;
@@ -852,7 +968,12 @@ async function moveSelectedTabsToWindow() {
       await moveTabsInBatches(tabIds, targetWindowId);
     }
     setWindowMoveStatus(`已移动 ${tabIds.length} 个标签页。`, "ok");
-    clearWindowSelection();
+    if (windowMoveContextView.value === "recent") {
+      clearRecentSelection();
+      await loadRecentTabs();
+    } else {
+      clearWindowSelection();
+    }
     await refreshWindows();
     return true;
   } catch (error) {
@@ -912,6 +1033,9 @@ async function discardTab(tab) {
   if (view.value === "discard") {
     await loadDiscardHistory();
   }
+  if (view.value === "recent") {
+    await loadRecentTabs();
+  }
 }
 
 async function closeTab(tab) {
@@ -928,6 +1052,9 @@ async function closeTab(tab) {
     }
   }
   await refreshWindows();
+  if (view.value === "recent") {
+    await loadRecentTabs();
+  }
 }
 
 async function closeSelectedTabs() {
@@ -960,11 +1087,15 @@ async function closeSelectedTabsForView(targetView) {
     clearHistorySelection();
     await loadDiscardHistory();
   }
+  if (targetView === "recent") {
+    clearRecentSelection();
+    await loadRecentTabs();
+  }
   await refreshWindows();
 }
 
-async function discardSelectedTabs() {
-  const selectedTabs = getSelectedWindowTabs();
+async function discardSelectedTabsForView(targetView) {
+  const selectedTabs = getSelectedTabsForView(targetView);
   if (selectedTabs.length === 0) {
     setStatus(status, "请先选择要冻结的标签页。", "error");
     return;
@@ -980,7 +1111,13 @@ async function discardSelectedTabs() {
   const skipped = response.skipped || 0;
   const skippedText = skipped > 0 ? `，跳过 ${skipped} 个` : "";
   setStatus(status, `已冻结 ${discarded} 个标签页${skippedText}。`, "ok");
-  clearWindowSelection();
+  if (targetView === "windows") {
+    clearWindowSelection();
+  }
+  if (targetView === "recent") {
+    clearRecentSelection();
+    await loadRecentTabs();
+  }
   await refreshWindows();
 }
 
@@ -1023,6 +1160,10 @@ async function saveSelectedTabs() {
 
   if (closeAfter.value) {
     await refreshWindows();
+    if (saveContextView.value === "recent") {
+      clearRecentSelection();
+      await loadRecentTabs();
+    }
   }
 }
 
@@ -1031,5 +1172,7 @@ onMounted(async () => {
   await loadLists();
   await loadAiConfig();
   await loadDiscardConfig();
+  await loadRecentConfig();
+  await loadRecentTabs();
 });
 </script>

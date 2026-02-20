@@ -172,6 +172,66 @@
         </div>
       </div>
     </section>
+    <section class="panel">
+      <div class="panel-header">
+        <h2>近期标签页提醒</h2>
+      </div>
+      <div class="settings-grid">
+        <div class="form-row">
+          <label for="recent-interval">提醒间隔（分钟）</label>
+          <input
+            id="recent-interval"
+            type="number"
+            min="1"
+            max="240"
+            v-model.number="recentConfig.reminderIntervalMin"
+          />
+        </div>
+        <div class="form-row">
+          <label for="recent-startup-delay">启动延后（秒）</label>
+          <input
+            id="recent-startup-delay"
+            type="number"
+            min="0"
+            max="3600"
+            v-model.number="recentConfig.startupDelaySec"
+          />
+        </div>
+        <div class="form-row">
+          <label for="recent-startup-quiet">静默窗口（秒）</label>
+          <input
+            id="recent-startup-quiet"
+            type="number"
+            min="5"
+            max="300"
+            v-model.number="recentConfig.startupQuietSec"
+          />
+        </div>
+        <div class="form-row">
+          <label for="recent-startup-max">最长启动宽限（秒）</label>
+          <input
+            id="recent-startup-max"
+            type="number"
+            min="60"
+            max="7200"
+            v-model.number="recentConfig.startupMaxGraceSec"
+          />
+        </div>
+        <div class="form-row full">
+          <button class="primary btn-icon" @click="onSaveRecentConfig">
+            <span class="icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path d="M6 20h12V8l-4-4H6zM9 20v-6h6v6" />
+              </svg>
+            </span>
+            保存配置
+          </button>
+        </div>
+        <div class="form-row full">
+          <div class="status" :class="recentConfigStatus.type">{{ recentConfigStatus.message }}</div>
+        </div>
+      </div>
+    </section>
   </section>
 </template>
 
@@ -185,6 +245,10 @@ defineProps({
     type: Object,
     default: () => ({}),
   },
+  recentConfig: {
+    type: Object,
+    default: () => ({}),
+  },
   settingsStatus: {
     type: Object,
     default: () => ({ message: "", type: "" }),
@@ -193,11 +257,19 @@ defineProps({
     type: Object,
     default: () => ({ message: "", type: "" }),
   },
+  recentConfigStatus: {
+    type: Object,
+    default: () => ({ message: "", type: "" }),
+  },
   onSaveAiConfig: {
     type: Function,
     default: null,
   },
   onSaveDiscardConfig: {
+    type: Function,
+    default: null,
+  },
+  onSaveRecentConfig: {
     type: Function,
     default: null,
   },

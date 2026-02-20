@@ -18,5 +18,11 @@
       "js": ["content_script.js"],
       "run_at": "document_idle"
     }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["ui/manager.html", "ui/assets/*"],
+      "matches": ["<all_urls>"]
+    }
   ]
 }
