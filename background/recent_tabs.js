@@ -18,6 +18,7 @@ const recentState = {
   startupAt: 0,
   startupActive: false,
   startupEndAt: 0,
+  snoozedUntil: 0,
 };
 
 const openAtMap = new Map();
@@ -87,6 +88,7 @@ async function saveRecentState() {
       startupAt: recentState.startupAt,
       startupActive: recentState.startupActive,
       startupEndAt: recentState.startupEndAt,
+      snoozedUntil: recentState.snoozedUntil,
     },
   });
 }
@@ -110,10 +112,14 @@ async function ensureRecentState() {
     const startupEndAt = Number.isFinite(Number(data.startupEndAt))
       ? Number(data.startupEndAt)
       : 0;
+    const snoozedUntil = Number.isFinite(Number(data.snoozedUntil))
+      ? Number(data.snoozedUntil)
+      : 0;
     recentState.lastReviewedAt = lastReviewedAt;
     recentState.startupAt = startupAt;
     recentState.startupActive = startupActive;
     recentState.startupEndAt = startupEndAt;
+    recentState.snoozedUntil = snoozedUntil;
     recentStateReady = true;
     recentStatePromise = null;
     return recentState;
@@ -147,12 +153,16 @@ async function ensureOpenAtMap() {
     return openAtPromise;
   }
   openAtPromise = storageSessionGet(RECENT_OPEN_AT_KEY).then((stored) => {
-    openAtMap.clear();
     const data = stored && typeof stored === "object" ? stored : {};
     Object.keys(data).forEach((key) => {
       const value = Number(data[key]);
-      if (Number.isFinite(value)) {
-        openAtMap.set(String(key), value);
+      if (!Number.isFinite(value)) {
+        return;
+      }
+      const mapKey = String(key);
+      const existing = openAtMap.get(mapKey);
+      if (!Number.isFinite(existing)) {
+        openAtMap.set(mapKey, value);
       }
     });
     openAtReady = true;
@@ -268,6 +278,7 @@ async function startStartup() {
   recentState.startupActive = true;
   recentState.startupAt = now;
   recentState.startupEndAt = 0;
+  recentState.snoozedUntil = 0;
   lastStartupTabAt = now;
   openAtMap.clear();
   openAtDirty = true;
@@ -425,26 +436,8 @@ async function getRecentTabsSnapshot() {
 }
 
 async function sendRecentReminder() {
-  const snapshot = await getRecentTabsSnapshot();
-  if (snapshot.startupActive || snapshot.count === 0) {
-    return;
-  }
-  if (snapshot.lastReviewedAt && Date.now() < snapshot.lastReviewedAt) {
-    return;
-  }
-  const minutes = Math.max(1, Math.floor(snapshot.sinceMs / 60000));
-  const payload = {
-    action: "recentReminder",
-    count: snapshot.count,
-    minutes,
-  };
-  chrome.tabs.query({}, (tabs) => {
-    (tabs || []).forEach((tab) => {
-      if (!tab || !tab.id) {
-        return;
-      }
-      chrome.tabs.sendMessage(tab.id, payload, () => {});
-    });
+  chrome.tabs.query({ active: true }, (tabs) => {
+    sendRecentReminderToTabs(tabs || [], { hideWhenEmpty: false });
   });
 }
 
@@ -455,15 +448,96 @@ function handleRecentAlarm(alarm) {
   sendRecentReminder();
 }
 
-function broadcastRecentClear() {
-  const payload = { action: "recentReminder", count: 0, minutes: 0 };
-  chrome.tabs.query({}, (tabs) => {
-    (tabs || []).forEach((tab) => {
-      if (!tab || !tab.id) {
-        return;
+function sendPayloadToTabs(tabs, payload) {
+  (tabs || []).forEach((tab) => {
+    if (!tab || !tab.id) {
+      return;
+    }
+    chrome.tabs.sendMessage(tab.id, payload, () => {});
+  });
+}
+
+async function sendRecentReminderToTabs(tabs, options = {}) {
+  const snapshot = await getRecentTabsSnapshot();
+  const now = Date.now();
+  if (recentState.snoozedUntil && now < recentState.snoozedUntil) {
+    return;
+  }
+  if (snapshot.startupActive) {
+    if (options.hideWhenEmpty) {
+      sendPayloadToTabs(tabs, { action: "recentReminder", count: 0, minutes: 0 });
+    }
+    return;
+  }
+  if (snapshot.lastReviewedAt && now < snapshot.lastReviewedAt) {
+    if (options.hideWhenEmpty) {
+      sendPayloadToTabs(tabs, { action: "recentReminder", count: 0, minutes: 0 });
+    }
+    return;
+  }
+  if (snapshot.count === 0) {
+    if (options.hideWhenEmpty) {
+      sendPayloadToTabs(tabs, { action: "recentReminder", count: 0, minutes: 0 });
+    }
+    return;
+  }
+  const minutes = Math.max(1, Math.floor(snapshot.sinceMs / 60000));
+  sendPayloadToTabs(tabs, {
+    action: "recentReminder",
+    count: snapshot.count,
+    minutes,
+  });
+}
+
+function sendRecentClearToActiveTabs() {
+  chrome.tabs.query({ active: true }, (tabs) => {
+    sendPayloadToTabs(tabs || [], { action: "recentReminder", count: 0, minutes: 0 });
+  });
+}
+
+function handleRecentTabActivated(activeInfo) {
+  const windowId = activeInfo && Number.isFinite(Number(activeInfo.windowId))
+    ? Number(activeInfo.windowId)
+    : null;
+  if (windowId === null) {
+    return;
+  }
+  chrome.tabs.query({ active: true, windowId }, (tabs) => {
+    const list = tabs || [];
+    const activeTab = list[0];
+    if (
+      activeTab &&
+      Number.isFinite(Number(activeTab.id)) &&
+      !recentState.startupActive
+    ) {
+      if (!isExtensionUrl(activeTab.url)) {
+        setTabOpenAt(activeTab.id, Date.now());
       }
-      chrome.tabs.sendMessage(tab.id, payload, () => {});
-    });
+    }
+    sendRecentReminderToTabs(list, { hideWhenEmpty: true });
+  });
+}
+
+function handleRecentWindowFocusChanged(windowId) {
+  if (!Number.isFinite(Number(windowId))) {
+    return;
+  }
+  if (windowId === chrome.windows.WINDOW_ID_NONE) {
+    return;
+  }
+  chrome.tabs.query({ active: true, windowId }, (tabs) => {
+    const list = tabs || [];
+    const activeTab = list[0];
+    if (
+      activeTab &&
+      Number.isFinite(Number(activeTab.id)) &&
+      !recentState.startupActive
+    ) {
+      if (!isExtensionUrl(activeTab.url)) {
+        setTabOpenAt(activeTab.id, Date.now());
+      }
+    }
+    sendRecentReminderToTabs(list, { hideWhenEmpty: true });
   });
 }
 
@@ -496,13 +570,27 @@ async function markRecentReviewed() {
   await ensureRecentState();
   const now = Date.now();
   recentState.lastReviewedAt = now;
+  recentState.snoozedUntil = 0;
   if (recentState.startupActive) {
     endStartup({ manual: true });
   } else {
     await saveRecentState();
   }
-  broadcastRecentClear();
+  sendRecentClearToActiveTabs();
   return { lastReviewedAt: recentState.lastReviewedAt };
+}
+
+async function snoozeRecentReminder() {
+  await ensureRecentConfig();
+  await ensureRecentState();
+  const now = Date.now();
+  const intervalMs = recentConfigCache
+    ? recentConfigCache.reminderIntervalMin * 60 * 1000
+    : DEFAULT_RECENT_CONFIG.reminderIntervalMin * 60 * 1000;
+  recentState.snoozedUntil = now + intervalMs;
+  await saveRecentState();
+  sendRecentClearToActiveTabs();
+  return { snoozedUntil: recentState.snoozedUntil };
 }
 
 export {
@@ -514,6 +602,9 @@ export {
   handleRecentTabCreated,
   handleRecentTabRemoved,
   handleRecentTabReplaced,
+  handleRecentTabActivated,
+  handleRecentWindowFocusChanged,
   getRecentTabsSnapshot,
   markRecentReviewed,
+  snoozeRecentReminder,
 };

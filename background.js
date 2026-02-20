@@ -44,12 +44,15 @@ import {
   getRecentConfig,
   getRecentTabsSnapshot,
   handleRecentAlarm,
+  handleRecentTabActivated,
   handleRecentConfigChanged,
   handleRecentTabCreated,
   handleRecentTabRemoved,
   handleRecentTabReplaced,
+  handleRecentWindowFocusChanged,
   initializeRecentSystem,
   markRecentReviewed,
+  snoozeRecentReminder,
   setRecentConfig,
 } from "./background/recent_tabs.js";
 
@@ -112,10 +115,12 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 
 chrome.tabs.onActivated.addListener((activeInfo) => {
   handleTabActivated(activeInfo);
+  handleRecentTabActivated(activeInfo);
 });
 
 chrome.windows.onFocusChanged.addListener((windowId) => {
   handleWindowFocusChanged(windowId);
+  handleRecentWindowFocusChanged(windowId);
 });
 
 chrome.tabs.onCreated.addListener((tab) => {
@@ -330,6 +335,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (action === "markRecentReviewed") {
     markRecentReviewed()
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
+    return true;
+  }
+
+  if (action === "snoozeRecentReminder") {
+    snoozeRecentReminder()
       .then((result) => sendResponse({ ok: true, ...result }))
       .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
     return true;

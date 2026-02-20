@@ -11,6 +11,7 @@
 - 排除：已固定标签页（pinned）、扩展页面（`chrome-extension://`/`edge-extension://`）。
 - 包含：空白页（如 `about:blank`、新标签页）。
 - 口径：全局统计（跨所有窗口）。
+- 激活行为：用户切换到某个标签页时，会将该标签页 `openAt` 更新为当前时间，视为“近期查看”。
 
 ## 气泡提醒
 - 触发：按 `reminderIntervalMin` 周期提醒，仅在可注入页面显示。

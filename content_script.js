@@ -483,6 +483,7 @@
   bubbleClose.addEventListener("click", (event) => {
     event.stopPropagation();
     hideBubble();
+    chrome.runtime.sendMessage({ action: "snoozeRecentReminder" }, () => {});
   });
 
   bubble.addEventListener("click", () => {

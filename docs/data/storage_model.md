@@ -63,7 +63,7 @@
 ### 近期标签页打开时间（recentTabsOpenAt）
 - 存放在 `chrome.storage.session` 的 `recentTabsOpenAt` 键。
 - 结构：`{ [tabId]: openAtEpochMs }`。
-- 用途：记录每个标签页打开时间，用于筛选 `openAt > lastReviewedAt`。
+- 用途：记录每个标签页的最近打开/查看时间（激活时会更新），用于筛选 `openAt > lastReviewedAt`。
 
 ### 冻结会话（discardSession）
 - 存放在 `chrome.storage.session` 的 `discardSession` 键。
