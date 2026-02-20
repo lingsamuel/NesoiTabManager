@@ -2,12 +2,14 @@ import {
   DISCARD_ALARM,
   DISCARD_CONFIG_KEY,
   DISCARD_SESSION_KEY,
+  DISCARD_TAB_ACTIVITY_KEY,
 } from "./constants.js";
 import { storageGet, storageSet, storageSessionGet, storageSessionSet } from "./storage.js";
 import { delay, getBaseDomain, getUrlWithoutParams, isDiscardableUrl } from "./utils.js";
 import { getTabById, getTabsByIds } from "./lists.js";
 
 const tabLastActive = new Map();
+const tabFirstSeen = new Map();
 const activeTabByWindow = new Map();
 const discardSession = {
   startEpoch: 0,
@@ -20,15 +22,28 @@ const discardSession = {
 let focusedWindowId = null;
 let tabActivityReady = false;
 let tabActivityPromise = null;
+let tabFirstSeenReady = false;
+let tabFirstSeenPromise = null;
+let tabFirstSeenSaveTimer = null;
+let tabFirstSeenDirty = false;
 let discardSweepRunning = false;
 let discardConfigCache = null;
 
 function resetTabActivity() {
   tabLastActive.clear();
+  tabFirstSeen.clear();
   activeTabByWindow.clear();
   focusedWindowId = null;
   tabActivityReady = false;
   tabActivityPromise = null;
+  tabFirstSeenReady = false;
+  tabFirstSeenPromise = null;
+  if (tabFirstSeenSaveTimer) {
+    clearTimeout(tabFirstSeenSaveTimer);
+    tabFirstSeenSaveTimer = null;
+  }
+  tabFirstSeenDirty = false;
+  storageSessionSet({ [DISCARD_TAB_ACTIVITY_KEY]: {} });
 }
 
 function normalizeWhitelist(raw) {
@@ -174,17 +189,35 @@ function handleDiscardConfigChanged(newValue) {
   }
 }
 
-function getWhitelistTarget(tab, mode) {
+function getWhitelistTargets(tab, mode) {
   if (!tab || !tab.url) {
-    return "";
+    return [];
+  }
+  const url = String(tab.url);
+  if (mode === "full") {
+    return [url];
   }
   if (mode === "url") {
-    return getUrlWithoutParams(tab.url);
+    const stripped = getUrlWithoutParams(url);
+    return stripped ? [stripped] : [];
   }
-  if (mode === "full") {
-    return String(tab.url);
+  const targets = new Set();
+  const baseDomain = getBaseDomain(url);
+  if (baseDomain) {
+    targets.add(baseDomain);
   }
-  return getBaseDomain(tab.url);
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname) {
+      targets.add(parsed.hostname);
+    }
+    if (parsed.host) {
+      targets.add(parsed.host);
+    }
+  } catch (error) {
+    // ignore
+  }
+  return Array.from(targets);
 }
 
 function isTabWhitelisted(tab, config) {
@@ -192,8 +225,8 @@ function isTabWhitelisted(tab, config) {
   if (!tab || entries.length === 0) {
     return false;
   }
-  const target = getWhitelistTarget(tab, config.matchMode);
-  if (!target) {
+  const targets = getWhitelistTargets(tab, config.matchMode);
+  if (targets.length === 0) {
     return false;
   }
   if (config.regexMode) {
@@ -204,8 +237,10 @@ function isTabWhitelisted(tab, config) {
       }
       try {
         const regex = new RegExp(pattern);
-        if (regex.test(target)) {
-          return true;
+        for (let j = 0; j < targets.length; j += 1) {
+          if (regex.test(targets[j])) {
+            return true;
+          }
         }
       } catch (error) {
         continue;
@@ -213,24 +248,98 @@ function isTabWhitelisted(tab, config) {
     }
     return false;
   }
-  const lowerTarget = target.toLowerCase();
   for (let i = 0; i < entries.length; i += 1) {
     const entry = entries[i];
     if (!entry) {
       continue;
     }
-    if (lowerTarget.includes(String(entry).toLowerCase())) {
-      return true;
+    const needle = String(entry).toLowerCase();
+    for (let j = 0; j < targets.length; j += 1) {
+      if (targets[j].toLowerCase().includes(needle)) {
+        return true;
+      }
     }
   }
   return false;
 }
 
 function touchTab(tabId, time) {
-  if (!tabId) {
+  if (tabId === undefined || tabId === null) {
     return;
   }
-  tabLastActive.set(String(tabId), time || Date.now());
+  const timestamp = time || Date.now();
+  tabLastActive.set(String(tabId), timestamp);
+  markTabFirstSeen(tabId, timestamp);
+}
+
+function scheduleTabFirstSeenSave() {
+  tabFirstSeenDirty = true;
+  if (tabFirstSeenSaveTimer) {
+    return;
+  }
+  tabFirstSeenSaveTimer = setTimeout(() => {
+    tabFirstSeenSaveTimer = null;
+    if (!tabFirstSeenDirty) {
+      return;
+    }
+    tabFirstSeenDirty = false;
+    const payload = {};
+    tabFirstSeen.forEach((value, key) => {
+      payload[key] = value;
+    });
+    storageSessionSet({ [DISCARD_TAB_ACTIVITY_KEY]: payload });
+  }, 800);
+}
+
+function markTabFirstSeen(tabId, time) {
+  if (tabId === undefined || tabId === null) {
+    return false;
+  }
+  const key = String(tabId);
+  if (tabFirstSeen.has(key)) {
+    return false;
+  }
+  const timestamp = time || Date.now();
+  tabFirstSeen.set(key, timestamp);
+  scheduleTabFirstSeenSave();
+  return true;
+}
+
+async function ensureTabFirstSeen() {
+  if (tabFirstSeenReady) {
+    return;
+  }
+  if (tabFirstSeenPromise) {
+    await tabFirstSeenPromise;
+    return;
+  }
+  tabFirstSeenPromise = storageSessionGet(DISCARD_TAB_ACTIVITY_KEY)
+    .then((stored) => {
+      if (stored && typeof stored === "object") {
+        Object.keys(stored).forEach((key) => {
+          const timestamp = Number(stored[key]);
+          if (!Number.isFinite(timestamp) || timestamp <= 0) {
+            return;
+          }
+          if (tabFirstSeen.has(key)) {
+            const existing = tabFirstSeen.get(key);
+            if (timestamp < existing) {
+              tabFirstSeen.set(key, timestamp);
+            }
+          } else {
+            tabFirstSeen.set(key, timestamp);
+          }
+        });
+      }
+      tabFirstSeenReady = true;
+    })
+    .catch(() => {
+      tabFirstSeenReady = true;
+    })
+    .finally(() => {
+      tabFirstSeenPromise = null;
+    });
+  await tabFirstSeenPromise;
 }
 
 function getLastActive(tab, now) {
@@ -240,6 +349,12 @@ function getLastActive(tab, now) {
   if (lastAccessed > value) {
     value = lastAccessed;
   }
+  if (tabFirstSeen.has(key)) {
+    const firstSeen = tabFirstSeen.get(key);
+    if (firstSeen > value) {
+      value = firstSeen;
+    }
+  }
   const minBaseline = discardSession.startEpoch || now;
   if (!value) {
     value = lastAccessed || now;
@@ -248,6 +363,7 @@ function getLastActive(tab, now) {
     value = minBaseline;
   }
   tabLastActive.set(key, value);
+  markTabFirstSeen(tab.id, value);
   return value;
 }
 
@@ -267,9 +383,11 @@ async function ensureTabActivity() {
   }
   tabActivityPromise = new Promise((resolve) => {
     queryAllTabs().then(async (tabs) => {
+      await ensureTabFirstSeen();
       await ensureDiscardSession();
       const now = Date.now();
       const baseTime = discardSession.startEpoch || now;
+      let firstSeenDirty = false;
       tabs.forEach((tab) => {
         if (!tab || tab.id === undefined) {
           return;
@@ -287,11 +405,17 @@ async function ensureTabActivity() {
             initial = baseTime;
           }
           tabLastActive.set(key, initial);
+          if (markTabFirstSeen(tab.id, initial)) {
+            firstSeenDirty = true;
+          }
         }
         if (tab.active && tab.windowId !== undefined) {
           activeTabByWindow.set(tab.windowId, tab.id);
         }
       });
+      if (firstSeenDirty) {
+        scheduleTabFirstSeenSave();
+      }
       tabActivityReady = true;
       resolve();
     });
@@ -663,6 +787,13 @@ function handleTabCreated(tab) {
 
 function handleTabRemoved(tabId) {
   tabLastActive.delete(String(tabId));
+  if (tabId !== undefined && tabId !== null) {
+    const key = String(tabId);
+    if (tabFirstSeen.has(key)) {
+      tabFirstSeen.delete(key);
+      scheduleTabFirstSeenSave();
+    }
+  }
   activeTabByWindow.forEach((value, key) => {
     if (value === tabId) {
       activeTabByWindow.delete(key);
@@ -676,6 +807,14 @@ function handleTabReplaced(addedTabId, removedTabId) {
     const lastActive = tabLastActive.get(key);
     tabLastActive.delete(key);
     tabLastActive.set(String(addedTabId), lastActive);
+  }
+  if (tabFirstSeen.has(key)) {
+    const firstSeen = tabFirstSeen.get(key);
+    tabFirstSeen.delete(key);
+    tabFirstSeen.set(String(addedTabId), firstSeen);
+    scheduleTabFirstSeenSave();
+  } else {
+    markTabFirstSeen(addedTabId);
   }
   activeTabByWindow.forEach((value, winId) => {
     if (value === removedTabId) {
