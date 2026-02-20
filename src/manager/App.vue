@@ -773,6 +773,9 @@ function setView(nextView) {
   if (nextView === "recent") {
     loadRecentTabs();
   }
+  if (nextView === "windows" && !isOverlay.value) {
+    refreshWindows();
+  }
 }
 
 function setSelectedWindow(windowId) {
@@ -971,10 +974,12 @@ async function moveSelectedTabsToWindow() {
     if (windowMoveContextView.value === "recent") {
       clearRecentSelection();
       await loadRecentTabs();
-    } else {
+    } else if (!isOverlay.value) {
       clearWindowSelection();
     }
-    await refreshWindows();
+    if (!isOverlay.value && windowMoveContextView.value !== "recent") {
+      await refreshWindows();
+    }
     return true;
   } catch (error) {
     setWindowMoveStatus(error.message || "移动失败。", "error");
@@ -1029,7 +1034,9 @@ async function discardTab(tab) {
   } else {
     setStatus(statusTarget, "已冻结标签页。", "ok");
   }
-  await refreshWindows();
+  if (!isOverlay.value && view.value !== "recent") {
+    await refreshWindows();
+  }
   if (view.value === "discard") {
     await loadDiscardHistory();
   }
@@ -1051,7 +1058,9 @@ async function closeTab(tab) {
       setStatus(discardDebugStatus, "已关闭标签页。", "ok");
     }
   }
-  await refreshWindows();
+  if (!isOverlay.value && view.value !== "recent") {
+    await refreshWindows();
+  }
   if (view.value === "recent") {
     await loadRecentTabs();
   }
@@ -1091,7 +1100,9 @@ async function closeSelectedTabsForView(targetView) {
     clearRecentSelection();
     await loadRecentTabs();
   }
-  await refreshWindows();
+  if (!isOverlay.value && targetView === "windows") {
+    await refreshWindows();
+  }
 }
 
 async function discardSelectedTabsForView(targetView) {
@@ -1118,7 +1129,9 @@ async function discardSelectedTabsForView(targetView) {
     clearRecentSelection();
     await loadRecentTabs();
   }
-  await refreshWindows();
+  if (!isOverlay.value && targetView === "windows") {
+    await refreshWindows();
+  }
 }
 
 async function saveSelectedTabs() {
@@ -1159,7 +1172,9 @@ async function saveSelectedTabs() {
   await loadLists();
 
   if (closeAfter.value) {
-    await refreshWindows();
+    if (!isOverlay.value && saveContextView.value === "windows") {
+      await refreshWindows();
+    }
     if (saveContextView.value === "recent") {
       clearRecentSelection();
       await loadRecentTabs();
@@ -1168,6 +1183,13 @@ async function saveSelectedTabs() {
 }
 
 onMounted(async () => {
+  if (isOverlay.value) {
+    await loadLists();
+    await loadAiConfig();
+    await loadRecentConfig();
+    await loadRecentTabs();
+    return;
+  }
   await refreshWindows();
   await loadLists();
   await loadAiConfig();

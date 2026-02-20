@@ -49,6 +49,7 @@ import {
   handleRecentTabCreated,
   handleRecentTabRemoved,
   handleRecentTabReplaced,
+  handleRecentTabUpdated,
   handleRecentWindowFocusChanged,
   initializeRecentSystem,
   markRecentReviewed,
@@ -136,6 +137,10 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
   handleTabReplaced(addedTabId, removedTabId);
   handleRecentTabReplaced(addedTabId, removedTabId);
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  handleRecentTabUpdated(tabId, changeInfo, tab);
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

@@ -307,6 +307,7 @@
   const overlayClose = overlay.querySelector(".ntm-overlay-close");
   const overlayFrame = overlay.querySelector(".ntm-overlay-frame");
   const overlayUrl = chrome.runtime.getURL("ui/manager.html?mode=overlay");
+  const reminderState = { active: false, minutes: 0, count: 0 };
 
   function hideBubble() {
     bubble.classList.add("hidden");
@@ -331,6 +332,9 @@
 
   function closeOverlay() {
     overlay.classList.remove("active");
+    if (reminderState.active) {
+      showBubble(reminderState.minutes, reminderState.count);
+    }
   }
 
   let isOpen = false;
@@ -483,6 +487,9 @@
   bubbleClose.addEventListener("click", (event) => {
     event.stopPropagation();
     hideBubble();
+    reminderState.active = false;
+    reminderState.minutes = 0;
+    reminderState.count = 0;
     chrome.runtime.sendMessage({ action: "snoozeRecentReminder" }, () => {});
   });
 
@@ -503,15 +510,22 @@
     if (!message || message.action !== "recentReminder") {
       return;
     }
-    if (overlay.classList.contains("active")) {
-      return;
-    }
     const count = Number(message.count) || 0;
     const minutes = Number(message.minutes) || 0;
     if (count <= 0 || minutes <= 0) {
+      reminderState.active = false;
+      reminderState.minutes = 0;
+      reminderState.count = 0;
       hideBubble();
       return;
     }
-    showBubble(minutes, count);
+    reminderState.active = true;
+    reminderState.minutes = minutes;
+    reminderState.count = count;
+    if (!overlay.classList.contains("active")) {
+      showBubble(minutes, count);
+    } else {
+      hideBubble();
+    }
   });
 })();
