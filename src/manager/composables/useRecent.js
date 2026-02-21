@@ -32,6 +32,7 @@ function useRecent({ request }) {
         favIconUrl: tab.favIconUrl,
         discarded: Boolean(tab.discarded),
         pinned: Boolean(tab.pinned),
+        active: Boolean(tab.active),
       },
     }))
   );

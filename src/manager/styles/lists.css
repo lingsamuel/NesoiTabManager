@@ -157,6 +157,15 @@
   flex: 0 0 6px;
 }
 
+.active-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #0f766e;
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.14);
+  flex: 0 0 8px;
+}
+
 .pinned-icon {
   width: 12px;
   height: 12px;

@@ -23,6 +23,7 @@ const recentState = {
 
 const openAtMap = new Map();
 const tabCache = new Map();
+const activeTabByWindow = new Map();
 
 let recentConfigCache = null;
 let recentStateReady = false;
@@ -234,6 +235,7 @@ function normalizeTabCacheEntry(tab) {
     favIconUrl: tab.favIconUrl || "",
     pinned: Boolean(tab.pinned),
     discarded: Boolean(tab.discarded),
+    active: Boolean(tab.active),
     index: Number.isFinite(Number(tab.index)) ? Number(tab.index) : 0,
   };
 }
@@ -244,6 +246,9 @@ function updateTabCache(tab) {
     return;
   }
   tabCache.set(String(entry.id), entry);
+  if (entry.active && Number.isFinite(Number(entry.windowId))) {
+    activeTabByWindow.set(Number(entry.windowId), entry.id);
+  }
 }
 
 function deleteTabCache(tabId) {
@@ -269,6 +274,26 @@ async function ensureTabCache() {
     });
   });
   return tabCachePromise;
+}
+
+function setActiveTab(windowId, tabId) {
+  if (!Number.isFinite(Number(windowId)) || !Number.isFinite(Number(tabId))) {
+    return;
+  }
+  const winId = Number(windowId);
+  const newId = Number(tabId);
+  const prevId = activeTabByWindow.get(winId);
+  if (prevId && prevId !== newId) {
+    const prevEntry = tabCache.get(String(prevId));
+    if (prevEntry) {
+      prevEntry.active = false;
+    }
+  }
+  const activeEntry = tabCache.get(String(newId));
+  if (activeEntry) {
+    activeEntry.active = true;
+  }
+  activeTabByWindow.set(winId, newId);
 }
 
 async function primeOpenAtForExistingTabs(openAtValue) {
@@ -597,6 +622,9 @@ function handleRecentTabActivated(activeInfo) {
         setTabOpenAt(activeTab.id, Date.now());
       }
       updateTabCache(activeTab);
+      if (Number.isFinite(Number(activeTab.windowId))) {
+        setActiveTab(activeTab.windowId, activeTab.id);
+      }
     }
     sendRecentReminderToTabs(list, { hideWhenEmpty: true });
   });
@@ -621,6 +649,9 @@ function handleRecentWindowFocusChanged(windowId) {
         setTabOpenAt(activeTab.id, Date.now());
       }
       updateTabCache(activeTab);
+      if (Number.isFinite(Number(activeTab.windowId))) {
+        setActiveTab(activeTab.windowId, activeTab.id);
+      }
     }
     sendRecentReminderToTabs(list, { hideWhenEmpty: true });
   });
@@ -632,6 +663,9 @@ function handleRecentTabCreated(tab) {
   }
   const now = Date.now();
   updateTabCache(tab);
+  if (tab.active && Number.isFinite(Number(tab.windowId))) {
+    setActiveTab(tab.windowId, tab.id);
+  }
   setTabOpenAt(tab.id, now);
   updateStartupActivity();
 }
@@ -639,6 +673,11 @@ function handleRecentTabCreated(tab) {
 function handleRecentTabRemoved(tabId) {
   deleteTabOpenAt(tabId);
   deleteTabCache(tabId);
+  activeTabByWindow.forEach((value, key) => {
+    if (Number(value) === Number(tabId)) {
+      activeTabByWindow.delete(key);
+    }
+  });
 }
 
 function handleRecentTabReplaced(addedTabId, removedTabId) {
@@ -646,12 +685,21 @@ function handleRecentTabReplaced(addedTabId, removedTabId) {
   const existing = openAtMap.get(key);
   deleteTabOpenAt(removedTabId);
   deleteTabCache(removedTabId);
+  const removedId = Number(removedTabId);
+  activeTabByWindow.forEach((value, key) => {
+    if (Number(value) === removedId) {
+      activeTabByWindow.delete(key);
+    }
+  });
   if (Number.isFinite(Number(addedTabId))) {
     const openAt = Number.isFinite(existing) ? existing : Date.now();
     setTabOpenAt(addedTabId, openAt);
     chrome.tabs.get(addedTabId, (tab) => {
       if (!chrome.runtime.lastError) {
         updateTabCache(tab);
+        if (tab.active && Number.isFinite(Number(tab.windowId))) {
+          setActiveTab(tab.windowId, tab.id);
+        }
       }
     });
   }

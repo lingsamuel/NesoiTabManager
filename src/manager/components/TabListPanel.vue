@@ -46,6 +46,7 @@
           />
           <div class="tab-body">
             <div class="tab-title">
+              <span v-if="item.tab.active" class="active-dot" aria-hidden="true"></span>
               <span v-if="item.tab.pinned" class="pinned-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24">
                   <path d="M8 4h8l-2 4v4l2 4H8l2-4V8z" />
