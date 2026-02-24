@@ -19,6 +19,7 @@ const recentState = {
   startupActive: false,
   startupEndAt: 0,
   snoozedUntil: 0,
+  bubblePosition: null,
 };
 
 const openAtMap = new Map();
@@ -99,6 +100,21 @@ function sanitizeRecentConfig(raw) {
   };
 }
 
+function sanitizeBubblePosition(raw) {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+  const left = Number(raw.left);
+  const top = Number(raw.top);
+  if (!Number.isFinite(left) || !Number.isFinite(top)) {
+    return null;
+  }
+  const updatedAt = Number.isFinite(Number(raw.updatedAt))
+    ? Number(raw.updatedAt)
+    : Date.now();
+  return { left, top, updatedAt };
+}
+
 async function ensureRecentConfig() {
   if (recentConfigCache) {
     return recentConfigCache;
@@ -119,6 +135,7 @@ async function saveRecentState() {
       startupActive: recentState.startupActive,
       startupEndAt: recentState.startupEndAt,
       snoozedUntil: recentState.snoozedUntil,
+      bubblePosition: recentState.bubblePosition,
     },
   });
 }
@@ -145,11 +162,13 @@ async function ensureRecentState() {
     const snoozedUntil = Number.isFinite(Number(data.snoozedUntil))
       ? Number(data.snoozedUntil)
       : 0;
+    const bubblePosition = sanitizeBubblePosition(data.bubblePosition);
     recentState.lastReviewedAt = lastReviewedAt;
     recentState.startupAt = startupAt;
     recentState.startupActive = startupActive;
     recentState.startupEndAt = startupEndAt;
     recentState.snoozedUntil = snoozedUntil;
+    recentState.bubblePosition = bubblePosition;
     recentStateReady = true;
     recentStatePromise = null;
     return recentState;
@@ -434,6 +453,15 @@ async function getRecentConfig() {
   return ensureRecentConfig();
 }
 
+/**
+ * 供内容脚本在初始化阶段读取气泡位置。
+ * 约束：仅返回最近一次持久化结果，不做多页面同步推送。
+ */
+async function getRecentBubblePosition() {
+  await ensureRecentState();
+  return recentState.bubblePosition;
+}
+
 async function setRecentConfig(config) {
   const sanitized = sanitizeRecentConfig(config);
   recentConfigCache = sanitized;
@@ -451,6 +479,21 @@ function handleRecentConfigChanged(newValue) {
   if (recentState.startupActive) {
     scheduleStartupTimers(recentConfigCache);
   }
+}
+
+/**
+ * 由内容脚本在拖动结束时调用，写入全局位置记忆。
+ * 前置条件：调用方已做视口边界裁剪，这里只做结构与数值校验。
+ */
+async function setRecentBubblePosition(position) {
+  await ensureRecentState();
+  const sanitized = sanitizeBubblePosition(position);
+  if (!sanitized) {
+    throw new Error("气泡位置无效。");
+  }
+  recentState.bubblePosition = sanitized;
+  await saveRecentState();
+  return recentState.bubblePosition;
 }
 
 function updateStartupActivity() {
@@ -755,7 +798,9 @@ async function snoozeRecentReminder() {
 
 export {
   getRecentConfig,
+  getRecentBubblePosition,
   setRecentConfig,
+  setRecentBubblePosition,
   handleRecentConfigChanged,
   initializeRecentSystem,
   handleRecentAlarm,

@@ -1180,6 +1180,9 @@ async function saveSelectedTabs() {
       await loadRecentTabs();
     }
   }
+
+  // 仅在保存成功后关闭弹窗，失败时保留现场便于用户修正后重试。
+  closeSaveModal();
 }
 
 onMounted(async () => {

@@ -42,6 +42,7 @@ import {
 import { aiGroupTabs, getAiConfig, setAiConfig } from "./background/ai.js";
 import {
   getRecentConfig,
+  getRecentBubblePosition,
   getRecentTabsSnapshot,
   handleRecentAlarm,
   handleRecentTabActivated,
@@ -55,6 +56,7 @@ import {
   markRecentReviewed,
   snoozeRecentReminder,
   setRecentConfig,
+  setRecentBubblePosition,
 } from "./background/recent_tabs.js";
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -359,9 +361,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (action === "getRecentBubblePosition") {
+    getRecentBubblePosition()
+      .then((position) => sendResponse({ ok: true, position }))
+      .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
+    return true;
+  }
+
   if (action === "saveRecentConfig") {
     setRecentConfig(message.config || {})
       .then((config) => sendResponse({ ok: true, config }))
+      .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
+    return true;
+  }
+
+  if (action === "saveRecentBubblePosition") {
+    setRecentBubblePosition(message.position || {})
+      .then((position) => sendResponse({ ok: true, position }))
       .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
     return true;
   }

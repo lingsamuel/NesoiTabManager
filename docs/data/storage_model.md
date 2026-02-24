@@ -59,6 +59,14 @@
   - `startupAt`：本次启动期开始时间戳（毫秒）。
   - `startupActive`：是否处于 startup 期。
   - `startupEndAt`：startup 期结束时间戳（毫秒，自动结束时写入）。
+  - `bubblePosition`：气泡位置记忆（全局一份）。
+    - `left`：距视口左侧像素值。
+    - `top`：距视口顶部像素值。
+    - `updatedAt`：最近一次拖动写入时间（毫秒）。
+  - 行为约束：
+    - 仅在内容脚本初始化时读取一次位置。
+    - 拖动结束后即时写入。
+    - 已打开页面不主动同步其他页面的新位置。
 
 ### 近期标签页打开时间（recentTabsOpenAt）
 - 存放在 `chrome.storage.session` 的 `recentTabsOpenAt` 键。

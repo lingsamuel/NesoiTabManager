@@ -306,8 +306,172 @@
   const overlayBackdrop = overlay.querySelector(".ntm-overlay-backdrop");
   const overlayClose = overlay.querySelector(".ntm-overlay-close");
   const overlayFrame = overlay.querySelector(".ntm-overlay-frame");
+  const overlayPanel = overlay.querySelector(".ntm-overlay-panel");
   const overlayUrl = chrome.runtime.getURL("ui/manager.html?mode=overlay");
   const reminderState = { active: false, minutes: 0, count: 0 };
+  const bubblePosition = { left: 16, top: 16 };
+  const dragState = {
+    pointerId: null,
+    startX: 0,
+    startY: 0,
+    originLeft: 0,
+    originTop: 0,
+    moved: false,
+    active: false,
+  };
+  const interactionState = {
+    suppressBubbleClick: false,
+    suppressCloseClick: false,
+  };
+  const DRAG_THRESHOLD = 4;
+  const BUBBLE_MARGIN = 8;
+  const PANEL_MARGIN = 8;
+  const PANEL_GAP = 8;
+
+  function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, value));
+  }
+
+  function getBubbleSize() {
+    const rect = bubble.getBoundingClientRect();
+    return {
+      width: rect.width > 0 ? rect.width : 220,
+      height: rect.height > 0 ? rect.height : 40,
+    };
+  }
+
+  function getOverlayPanelSize() {
+    const rect = overlayPanel.getBoundingClientRect();
+    const fallbackWidth = Math.min(620, window.innerWidth * 0.92);
+    const fallbackHeight = Math.min(760, Math.max(120, window.innerHeight - 80));
+    return {
+      width: rect.width > 0 ? rect.width : fallbackWidth,
+      height: rect.height > 0 ? rect.height : fallbackHeight,
+    };
+  }
+
+  function clampBubblePosition(left, top) {
+    const bubbleSize = getBubbleSize();
+    const minLeft = BUBBLE_MARGIN;
+    const minTop = BUBBLE_MARGIN;
+    const maxLeft = Math.max(minLeft, window.innerWidth - bubbleSize.width - BUBBLE_MARGIN);
+    const maxTop = Math.max(minTop, window.innerHeight - bubbleSize.height - BUBBLE_MARGIN);
+    return {
+      left: clamp(left, minLeft, maxLeft),
+      top: clamp(top, minTop, maxTop),
+    };
+  }
+
+  function updateOverlayPosition(left, top) {
+    if (!overlayPanel) {
+      return;
+    }
+    const bubbleSize = getBubbleSize();
+    const panelSize = getOverlayPanelSize();
+    const desiredLeft = left;
+    const desiredTop = top + bubbleSize.height + PANEL_GAP;
+    const minLeft = PANEL_MARGIN;
+    const minTop = PANEL_MARGIN;
+    const maxLeft = Math.max(minLeft, window.innerWidth - panelSize.width - PANEL_MARGIN);
+    const maxTop = Math.max(minTop, window.innerHeight - panelSize.height - PANEL_MARGIN);
+    overlayPanel.style.left = `${clamp(desiredLeft, minLeft, maxLeft)}px`;
+    overlayPanel.style.top = `${clamp(desiredTop, minTop, maxTop)}px`;
+  }
+
+  /**
+   * 统一更新气泡与浮层位置。
+   * 约束：调用方传入的坐标是视口坐标，这里会做边界裁剪后再应用。
+   */
+  function applyBubblePosition(nextLeft, nextTop) {
+    const clamped = clampBubblePosition(nextLeft, nextTop);
+    bubblePosition.left = clamped.left;
+    bubblePosition.top = clamped.top;
+    bubble.style.left = `${clamped.left}px`;
+    bubble.style.top = `${clamped.top}px`;
+    updateOverlayPosition(clamped.left, clamped.top);
+  }
+
+  /**
+   * 仅在页面初始化时读取一次全局位置记忆。
+   * 这样可以满足“新页面读到新位置，已打开页面保持原位”的交互要求。
+   */
+  async function loadBubblePosition() {
+    const response = await request("getRecentBubblePosition");
+    const position = response && response.ok ? response.position : null;
+    const left = position && Number.isFinite(Number(position.left))
+      ? Number(position.left)
+      : bubblePosition.left;
+    const top = position && Number.isFinite(Number(position.top))
+      ? Number(position.top)
+      : bubblePosition.top;
+    applyBubblePosition(left, top);
+  }
+
+  function saveBubblePosition() {
+    chrome.runtime.sendMessage(
+      {
+        action: "saveRecentBubblePosition",
+        position: {
+          left: bubblePosition.left,
+          top: bubblePosition.top,
+          updatedAt: Date.now(),
+        },
+      },
+      () => {}
+    );
+  }
+
+  function handleBubblePointerDown(event) {
+    if (event.button !== 0) {
+      return;
+    }
+    dragState.pointerId = event.pointerId;
+    dragState.startX = event.clientX;
+    dragState.startY = event.clientY;
+    dragState.originLeft = bubblePosition.left;
+    dragState.originTop = bubblePosition.top;
+    dragState.moved = false;
+    dragState.active = true;
+    bubble.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  }
+
+  function handleBubblePointerMove(event) {
+    if (!dragState.active || event.pointerId !== dragState.pointerId) {
+      return;
+    }
+    const dx = event.clientX - dragState.startX;
+    const dy = event.clientY - dragState.startY;
+    if (!dragState.moved && (Math.abs(dx) >= DRAG_THRESHOLD || Math.abs(dy) >= DRAG_THRESHOLD)) {
+      dragState.moved = true;
+      interactionState.suppressBubbleClick = true;
+      interactionState.suppressCloseClick = true;
+    }
+    if (!dragState.moved) {
+      return;
+    }
+    applyBubblePosition(dragState.originLeft + dx, dragState.originTop + dy);
+  }
+
+  function finishBubbleDrag(event) {
+    if (!dragState.active || event.pointerId !== dragState.pointerId) {
+      return;
+    }
+    if (bubble.hasPointerCapture(event.pointerId)) {
+      bubble.releasePointerCapture(event.pointerId);
+    }
+    const moved = dragState.moved;
+    dragState.pointerId = null;
+    dragState.active = false;
+    dragState.moved = false;
+    if (moved) {
+      saveBubblePosition();
+      setTimeout(() => {
+        interactionState.suppressBubbleClick = false;
+        interactionState.suppressCloseClick = false;
+      }, 0);
+    }
+  }
 
   function hideBubble() {
     bubble.classList.add("hidden");
@@ -336,6 +500,16 @@
       showBubble(reminderState.minutes, reminderState.count);
     }
   }
+
+  applyBubblePosition(bubblePosition.left, bubblePosition.top);
+  loadBubblePosition();
+  window.addEventListener("resize", () => {
+    applyBubblePosition(bubblePosition.left, bubblePosition.top);
+  });
+  bubble.addEventListener("pointerdown", handleBubblePointerDown);
+  bubble.addEventListener("pointermove", handleBubblePointerMove);
+  bubble.addEventListener("pointerup", finishBubbleDrag);
+  bubble.addEventListener("pointercancel", finishBubbleDrag);
 
   let isOpen = false;
   let isExpanded = false;
@@ -486,6 +660,10 @@
 
   bubbleClose.addEventListener("click", (event) => {
     event.stopPropagation();
+    if (interactionState.suppressCloseClick) {
+      interactionState.suppressCloseClick = false;
+      return;
+    }
     hideBubble();
     reminderState.active = false;
     reminderState.minutes = 0;
@@ -494,6 +672,10 @@
   });
 
   bubble.addEventListener("click", () => {
+    if (interactionState.suppressBubbleClick) {
+      interactionState.suppressBubbleClick = false;
+      return;
+    }
     openOverlay();
     hideBubble();
   });

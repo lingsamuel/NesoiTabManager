@@ -30,6 +30,7 @@
 - `manualDiscard` / `manualDiscardTabs`：手动冻结单个或批量标签。
 - `getRecentTabs`：读取近期标签页列表与统计信息。
 - `markRecentReviewed`：标记“已阅”，更新 `lastReviewedAt` 并结束 startup 期。
+- `getRecentBubblePosition` / `saveRecentBubblePosition`：读取/写入气泡拖动位置。
 - `getRecentConfig` / `saveRecentConfig`：读取/保存近期标签页提醒配置。
 
 ## 存储模型
