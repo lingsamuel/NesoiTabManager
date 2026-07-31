@@ -12,3 +12,6 @@
 ## 系统与数据（docs/data）
 - `docs/data/background_service_worker.md`：后台服务、事件与消息协议。
 - `docs/data/storage_model.md`：存储结构、字段与数据流。
+
+## 构建与发布（docs）
+- `docs/build.md`：Chrome 与 Firefox 双浏览器构建与打包方案。

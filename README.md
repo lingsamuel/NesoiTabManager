@@ -1,6 +1,6 @@
 # Nesoi 标签管理器
 
-一个用于管理海量标签页的 Chrome/Edge 扩展。
+一个用于管理海量标签页的 Chrome/Edge 与 Firefox 扩展。
 
 ## 需求
 
@@ -28,9 +28,10 @@
 
 ## 实现说明
 
-- Manifest V3，后台使用 service worker。
+- Manifest V3：Chrome/Edge 后台使用 service worker，Firefox 使用 event page（构建时自动适配）。
 - 使用 `chrome.tabs`、`chrome.storage`、`chrome.contextMenus`。
 - 列表数据存放在 `chrome.storage.local`。
+- `chrome.storage.session` 为 Chrome 专有能力，Firefox 下自动降级。
 - UI 构建使用 Vite + Vue，输出到 `ui/` 目录。
 - AI 分组需要在“插件设置”里配置完整 API 端点、Key、模型、API 格式与单次上限。
 - 列表描述会在启用“发送已有列表标题/描述作为参考”时一并发送给 AI。
@@ -38,5 +39,8 @@
 ## 开发与构建
 
 - 安装依赖：`npm install`
-- 构建 UI：`npm run build`（生成 `ui/manager.html` 与静态资源）
-- 加载扩展时需包含 `ui/` 输出目录。
+- 一键构建：`npm run build`（同时生成 Chrome 与 Firefox 两套产物及 zip）
+- 单独构建：`npm run build:chrome` / `npm run build:firefox`
+- 产物目录：`dist/chrome/`（Chrome/Edge 加载）、`dist/firefox/`（Firefox 加载，115+）
+- 发布包：`dist/nesoi-tab-manager-<target>-<version>.zip`
+- 详细方案见 `docs/build.md`。
