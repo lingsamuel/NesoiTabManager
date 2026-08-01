@@ -5,6 +5,7 @@ import {
   RECENT_STATE_KEY,
 } from "./constants.js";
 import { storageGet, storageSet, storageSessionGet, storageSessionSet } from "./storage.js";
+import { formatDuration } from "./utils.js";
 
 const DEFAULT_RECENT_CONFIG = {
   reminderIntervalMin: 15,
@@ -538,6 +539,7 @@ async function getRecentTabsSnapshot() {
       count: 0,
       lastReviewedAt: recentState.lastReviewedAt,
       sinceMs: 0,
+      durationText: "",
       startupActive: true,
     };
   }
@@ -551,6 +553,7 @@ async function getRecentTabsSnapshot() {
       count: 0,
       lastReviewedAt,
       sinceMs: 0,
+      durationText: "",
       startupActive: false,
     };
   }
@@ -577,6 +580,7 @@ async function getRecentTabsSnapshot() {
     count: filtered.length,
     lastReviewedAt,
     sinceMs: now - lastReviewedAt,
+    durationText: formatDuration(now - lastReviewedAt),
     startupActive: false,
   };
 }
@@ -609,40 +613,39 @@ async function sendRecentReminderToTabs(tabs, options = {}) {
   const now = Date.now();
   if (!isReminderDue(now)) {
     if (options.hideWhenEmpty) {
-      sendPayloadToTabs(tabs, { action: "recentReminder", count: 0, minutes: 0 });
+      sendPayloadToTabs(tabs, { action: "recentReminder", count: 0, durationText: "" });
     }
     return;
   }
   const snapshot = await getRecentTabsSnapshot();
   if (snapshot.startupActive) {
     if (options.hideWhenEmpty) {
-      sendPayloadToTabs(tabs, { action: "recentReminder", count: 0, minutes: 0 });
+      sendPayloadToTabs(tabs, { action: "recentReminder", count: 0, durationText: "" });
     }
     return;
   }
   if (snapshot.lastReviewedAt && now < snapshot.lastReviewedAt) {
     if (options.hideWhenEmpty) {
-      sendPayloadToTabs(tabs, { action: "recentReminder", count: 0, minutes: 0 });
+      sendPayloadToTabs(tabs, { action: "recentReminder", count: 0, durationText: "" });
     }
     return;
   }
   if (snapshot.count === 0) {
     if (options.hideWhenEmpty) {
-      sendPayloadToTabs(tabs, { action: "recentReminder", count: 0, minutes: 0 });
+      sendPayloadToTabs(tabs, { action: "recentReminder", count: 0, durationText: "" });
     }
     return;
   }
-  const minutes = Math.max(1, Math.floor(snapshot.sinceMs / 60000));
   sendPayloadToTabs(tabs, {
     action: "recentReminder",
     count: snapshot.count,
-    minutes,
+    durationText: formatDuration(snapshot.sinceMs),
   });
 }
 
 function sendRecentClearToActiveTabs() {
   chrome.tabs.query({ active: true }, (tabs) => {
-    sendPayloadToTabs(tabs || [], { action: "recentReminder", count: 0, minutes: 0 });
+    sendPayloadToTabs(tabs || [], { action: "recentReminder", count: 0, durationText: "" });
   });
 }
 

@@ -5,7 +5,7 @@ function useRecent({ request }) {
   const recentTabs = ref([]);
   const selectedRecentTabIds = reactive({});
   const lastReviewedAt = ref(0);
-  const sinceMs = ref(0);
+  const durationText = ref("");
   const startupActive = ref(false);
 
   const recentSubtitle = computed(() => {
@@ -16,8 +16,7 @@ function useRecent({ request }) {
     if (!lastReviewedAt.value) {
       return `当前：共 ${count} 个近期标签页`;
     }
-    const minutes = Math.max(1, Math.floor(sinceMs.value / 60000));
-    return `过去 ${minutes} 分钟新增未关闭标签页（共 ${count} 个）`;
+    return `过去 ${durationText.value} 新增未关闭标签页（共 ${count} 个）`;
   });
 
   const recentRows = computed(() =>
@@ -80,14 +79,14 @@ function useRecent({ request }) {
     if (!response.ok) {
       recentTabs.value = [];
       lastReviewedAt.value = 0;
-      sinceMs.value = 0;
+      durationText.value = "";
       startupActive.value = false;
       clearRecentSelection();
       return;
     }
     recentTabs.value = Array.isArray(response.tabs) ? response.tabs : [];
     lastReviewedAt.value = Number(response.lastReviewedAt) || 0;
-    sinceMs.value = Number(response.sinceMs) || 0;
+    durationText.value = String(response.durationText || "");
     startupActive.value = Boolean(response.startupActive);
     const existing = new Set(recentTabs.value.map((tab) => String(tab.id)));
     Object.keys(selectedRecentTabIds).forEach((tabId) => {
@@ -101,7 +100,7 @@ function useRecent({ request }) {
     const response = await request("markRecentReviewed");
     if (response && response.ok) {
       lastReviewedAt.value = Number(response.lastReviewedAt) || Date.now();
-      sinceMs.value = 0;
+      durationText.value = "";
       startupActive.value = false;
       clearRecentSelection();
     }

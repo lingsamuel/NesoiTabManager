@@ -279,7 +279,7 @@
   bubble.className = "hidden";
   bubble.innerHTML = `
     <div class="ntm-bubble-message">
-      过去 <span class="ntm-bubble-minutes">15</span> 分钟新增未关闭标签页：
+      过去 <span class="ntm-bubble-minutes"></span>新增未关闭标签页：
       <span class="ntm-bubble-count">0</span>
     </div>
     <button class="ntm-bubble-close" aria-label="关闭">×</button>
@@ -308,7 +308,7 @@
   const overlayFrame = overlay.querySelector(".ntm-overlay-frame");
   const overlayPanel = overlay.querySelector(".ntm-overlay-panel");
   const overlayUrl = chrome.runtime.getURL("ui/manager.html?mode=overlay");
-  const reminderState = { active: false, minutes: 0, count: 0 };
+  const reminderState = { active: false, durationText: "", count: 0 };
   const bubblePosition = { left: 16, top: 16 };
   const dragState = {
     pointerId: null,
@@ -477,9 +477,9 @@
     bubble.classList.add("hidden");
   }
 
-  function showBubble(minutes, count) {
+  function showBubble(durationText, count) {
     if (bubbleMinutes) {
-      bubbleMinutes.textContent = String(minutes);
+      bubbleMinutes.textContent = durationText;
     }
     if (bubbleCount) {
       bubbleCount.textContent = String(count);
@@ -497,7 +497,7 @@
   function closeOverlay() {
     overlay.classList.remove("active");
     if (reminderState.active) {
-      showBubble(reminderState.minutes, reminderState.count);
+      showBubble(reminderState.durationText, reminderState.count);
     }
   }
 
@@ -666,7 +666,7 @@
     }
     hideBubble();
     reminderState.active = false;
-    reminderState.minutes = 0;
+    reminderState.durationText = "";
     reminderState.count = 0;
     chrome.runtime.sendMessage({ action: "snoozeRecentReminder" }, () => {});
   });
@@ -693,19 +693,19 @@
       return;
     }
     const count = Number(message.count) || 0;
-    const minutes = Number(message.minutes) || 0;
-    if (count <= 0 || minutes <= 0) {
+    const durationText = String(message.durationText || "").trim();
+    if (count <= 0 || !durationText) {
       reminderState.active = false;
-      reminderState.minutes = 0;
+      reminderState.durationText = "";
       reminderState.count = 0;
       hideBubble();
       return;
     }
     reminderState.active = true;
-    reminderState.minutes = minutes;
+    reminderState.durationText = durationText;
     reminderState.count = count;
     if (!overlay.classList.contains("active")) {
-      showBubble(minutes, count);
+      showBubble(durationText, count);
     } else {
       hideBubble();
     }
