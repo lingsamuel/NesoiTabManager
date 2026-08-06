@@ -1001,14 +1001,13 @@ async function confirmCreateList() {
   }
 }
 
-function activateTab(tab) {
+async function activateTab(tab) {
   if (!tab || !tab.id) {
     return;
   }
-  if (tab.windowId) {
-    chrome.windows.update(tab.windowId, { focused: true });
-  }
-  chrome.tabs.update(tab.id, { active: true });
+  // 跳转统一交由后台执行：管理页浮层（网页内嵌 iframe）中 chrome.windows/tabs 不可用，
+  // 直接调用会抛错，改为通过 runtime 消息由 service worker 完成窗口前置与标签激活。
+  await request("activateTab", { tabId: tab.id, windowId: tab.windowId });
 }
 
 function openSavedInNewWindow(item) {

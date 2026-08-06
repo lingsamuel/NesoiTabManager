@@ -75,16 +75,46 @@ chrome.runtime.onStartup.addListener(() => {
   initializeRecentSystem({ forceStartup: true });
 });
 
+// 激活指定标签页：先把其所在窗口前置，再激活该标签。
+// 管理页浮层（网页内嵌 iframe）中 chrome.windows/chrome.tabs 不可用，
+// 因此跳转必须经由后台执行，前端只通过 runtime 消息触发。
+function activateTabById(tabId, windowId) {
+  const id = Number(tabId);
+  const winId = Number(windowId);
+  const focusWindow = Number.isFinite(winId)
+    ? new Promise((resolve) => {
+        chrome.windows.update(winId, { focused: true }, () => {
+          resolve(!chrome.runtime.lastError);
+        });
+      })
+    : Promise.resolve(true);
+  return focusWindow.then(
+    () =>
+      new Promise((resolve, reject) => {
+        chrome.tabs.update(id, { active: true }, (tab) => {
+          if (chrome.runtime.lastError || !tab) {
+            reject(
+              new Error(
+                chrome.runtime.lastError
+                  ? chrome.runtime.lastError.message
+                  : "标签页不存在或已被关闭。"
+              )
+            );
+            return;
+          }
+          resolve({ ok: true });
+        });
+      })
+  );
+}
+
 chrome.action.onClicked.addListener(() => {
   const url = chrome.runtime.getURL(MANAGER_PAGE);
   chrome.tabs.query({ url }, (tabs) => {
     if (tabs && tabs.length > 0) {
       const target = tabs[0];
-      if (target.windowId) {
-        chrome.windows.update(target.windowId, { focused: true });
-      }
-      if (target.id) {
-        chrome.tabs.update(target.id, { active: true });
+      if (target && Number.isFinite(Number(target.id))) {
+        activateTabById(target.id, target.windowId);
       }
       return;
     }
@@ -147,6 +177,19 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const action = message && message.action ? message.action : "";
+
+  if (action === "activateTab") {
+    const tabId = Number(message.tabId);
+    const windowId = Number(message.windowId);
+    if (!Number.isFinite(tabId)) {
+      sendResponse({ ok: false, error: "标签页参数无效。" });
+      return false;
+    }
+    activateTabById(tabId, windowId)
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
+    return true;
+  }
 
   if (action === "getLists") {
     getLists()
