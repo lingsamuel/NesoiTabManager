@@ -1,8 +1,9 @@
 import { computed, reactive, ref } from "vue";
-import { getSelectedTabsFrom } from "../utils/helpers.js";
+import { getSelectedTabsFrom, matchesTabQuery } from "../utils/helpers.js";
 
 function useWindows(options = {}) {
   const hideDiscarded = options.hideDiscarded;
+  const filterQuery = options.filterQuery;
   const windows = ref([]);
   const selectedWindowId = ref("all");
   const selectedTabIds = reactive({});
@@ -17,6 +18,20 @@ function useWindows(options = {}) {
       return list;
     }
     return list.filter((tab) => !tab.discarded);
+  }
+
+  function getKeyword() {
+    return filterQuery ? filterQuery.value : "";
+  }
+
+  // 筛选激活时无匹配的窗口整组隐藏，需要区分“筛选无结果”与“窗口本身无标签”。
+  function isFiltering() {
+    return Boolean(String(getKeyword() || "").trim());
+  }
+
+  function getFilteredTabs(tabs) {
+    const keyword = getKeyword();
+    return getVisibleTabs(tabs).filter((tab) => matchesTabQuery(tab, keyword));
   }
 
   const totalTabCount = computed(() =>
@@ -63,6 +78,10 @@ function useWindows(options = {}) {
         (item) => String(item.id) === String(win.id)
       );
       const labelIndex = actualIndex >= 0 ? actualIndex + 1 : 1;
+      const tabs = getFilteredTabs(win.tabs);
+      if (tabs.length === 0 && isFiltering()) {
+        return;
+      }
       rows.push({
         type: "window",
         key: `window-${win.id}`,
@@ -70,32 +89,31 @@ function useWindows(options = {}) {
         count: win.tabs ? win.tabs.length : 0,
       });
 
-    const tabs = getVisibleTabs(win.tabs);
-    if (tabs.length === 0) {
-      rows.push({
-        type: "empty",
-        key: `empty-${win.id}`,
+      if (tabs.length === 0) {
+        rows.push({
+          type: "empty",
+          key: `empty-${win.id}`,
         });
         return;
       }
 
-    tabs.forEach((tab) => {
-      rows.push({
-        type: "tab",
-        key: `tab-${tab.id}`,
-        tab: {
-          id: tab.id,
-          windowId: tab.windowId,
-          title: tab.title,
-          url: tab.url,
-          favIconUrl: tab.favIconUrl,
-          discarded: Boolean(tab.discarded),
-          pinned: Boolean(tab.pinned),
-          active: Boolean(tab.active),
-          windowIndex: tab.index,
-          index: globalIndex,
-        },
-      });
+      tabs.forEach((tab) => {
+        rows.push({
+          type: "tab",
+          key: `tab-${tab.id}`,
+          tab: {
+            id: tab.id,
+            windowId: tab.windowId,
+            title: tab.title,
+            url: tab.url,
+            favIconUrl: tab.favIconUrl,
+            discarded: Boolean(tab.discarded),
+            pinned: Boolean(tab.pinned),
+            active: Boolean(tab.active),
+            windowIndex: tab.index,
+            index: globalIndex,
+          },
+        });
         globalIndex += 1;
       });
     });
@@ -109,7 +127,7 @@ function useWindows(options = {}) {
 
   function setVisibleSelection(checked) {
     windowsToRender.value.forEach((win) => {
-      getVisibleTabs(win.tabs).forEach((tab) => {
+      getFilteredTabs(win.tabs).forEach((tab) => {
         if (checked) {
           selectedTabIds[tab.id] = true;
         } else {

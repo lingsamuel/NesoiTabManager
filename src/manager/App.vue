@@ -81,9 +81,12 @@
         v-show="view === 'windows'"
         :window-subtitle="windowSubtitle"
         :window-rows="windowRows"
+        :filter-query="windowsFilter.query.value"
         :selected-tab-ids="selectedTabIds"
         :ai-tags="aiTags"
         :hide-discarded="hideDiscarded"
+        :on-update-filter-query="windowsFilter.update"
+        :on-commit-filter-query="windowsFilter.commit"
         :on-select-all="() => setVisibleSelection(true)"
         :on-clear="() => setVisibleSelection(false)"
         :on-close-selected="closeSelectedTabs"
@@ -109,10 +112,13 @@
         :list-subtitle="listSubtitle"
         :selected-list="selectedList"
         :list-items="listItems"
+        :filter-query="listsFilter.query.value"
         :selected-list-item-keys="selectedListItemKeys"
         :list-description-draft="listDescriptionDraft"
         :list-status="listStatus"
         :import-replace="importReplace"
+        :on-update-filter-query="listsFilter.update"
+        :on-commit-filter-query="listsFilter.commit"
         :on-update-list-name-draft="updateListNameDraft"
         :on-update-list-description-draft="updateListDescriptionDraft"
         :on-update-import-replace="updateImportReplace"
@@ -138,8 +144,11 @@
         v-show="view === 'recent'"
         :subtitle="recentSubtitle"
         :rows="recentRows"
+        :filter-query="recentFilter.query.value"
         :selected-tab-ids="selectedRecentTabIds"
         :ai-tags="aiTags"
+        :on-update-filter-query="recentFilter.update"
+        :on-commit-filter-query="recentFilter.commit"
         :on-select-all="() => setRecentSelection(true)"
         :on-clear="clearRecentSelection"
         :on-close-selected="() => closeSelectedTabsForView('recent')"
@@ -433,9 +442,12 @@
         v-show="view === 'discard'"
         :history-subtitle="historySubtitle"
         :history-rows="historyRows"
+        :filter-query="historyFilter.query.value"
         :history-selected-tab-ids="historySelectedTabIds"
         :ai-tags="aiTags"
         :status="discardDebugStatus"
+        :on-update-filter-query="historyFilter.update"
+        :on-commit-filter-query="historyFilter.commit"
         :on-select-all="() => setHistorySelection(true)"
         :on-clear="clearHistorySelection"
         :on-close-selected="closeSelectedHistoryTabs"
@@ -475,6 +487,7 @@ import HistoryView from "./views/HistoryView.vue";
 import SettingsView from "./views/SettingsView.vue";
 import { useAiGrouping } from "./composables/useAiGrouping.js";
 import { useDiscard } from "./composables/useDiscard.js";
+import { useFilterQuery } from "./composables/useFilterQuery.js";
 import { useRecent } from "./composables/useRecent.js";
 import { MOVE_NEW_LIST_VALUE, NEW_LIST_VALUE, useLists } from "./composables/useLists.js";
 import { useWindows } from "./composables/useWindows.js";
@@ -537,6 +550,12 @@ const recentConfig = reactive({
 });
 const recentConfigStatus = reactive({ message: "", type: "" });
 
+// 各标签列表页的筛选关键词状态（实时值 + 防抖后的过滤值），页面间相互独立。
+const windowsFilter = useFilterQuery();
+const listsFilter = useFilterQuery();
+const recentFilter = useFilterQuery();
+const historyFilter = useFilterQuery();
+
 const {
   windows,
   selectedWindowId,
@@ -552,7 +571,7 @@ const {
   clearWindowSelection,
   getSelectedWindowTabs,
   loadWindows,
-} = useWindows({ hideDiscarded });
+} = useWindows({ hideDiscarded, filterQuery: windowsFilter.committed });
 
 const {
   lists,
@@ -599,7 +618,7 @@ const {
   deleteListItem,
   deleteSelectedListItems,
   loadLists,
-} = useLists({ request, statusTarget: status });
+} = useLists({ request, statusTarget: status, filterQuery: listsFilter.committed });
 
 const {
   discardConfig,
@@ -616,7 +635,7 @@ const {
   loadDiscardConfig,
   saveDiscardConfig,
   loadDiscardHistory,
-} = useDiscard({ request, view });
+} = useDiscard({ request, view, filterQuery: historyFilter.committed });
 
 const {
   recentTabs,
@@ -630,7 +649,7 @@ const {
   getSelectedRecentTabs,
   loadRecentTabs,
   markReviewed: markRecentReviewed,
-} = useRecent({ request });
+} = useRecent({ request, filterQuery: recentFilter.committed });
 
 const aiContextView = ref("windows");
 const saveContextView = ref("windows");

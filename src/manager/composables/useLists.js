@@ -1,9 +1,10 @@
 import { computed, reactive, ref } from "vue";
+import { matchesTabQuery } from "../utils/helpers.js";
 
 const NEW_LIST_VALUE = "__new__";
 const MOVE_NEW_LIST_VALUE = "__move_new__";
 
-function useLists({ request, statusTarget }) {
+function useLists({ request, statusTarget, filterQuery }) {
   const lists = ref([]);
   const selectedListId = ref("");
   const selectedListItemKeys = reactive({});
@@ -54,11 +55,14 @@ function useLists({ request, statusTarget }) {
     if (!list || !Array.isArray(list.items)) {
       return [];
     }
-    return list.items.map((item, index) => ({
-      ...item,
-      key: `list-${list.id}-${index}`,
-      index,
-    }));
+    const keyword = filterQuery ? filterQuery.value : "";
+    return list.items
+      .map((item, index) => ({
+        ...item,
+        key: `list-${list.id}-${index}`,
+        index,
+      }))
+      .filter((item) => matchesTabQuery(item, keyword));
   });
 
   const listSubItems = computed(() =>

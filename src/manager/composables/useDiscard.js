@@ -2,10 +2,11 @@ import { computed, reactive, ref } from "vue";
 import {
   formatLocalTime,
   getSelectedTabsFrom,
+  matchesTabQuery,
   normalizeWhitelistInput,
 } from "../utils/helpers.js";
 
-function useDiscard({ request, view }) {
+function useDiscard({ request, view, filterQuery }) {
   const discardConfig = reactive({
     enabled: false,
     idleMinutes: 20,
@@ -51,7 +52,15 @@ function useDiscard({ request, view }) {
   const historyRows = computed(() => {
     const rows = [];
     const batches = discardHistoryBatches.value || [];
+    const keyword = filterQuery ? filterQuery.value : "";
+    const filtering = Boolean(String(keyword || "").trim());
     batches.forEach((batch, index) => {
+      const items = (batch.items || []).filter((item) =>
+        matchesTabQuery(item, keyword)
+      );
+      if (items.length === 0 && filtering) {
+        return;
+      }
       const label = batch.at ? `冻结时间：${formatLocalTime(batch.at)}` : "冻结记录";
       rows.push({
         type: "window",
@@ -59,7 +68,7 @@ function useDiscard({ request, view }) {
         label,
         count: batch.items ? batch.items.length : 0,
       });
-      (batch.items || []).forEach((item, itemIndex) => {
+      items.forEach((item, itemIndex) => {
         const freezeCount = Number(item.freezeCount) || 1;
         rows.push({
           type: "tab",
@@ -101,13 +110,16 @@ function useDiscard({ request, view }) {
   }
 
   function setHistorySelection(checked) {
-    historyTabsFlat.value.forEach((tab) => {
-      if (checked) {
-        historySelectedTabIds[tab.id] = true;
-      } else {
-        delete historySelectedTabIds[tab.id];
-      }
-    });
+    const keyword = filterQuery ? filterQuery.value : "";
+    historyTabsFlat.value
+      .filter((tab) => matchesTabQuery(tab, keyword))
+      .forEach((tab) => {
+        if (checked) {
+          historySelectedTabIds[tab.id] = true;
+        } else {
+          delete historySelectedTabIds[tab.id];
+        }
+      });
   }
 
   function toggleHistoryTab(tabId, checked) {

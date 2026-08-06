@@ -1,7 +1,7 @@
 import { computed, reactive, ref } from "vue";
-import { getSelectedTabsFrom } from "../utils/helpers.js";
+import { getSelectedTabsFrom, matchesTabQuery } from "../utils/helpers.js";
 
-function useRecent({ request }) {
+function useRecent({ request, filterQuery }) {
   const recentTabs = ref([]);
   const selectedRecentTabIds = reactive({});
   const lastReviewedAt = ref(0);
@@ -19,34 +19,40 @@ function useRecent({ request }) {
     return `过去 ${durationText.value} 新增未关闭标签页（共 ${count} 个）`;
   });
 
-  const recentRows = computed(() =>
-    recentTabs.value.map((tab) => ({
-      type: "tab",
-      key: `recent-${tab.id}`,
-      tab: {
-        id: tab.id,
-        windowId: tab.windowId,
-        title: tab.title,
-        url: tab.url,
-        favIconUrl: tab.favIconUrl,
-        discarded: Boolean(tab.discarded),
-        pinned: Boolean(tab.pinned),
-        active: Boolean(tab.active),
-      },
-    }))
-  );
+  const recentRows = computed(() => {
+    const keyword = filterQuery ? filterQuery.value : "";
+    return recentTabs.value
+      .filter((tab) => matchesTabQuery(tab, keyword))
+      .map((tab) => ({
+        type: "tab",
+        key: `recent-${tab.id}`,
+        tab: {
+          id: tab.id,
+          windowId: tab.windowId,
+          title: tab.title,
+          url: tab.url,
+          favIconUrl: tab.favIconUrl,
+          discarded: Boolean(tab.discarded),
+          pinned: Boolean(tab.pinned),
+          active: Boolean(tab.active),
+        },
+      }));
+  });
 
   function setRecentSelection(checked) {
-    recentTabs.value.forEach((tab) => {
-      if (!tab || !tab.id) {
-        return;
-      }
-      if (checked) {
-        selectedRecentTabIds[tab.id] = true;
-      } else {
-        delete selectedRecentTabIds[tab.id];
-      }
-    });
+    const keyword = filterQuery ? filterQuery.value : "";
+    recentTabs.value
+      .filter((tab) => matchesTabQuery(tab, keyword))
+      .forEach((tab) => {
+        if (!tab || !tab.id) {
+          return;
+        }
+        if (checked) {
+          selectedRecentTabIds[tab.id] = true;
+        } else {
+          delete selectedRecentTabIds[tab.id];
+        }
+      });
   }
 
   function toggleRecentTab(tabId, checked) {

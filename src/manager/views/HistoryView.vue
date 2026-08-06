@@ -6,6 +6,12 @@
         <div class="content-subtitle">{{ historySubtitle }}</div>
       </div>
       <div class="content-actions">
+        <FilterInput
+          :model-value="filterQuery"
+          placeholder="筛选标题或网址"
+          @update:model-value="onUpdateFilterQuery"
+          @commit="onCommitFilterQuery"
+        />
         <button class="ghost btn-icon" @click="onSelectAll">
           <span class="icon" aria-hidden="true">
             <svg viewBox="0 0 24 24">
@@ -62,7 +68,7 @@
       :item-height="44"
       :selected-map="historySelectedTabIds"
       :ai-tags="aiTags"
-      empty-text="暂无冻结历史。"
+      :empty-text="emptyText"
       empty-row-text="暂无冻结记录。"
       :on-toggle-selection="onToggleSelection"
       :on-toggle-tab="onToggleTab"
@@ -75,9 +81,11 @@
 </template>
 
 <script setup>
+import { computed } from "vue";
+import FilterInput from "../components/FilterInput.vue";
 import TabListPanel from "../components/TabListPanel.vue";
 
-defineProps({
+const props = defineProps({
   historySubtitle: {
     type: String,
     default: "",
@@ -86,6 +94,10 @@ defineProps({
     type: Array,
     default: () => [],
   },
+  filterQuery: {
+    type: String,
+    default: "",
+  },
   historySelectedTabIds: {
     type: Object,
     default: () => ({}),
@@ -93,6 +105,14 @@ defineProps({
   aiTags: {
     type: Object,
     default: () => ({}),
+  },
+  onUpdateFilterQuery: {
+    type: Function,
+    default: null,
+  },
+  onCommitFilterQuery: {
+    type: Function,
+    default: null,
   },
   status: {
     type: Object,
@@ -147,4 +167,8 @@ defineProps({
     default: null,
   },
 });
+
+const emptyText = computed(() =>
+  props.filterQuery ? "未找到匹配的标签页。" : "暂无冻结历史。"
+);
 </script>

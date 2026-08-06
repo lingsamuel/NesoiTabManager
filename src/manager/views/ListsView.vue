@@ -40,6 +40,12 @@
         <div class="content-subtitle">{{ listSubtitle }}</div>
       </div>
       <div class="content-actions">
+        <FilterInput
+          :model-value="filterQuery"
+          placeholder="筛选标题或网址"
+          @update:model-value="onUpdateFilterQuery"
+          @commit="onCommitFilterQuery"
+        />
         <button class="ghost btn-icon" @click="onSelectAllListItems">
           <span class="icon" aria-hidden="true">
             <svg viewBox="0 0 24 24">
@@ -136,7 +142,7 @@
     </section>
 
     <div class="panel list-panel">
-      <div v-if="listItems.length === 0" class="virtual-empty">暂无已保存的列表。</div>
+      <div v-if="listItems.length === 0" class="virtual-empty">{{ emptyText }}</div>
       <VirtualList
         v-else
         class="list-items"
@@ -207,7 +213,8 @@
 </template>
 
 <script setup>
-import { nextTick, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
+import FilterInput from "../components/FilterInput.vue";
 import VirtualList from "../components/VirtualList.vue";
 
 const props = defineProps({
@@ -235,6 +242,10 @@ const props = defineProps({
     type: Array,
     default: () => [],
   },
+  filterQuery: {
+    type: String,
+    default: "",
+  },
   selectedListItemKeys: {
     type: Object,
     default: () => ({}),
@@ -250,6 +261,14 @@ const props = defineProps({
   importReplace: {
     type: Boolean,
     default: false,
+  },
+  onUpdateFilterQuery: {
+    type: Function,
+    default: null,
+  },
+  onCommitFilterQuery: {
+    type: Function,
+    default: null,
   },
   onUpdateListNameDraft: {
     type: Function,
@@ -328,6 +347,10 @@ const props = defineProps({
     default: null,
   },
 });
+
+const emptyText = computed(() =>
+  props.filterQuery ? "未找到匹配的标签页。" : "暂无已保存的列表。"
+);
 
 const listNameInput = ref(null);
 

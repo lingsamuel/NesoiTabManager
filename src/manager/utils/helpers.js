@@ -83,6 +83,18 @@ function getSelectedTabsFrom(selectionMap, sourceTabs) {
   return results;
 }
 
+// 标签/保存项筛选：对标题与网址做不区分大小写的包含匹配。
+// keyword 为空时视为不筛选，返回 true。
+function matchesTabQuery(tab, keyword) {
+  const kw = String(keyword || "").trim().toLowerCase();
+  if (!kw) {
+    return true;
+  }
+  const title = String((tab && tab.title) || "").toLowerCase();
+  const url = String((tab && tab.url) || "").toLowerCase();
+  return title.includes(kw) || url.includes(kw);
+}
+
 function getBaseDomain(url) {
   if (!url) {
     return "";
@@ -123,6 +135,7 @@ export {
   formatLocalTime,
   getBaseDomain,
   getSelectedTabsFrom,
+  matchesTabQuery,
   normalizeWhitelistInput,
   moveTabsInBatches,
   removeTabsInBatches,
