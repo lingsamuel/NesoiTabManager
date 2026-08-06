@@ -1,12 +1,25 @@
 import { computed, reactive, ref } from "vue";
 import { getSelectedTabsFrom, matchesTabQuery } from "../utils/helpers.js";
 
-function useRecent({ request, filterQuery }) {
+function useRecent({ request, filterQuery, filterMode }) {
   const recentTabs = ref([]);
   const selectedRecentTabIds = reactive({});
   const lastReviewedAt = ref(0);
   const durationText = ref("");
   const startupActive = ref(false);
+
+  function getKeyword() {
+    return filterQuery ? filterQuery.value : "";
+  }
+
+  function hasKeyword() {
+    return Boolean(String(getKeyword() || "").trim());
+  }
+
+  // 仅“过滤”模式下才隐藏不匹配项；跳转模式保持完整列表，只标记匹配项。
+  function shouldFilterRows() {
+    return filterMode ? filterMode.value === "filter" && hasKeyword() : hasKeyword();
+  }
 
   const recentSubtitle = computed(() => {
     if (startupActive.value) {
@@ -20,9 +33,9 @@ function useRecent({ request, filterQuery }) {
   });
 
   const recentRows = computed(() => {
-    const keyword = filterQuery ? filterQuery.value : "";
+    const keyword = getKeyword();
     return recentTabs.value
-      .filter((tab) => matchesTabQuery(tab, keyword))
+      .filter((tab) => (shouldFilterRows() ? matchesTabQuery(tab, keyword) : true))
       .map((tab) => ({
         type: "tab",
         key: `recent-${tab.id}`,
@@ -35,14 +48,15 @@ function useRecent({ request, filterQuery }) {
           discarded: Boolean(tab.discarded),
           pinned: Boolean(tab.pinned),
           active: Boolean(tab.active),
+          matched: hasKeyword() && matchesTabQuery(tab, keyword),
         },
       }));
   });
 
   function setRecentSelection(checked) {
-    const keyword = filterQuery ? filterQuery.value : "";
+    const keyword = getKeyword();
     recentTabs.value
-      .filter((tab) => matchesTabQuery(tab, keyword))
+      .filter((tab) => (shouldFilterRows() ? matchesTabQuery(tab, keyword) : true))
       .forEach((tab) => {
         if (!tab || !tab.id) {
           return;

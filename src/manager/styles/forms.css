@@ -114,3 +114,53 @@ textarea {
   stroke-linecap: round;
   stroke-linejoin: round;
 }
+
+.filter-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.filter-mode-toggle {
+  display: inline-flex;
+  border: 1px solid var(--stroke);
+  border-radius: 999px;
+  overflow: hidden;
+  background: #f3f4f6;
+}
+
+.filter-mode-btn {
+  border: none;
+  background: transparent;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.filter-mode-btn.active {
+  background: #ffffff;
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.filter-match-count {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.filter-match-count.empty {
+  color: #b91c1c;
+}
+
+.filter-jump-btn {
+  padding: 4px 8px;
+}
+
+.filter-jump-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+}

@@ -12,7 +12,7 @@
       @input="handleInput"
       @compositionstart="handleCompositionStart"
       @compositionend="handleCompositionEnd"
-      @keydown.esc="handleClear"
+      @keydown="handleKeydown"
     />
     <button
       v-if="modelValue"
@@ -45,7 +45,7 @@ const props = defineProps({
   },
 });
 
-const emit = defineEmits(["update:modelValue", "commit"]);
+const emit = defineEmits(["update:modelValue", "commit", "next", "prev"]);
 
 let composing = false;
 let timer = null;
@@ -77,6 +77,23 @@ function handleCompositionEnd(event) {
   composing = false;
   emit("update:modelValue", event.target.value);
   scheduleCommit(event.target.value);
+}
+
+// Enter/Shift+Enter 用于“跳转模式”下在匹配项之间导航；
+// 输入法组合期按 Enter 是确认候选，不能触发跳转。
+function handleKeydown(event) {
+  if (composing || event.isComposing) {
+    return;
+  }
+  if (event.key === "Enter") {
+    event.preventDefault();
+    emit(event.shiftKey ? "prev" : "next");
+    return;
+  }
+  if (event.key === "Escape") {
+    event.preventDefault();
+    handleClear();
+  }
 }
 
 function handleClear() {

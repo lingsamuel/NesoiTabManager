@@ -7,8 +7,9 @@
       class="tabs"
       :items="rows"
       :item-height="itemHeight"
+      :current-match-index="currentMatchIndex"
     >
-      <template #default="{ item }">
+      <template #default="{ item, index }">
         <div v-if="item.type === 'window'" class="window-title-row">
           {{ item.label }}<span v-if="item.count !== undefined">（{{ item.count }}）</span>
         </div>
@@ -23,6 +24,8 @@
             draggable: enableDrag,
             dragging: draggingTabId === item.tab.id,
             'drag-target': dragOverTabId === item.tab.id,
+            matched: highlightMatches && Boolean(item.tab.matched),
+            'match-current': index === currentMatchIndex,
           }"
           :draggable="enableDrag"
           @click="handleToggleSelection(item.tab.id, $event)"
@@ -156,6 +159,14 @@ const props = defineProps({
   enableDrag: {
     type: Boolean,
     default: false,
+  },
+  highlightMatches: {
+    type: Boolean,
+    default: false,
+  },
+  currentMatchIndex: {
+    type: Number,
+    default: -1,
   },
   emptyText: {
     type: String,

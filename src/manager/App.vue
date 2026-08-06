@@ -82,11 +82,14 @@
         :window-subtitle="windowSubtitle"
         :window-rows="windowRows"
         :filter-query="windowsFilter.query.value"
+        :committed-filter-query="windowsFilter.committed.value"
+        :filter-mode="windowsFilter.mode.value"
         :selected-tab-ids="selectedTabIds"
         :ai-tags="aiTags"
         :hide-discarded="hideDiscarded"
         :on-update-filter-query="windowsFilter.update"
         :on-commit-filter-query="windowsFilter.commit"
+        :on-mode-change="windowsFilter.setMode"
         :on-select-all="() => setVisibleSelection(true)"
         :on-clear="() => setVisibleSelection(false)"
         :on-close-selected="closeSelectedTabs"
@@ -113,12 +116,15 @@
         :selected-list="selectedList"
         :list-items="listItems"
         :filter-query="listsFilter.query.value"
+        :committed-filter-query="listsFilter.committed.value"
+        :filter-mode="listsFilter.mode.value"
         :selected-list-item-keys="selectedListItemKeys"
         :list-description-draft="listDescriptionDraft"
         :list-status="listStatus"
         :import-replace="importReplace"
         :on-update-filter-query="listsFilter.update"
         :on-commit-filter-query="listsFilter.commit"
+        :on-mode-change="listsFilter.setMode"
         :on-update-list-name-draft="updateListNameDraft"
         :on-update-list-description-draft="updateListDescriptionDraft"
         :on-update-import-replace="updateImportReplace"
@@ -145,10 +151,13 @@
         :subtitle="recentSubtitle"
         :rows="recentRows"
         :filter-query="recentFilter.query.value"
+        :committed-filter-query="recentFilter.committed.value"
+        :filter-mode="recentFilter.mode.value"
         :selected-tab-ids="selectedRecentTabIds"
         :ai-tags="aiTags"
         :on-update-filter-query="recentFilter.update"
         :on-commit-filter-query="recentFilter.commit"
+        :on-mode-change="recentFilter.setMode"
         :on-select-all="() => setRecentSelection(true)"
         :on-clear="clearRecentSelection"
         :on-close-selected="() => closeSelectedTabsForView('recent')"
@@ -443,11 +452,14 @@
         :history-subtitle="historySubtitle"
         :history-rows="historyRows"
         :filter-query="historyFilter.query.value"
+        :committed-filter-query="historyFilter.committed.value"
+        :filter-mode="historyFilter.mode.value"
         :history-selected-tab-ids="historySelectedTabIds"
         :ai-tags="aiTags"
         :status="discardDebugStatus"
         :on-update-filter-query="historyFilter.update"
         :on-commit-filter-query="historyFilter.commit"
+        :on-mode-change="historyFilter.setMode"
         :on-select-all="() => setHistorySelection(true)"
         :on-clear="clearHistorySelection"
         :on-close-selected="closeSelectedHistoryTabs"
@@ -571,7 +583,11 @@ const {
   clearWindowSelection,
   getSelectedWindowTabs,
   loadWindows,
-} = useWindows({ hideDiscarded, filterQuery: windowsFilter.committed });
+} = useWindows({
+  hideDiscarded,
+  filterQuery: windowsFilter.committed,
+  filterMode: windowsFilter.mode,
+});
 
 const {
   lists,
@@ -618,7 +634,12 @@ const {
   deleteListItem,
   deleteSelectedListItems,
   loadLists,
-} = useLists({ request, statusTarget: status, filterQuery: listsFilter.committed });
+} = useLists({
+  request,
+  statusTarget: status,
+  filterQuery: listsFilter.committed,
+  filterMode: listsFilter.mode,
+});
 
 const {
   discardConfig,
@@ -635,7 +656,12 @@ const {
   loadDiscardConfig,
   saveDiscardConfig,
   loadDiscardHistory,
-} = useDiscard({ request, view, filterQuery: historyFilter.committed });
+} = useDiscard({
+  request,
+  view,
+  filterQuery: historyFilter.committed,
+  filterMode: historyFilter.mode,
+});
 
 const {
   recentTabs,
@@ -649,7 +675,11 @@ const {
   getSelectedRecentTabs,
   loadRecentTabs,
   markReviewed: markRecentReviewed,
-} = useRecent({ request, filterQuery: recentFilter.committed });
+} = useRecent({
+  request,
+  filterQuery: recentFilter.committed,
+  filterMode: recentFilter.mode,
+});
 
 const aiContextView = ref("windows");
 const saveContextView = ref("windows");

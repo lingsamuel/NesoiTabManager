@@ -4,6 +4,7 @@ import { getSelectedTabsFrom, matchesTabQuery } from "../utils/helpers.js";
 function useWindows(options = {}) {
   const hideDiscarded = options.hideDiscarded;
   const filterQuery = options.filterQuery;
+  const filterMode = options.filterMode;
   const windows = ref([]);
   const selectedWindowId = ref("all");
   const selectedTabIds = reactive({});
@@ -24,14 +25,25 @@ function useWindows(options = {}) {
     return filterQuery ? filterQuery.value : "";
   }
 
-  // 筛选激活时无匹配的窗口整组隐藏，需要区分“筛选无结果”与“窗口本身无标签”。
-  function isFiltering() {
+  function hasKeyword() {
     return Boolean(String(getKeyword() || "").trim());
   }
 
-  function getFilteredTabs(tabs) {
+  // 仅“过滤”模式下才真正隐藏不匹配标签；跳转模式保持完整列表，只标记匹配项。
+  function shouldFilterRows() {
+    return filterMode ? filterMode.value === "filter" && hasKeyword() : hasKeyword();
+  }
+
+  function getDisplayTabs(tabs) {
     const keyword = getKeyword();
-    return getVisibleTabs(tabs).filter((tab) => matchesTabQuery(tab, keyword));
+    const filtering = shouldFilterRows();
+    return getVisibleTabs(tabs)
+      .filter((tab) => (filtering ? matchesTabQuery(tab, keyword) : true))
+      .map((tab) => ({
+        ...tab,
+        // 仅在存在关键词时标记匹配，避免无关键词时整表误高亮。
+        matched: hasKeyword() && matchesTabQuery(tab, keyword),
+      }));
   }
 
   const totalTabCount = computed(() =>
@@ -78,8 +90,8 @@ function useWindows(options = {}) {
         (item) => String(item.id) === String(win.id)
       );
       const labelIndex = actualIndex >= 0 ? actualIndex + 1 : 1;
-      const tabs = getFilteredTabs(win.tabs);
-      if (tabs.length === 0 && isFiltering()) {
+      const tabs = getDisplayTabs(win.tabs);
+      if (tabs.length === 0 && shouldFilterRows()) {
         return;
       }
       rows.push({
@@ -109,11 +121,12 @@ function useWindows(options = {}) {
             favIconUrl: tab.favIconUrl,
             discarded: Boolean(tab.discarded),
             pinned: Boolean(tab.pinned),
-            active: Boolean(tab.active),
-            windowIndex: tab.index,
-            index: globalIndex,
-          },
-        });
+          active: Boolean(tab.active),
+          windowIndex: tab.index,
+          index: globalIndex,
+          matched: Boolean(tab.matched),
+        },
+      });
         globalIndex += 1;
       });
     });
@@ -127,7 +140,7 @@ function useWindows(options = {}) {
 
   function setVisibleSelection(checked) {
     windowsToRender.value.forEach((win) => {
-      getFilteredTabs(win.tabs).forEach((tab) => {
+      getDisplayTabs(win.tabs).forEach((tab) => {
         if (checked) {
           selectedTabIds[tab.id] = true;
         } else {

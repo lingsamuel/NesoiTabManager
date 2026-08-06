@@ -4,11 +4,24 @@ import { matchesTabQuery } from "../utils/helpers.js";
 const NEW_LIST_VALUE = "__new__";
 const MOVE_NEW_LIST_VALUE = "__move_new__";
 
-function useLists({ request, statusTarget, filterQuery }) {
+function useLists({ request, statusTarget, filterQuery, filterMode }) {
   const lists = ref([]);
   const selectedListId = ref("");
   const selectedListItemKeys = reactive({});
   const listStatus = reactive({ message: "", type: "" });
+
+  function getKeyword() {
+    return filterQuery ? filterQuery.value : "";
+  }
+
+  function hasKeyword() {
+    return Boolean(String(getKeyword() || "").trim());
+  }
+
+  // 仅“过滤”模式下才隐藏不匹配项；跳转模式保持完整列表，只标记匹配项。
+  function shouldFilterRows() {
+    return filterMode ? filterMode.value === "filter" && hasKeyword() : hasKeyword();
+  }
 
   const selectedListTarget = ref(NEW_LIST_VALUE);
   const newListName = ref("");
@@ -55,14 +68,17 @@ function useLists({ request, statusTarget, filterQuery }) {
     if (!list || !Array.isArray(list.items)) {
       return [];
     }
-    const keyword = filterQuery ? filterQuery.value : "";
-    return list.items
-      .map((item, index) => ({
-        ...item,
-        key: `list-${list.id}-${index}`,
-        index,
-      }))
-      .filter((item) => matchesTabQuery(item, keyword));
+    const keyword = getKeyword();
+    // 先保留原始 index，过滤后再按需展示，保证删除/移动仍指向原始条目。
+    const items = list.items.map((item, index) => ({
+      ...item,
+      key: `list-${list.id}-${index}`,
+      index,
+      matched: hasKeyword() && matchesTabQuery(item, keyword),
+    }));
+    return shouldFilterRows()
+      ? items.filter((item) => matchesTabQuery(item, keyword))
+      : items;
   });
 
   const listSubItems = computed(() =>

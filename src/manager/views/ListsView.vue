@@ -40,11 +40,17 @@
         <div class="content-subtitle">{{ listSubtitle }}</div>
       </div>
       <div class="content-actions">
-        <FilterInput
+        <FilterBar
           :model-value="filterQuery"
-          placeholder="筛选标题或网址"
+          :mode="filterMode"
+          :match-count="matchCount"
+          :current-index="currentMatchPosition"
+          :has-query="Boolean(committedFilterQuery)"
           @update:model-value="onUpdateFilterQuery"
           @commit="onCommitFilterQuery"
+          @mode-change="onModeChange"
+          @next="goToNext"
+          @prev="goToPrev"
         />
         <button class="ghost btn-icon" @click="onSelectAllListItems">
           <span class="icon" aria-hidden="true">
@@ -148,11 +154,16 @@
         class="list-items"
         :items="listItems"
         :item-height="60"
+        :current-match-index="currentMatchIndex"
       >
-        <template #default="{ item }">
+        <template #default="{ item, index }">
           <div
             class="list-item"
-            :class="{ selected: Boolean(selectedListItemKeys[item.key]) }"
+            :class="{
+              selected: Boolean(selectedListItemKeys[item.key]),
+              matched: isJumpMode && Boolean(item.matched),
+              'match-current': index === currentMatchIndex,
+            }"
             @click="onToggleListItemSelection(item.key)"
           >
             <input
@@ -214,8 +225,9 @@
 
 <script setup>
 import { computed, nextTick, ref, watch } from "vue";
-import FilterInput from "../components/FilterInput.vue";
+import FilterBar from "../components/FilterBar.vue";
 import VirtualList from "../components/VirtualList.vue";
+import { useMatchNavigation } from "../composables/useMatchNavigation.js";
 
 const props = defineProps({
   isEditingListName: {
@@ -246,6 +258,14 @@ const props = defineProps({
     type: String,
     default: "",
   },
+  committedFilterQuery: {
+    type: String,
+    default: "",
+  },
+  filterMode: {
+    type: String,
+    default: "filter",
+  },
   selectedListItemKeys: {
     type: Object,
     default: () => ({}),
@@ -267,6 +287,10 @@ const props = defineProps({
     default: null,
   },
   onCommitFilterQuery: {
+    type: Function,
+    default: null,
+  },
+  onModeChange: {
     type: Function,
     default: null,
   },
@@ -351,6 +375,23 @@ const props = defineProps({
 const emptyText = computed(() =>
   props.filterQuery ? "未找到匹配的标签页。" : "暂无已保存的列表。"
 );
+
+const isJumpMode = computed(
+  () => props.filterMode === "jump" && Boolean(props.committedFilterQuery)
+);
+
+const {
+  matchCount,
+  currentMatchIndex,
+  currentMatchPosition,
+  goToNext,
+  goToPrev,
+} = useMatchNavigation({
+  rows: computed(() => props.listItems),
+  isMatchRow: (item) => Boolean(item && item.matched),
+  mode: computed(() => props.filterMode),
+  hasQuery: computed(() => Boolean(props.committedFilterQuery)),
+});
 
 const listNameInput = ref(null);
 

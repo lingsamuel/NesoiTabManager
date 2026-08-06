@@ -6,7 +6,7 @@ import {
   normalizeWhitelistInput,
 } from "../utils/helpers.js";
 
-function useDiscard({ request, view, filterQuery }) {
+function useDiscard({ request, view, filterQuery, filterMode }) {
   const discardConfig = reactive({
     enabled: false,
     idleMinutes: 20,
@@ -26,6 +26,19 @@ function useDiscard({ request, view, filterQuery }) {
   const discardHistoryBatches = ref([]);
   const discardHistorySummary = reactive({ total: 0, batches: 0, limit: 0 });
   const historySelectedTabIds = reactive({});
+
+  function getKeyword() {
+    return filterQuery ? filterQuery.value : "";
+  }
+
+  function hasKeyword() {
+    return Boolean(String(getKeyword() || "").trim());
+  }
+
+  // 仅“过滤”模式下才隐藏无匹配的冻结批次；跳转模式保持完整列表，只标记匹配项。
+  function shouldFilterRows() {
+    return filterMode ? filterMode.value === "filter" && hasKeyword() : hasKeyword();
+  }
 
   const historyTabsFlat = computed(() => {
     const tabs = [];
@@ -52,15 +65,21 @@ function useDiscard({ request, view, filterQuery }) {
   const historyRows = computed(() => {
     const rows = [];
     const batches = discardHistoryBatches.value || [];
-    const keyword = filterQuery ? filterQuery.value : "";
-    const filtering = Boolean(String(keyword || "").trim());
+    const keyword = getKeyword();
+    const filtering = shouldFilterRows();
+    // 先筛出可见批次，再在可见批次之间插入分隔线，避免末尾出现悬空分隔线。
+    const visibleBatches = [];
     batches.forEach((batch, index) => {
       const items = (batch.items || []).filter((item) =>
-        matchesTabQuery(item, keyword)
+        filtering ? matchesTabQuery(item, keyword) : true
       );
       if (items.length === 0 && filtering) {
         return;
       }
+      visibleBatches.push({ batch, index, items });
+    });
+    visibleBatches.forEach((entry, pos) => {
+      const { batch, index, items } = entry;
       const label = batch.at ? `冻结时间：${formatLocalTime(batch.at)}` : "冻结记录";
       rows.push({
         type: "window",
@@ -81,10 +100,11 @@ function useDiscard({ request, view, filterQuery }) {
             favIconUrl: item.favIconUrl,
             discarded: true,
             freezeCount,
+            matched: hasKeyword() && matchesTabQuery(item, keyword),
           },
         });
       });
-      if (index < batches.length - 1) {
+      if (pos < visibleBatches.length - 1) {
         rows.push({
           type: "separator",
           key: `batch-sep-${batch.id || index}`,
@@ -110,9 +130,9 @@ function useDiscard({ request, view, filterQuery }) {
   }
 
   function setHistorySelection(checked) {
-    const keyword = filterQuery ? filterQuery.value : "";
+    const keyword = getKeyword();
     historyTabsFlat.value
-      .filter((tab) => matchesTabQuery(tab, keyword))
+      .filter((tab) => (shouldFilterRows() ? matchesTabQuery(tab, keyword) : true))
       .forEach((tab) => {
         if (checked) {
           historySelectedTabIds[tab.id] = true;

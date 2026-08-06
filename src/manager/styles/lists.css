@@ -95,6 +95,15 @@
   box-shadow: inset 0 -2px 0 #cbd5f5;
 }
 
+.tab-row.matched {
+  background: #fffbe6;
+}
+
+.tab-row.match-current {
+  background: #ffef9e;
+  box-shadow: inset 3px 0 0 #eab308;
+}
+
 .tab-body {
   cursor: default;
   min-width: 0;
@@ -273,6 +282,15 @@
 
 .list-item.selected {
   background: #e5e7eb;
+}
+
+.list-item.matched {
+  background: #fffbe6;
+}
+
+.list-item.match-current {
+  background: #ffef9e;
+  border-color: #eab308;
 }
 
 .list-body {

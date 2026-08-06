@@ -29,6 +29,10 @@ const props = defineProps({
     type: Number,
     default: 6,
   },
+  currentMatchIndex: {
+    type: Number,
+    default: -1,
+  },
 });
 
 const container = ref(null);
@@ -95,6 +99,24 @@ function scrollToBottom() {
   scrollTop.value = maxScroll;
 }
 
+// 滚动到指定行并尽量居中显示，用于“跳转模式”下在匹配项之间导航。
+function scrollToIndex(index) {
+  if (!container.value || !Number.isFinite(index) || props.items.length === 0) {
+    return;
+  }
+  const target = Math.max(0, Math.min(index, props.items.length - 1));
+  const maxScroll = Math.max(0, totalHeight.value - viewportHeight.value);
+  const top = Math.max(
+    0,
+    Math.min(
+      target * props.itemHeight + props.itemHeight / 2 - viewportHeight.value / 2,
+      maxScroll
+    )
+  );
+  container.value.scrollTop = top;
+  scrollTop.value = top;
+}
+
 watch(
   () => props.items.length,
   () => {
@@ -109,9 +131,19 @@ watch(
   }
 );
 
+watch(
+  () => props.currentMatchIndex,
+  (index) => {
+    if (index >= 0) {
+      scrollToIndex(index);
+    }
+  }
+);
+
 defineExpose({
   scrollToTop,
   scrollToBottom,
+  scrollToIndex,
 });
 
 onMounted(() => {

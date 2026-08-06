@@ -6,11 +6,17 @@
         <div class="content-subtitle">{{ windowSubtitle }}</div>
       </div>
       <div class="content-actions">
-        <FilterInput
+        <FilterBar
           :model-value="filterQuery"
-          placeholder="筛选标题或网址"
+          :mode="filterMode"
+          :match-count="matchCount"
+          :current-index="currentMatchPosition"
+          :has-query="Boolean(committedFilterQuery)"
           @update:model-value="onUpdateFilterQuery"
           @commit="onCommitFilterQuery"
+          @mode-change="onModeChange"
+          @next="goToNext"
+          @prev="goToPrev"
         />
         <button class="ghost btn-icon" @click="onSelectAll">
           <span class="icon" aria-hidden="true">
@@ -87,6 +93,8 @@
       :enable-drag="true"
       :empty-text="emptyText"
       empty-row-text="此窗口没有标签页。"
+      :highlight-matches="isJumpMode"
+      :current-match-index="currentMatchIndex"
       :on-toggle-selection="onToggleSelection"
       :on-toggle-tab="onToggleTab"
       :on-activate="onActivate"
@@ -100,8 +108,9 @@
 
 <script setup>
 import { computed } from "vue";
-import FilterInput from "../components/FilterInput.vue";
+import FilterBar from "../components/FilterBar.vue";
 import TabListPanel from "../components/TabListPanel.vue";
+import { useMatchNavigation } from "../composables/useMatchNavigation.js";
 
 const props = defineProps({
   windowSubtitle: {
@@ -115,6 +124,14 @@ const props = defineProps({
   filterQuery: {
     type: String,
     default: "",
+  },
+  committedFilterQuery: {
+    type: String,
+    default: "",
+  },
+  filterMode: {
+    type: String,
+    default: "filter",
   },
   selectedTabIds: {
     type: Object,
@@ -133,6 +150,10 @@ const props = defineProps({
     default: null,
   },
   onCommitFilterQuery: {
+    type: Function,
+    default: null,
+  },
+  onModeChange: {
     type: Function,
     default: null,
   },
@@ -201,6 +222,24 @@ const props = defineProps({
 const emptyText = computed(() =>
   props.filterQuery ? "未找到匹配的标签页。" : "未找到打开的标签页。"
 );
+
+const isJumpMode = computed(
+  () => props.filterMode === "jump" && Boolean(props.committedFilterQuery)
+);
+
+const {
+  matchCount,
+  currentMatchIndex,
+  currentMatchPosition,
+  goToNext,
+  goToPrev,
+} = useMatchNavigation({
+  rows: computed(() => props.windowRows),
+  isMatchRow: (item) =>
+    Boolean(item && item.type === "tab" && item.tab && item.tab.matched),
+  mode: computed(() => props.filterMode),
+  hasQuery: computed(() => Boolean(props.committedFilterQuery)),
+});
 
 function handleToggleHideDiscarded(checked) {
   if (props.onToggleHideDiscarded) {
