@@ -322,7 +322,7 @@
       <div v-if="showSaveModal" class="modal-backdrop" @click.self="closeSaveModal">
         <div class="modal">
           <div class="modal-header">
-            <h3>保存所选标签页</h3>
+            <h3>保存所选标签页（当前已选中 {{ saveSelectedCount }} 个）</h3>
             <button class="ghost btn-icon" @click="closeSaveModal">
               <span class="icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24">
@@ -691,6 +691,11 @@ const showSaveModal = ref(false);
 const closeAfter = ref(false);
 const windowMoveTargetId = ref(NEW_WINDOW_VALUE);
 const windowMoveContextView = ref("windows");
+
+// 保存弹窗标题中展示当前已选中的标签数量，随选择状态实时更新。
+const saveSelectedCount = computed(() =>
+  getSelectedTabsForView(saveContextView.value).length
+);
 const windowMoveTargets = computed(() =>
   windows.value.map((win, index) => ({
     id: String(win.id),
