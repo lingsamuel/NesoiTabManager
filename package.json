@@ -8,6 +8,7 @@
     "build": "node scripts/build.mjs && node scripts/package-builds.mjs",
     "build:chrome": "node scripts/build.mjs chrome",
     "build:firefox": "node scripts/build.mjs firefox",
+    "bench:tree": "node scripts/bench_tree.mjs",
     "preview": "vite preview --config vite.config.js"
   },
   "dependencies": {
