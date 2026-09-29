@@ -87,9 +87,39 @@
 - 结构：`{ [tabId]: firstSeenTimestamp }`。
 - 用途：与 `lastAccessed` 结合用于估算闲置时间。
 
+### 树结构快照（treeStructure:&lt;windowId&gt;）
+- 存放在 `chrome.storage.local`，**每个窗口一个键**，键名前缀 `treeStructure:`。
+- 结构：
+  - `v`：结构版本。
+  - `at`：写入时间戳（毫秒）。
+  - `n`：标签数。
+  - `items`：按浏览器 `index` 升序的数组，每项 `{ u: url, t: title, p: parentIndex }`；`p` 为父标签在 `items` 中的下标，`-1` 表示顶层。
+- 说明：
+  - 不存 `tabId`（Chrome 重启后会变化），改为「顺序 + URL/标题」在会话恢复时对齐。
+  - 按窗口分键，使一次写入只覆盖发生变化的窗口，避免重写整份快照。
+  - 序列化超过 4MB 时降级为不写 `t`，只用 URL 对齐。
+  - 写入经过空闲防抖与批量抑制（见 `docs/ui/tree_style_tabs.md`）。10K 标签单窗口约 1~2MB。
+
+### 树结构窗口索引（treeStructureWindows）
+- 存放在 `chrome.storage.local` 的 `treeStructureWindows` 键。
+- 结构：`{ [windowId]: updatedAt }`。
+- 用途：记录哪些窗口存在快照键，便于窗口关闭时清理，避免使用 `storage.local.get(null)` 全量读取。
+
+### 树折叠状态（treeCollapsed）
+- 存放在 `chrome.storage.session` 的 `treeCollapsed` 键。
+- 结构：`{ [windowId]: [tabId, ...] }`。
+- 用途：管理页树状视图的折叠（子树收起）状态，仅当前浏览器会话有效，重启后重置为全部展开。
+- 会话存储为内存态，写入不落盘，因此可以高频更新（写前仍做 500ms 防抖）。
+
+### 树视图模式（treeViewMode）
+- 存放在 `chrome.storage.local` 的 `treeViewMode` 键，取值 `"tree"` 或 `"flat"`，全局一份。
+- 用途：管理页「打开的窗口」视图记住用户上次选择的展示模式。
+
 ## 数据流
 - 保存标签：UI/右键/悬浮组件 -> `saveTabs` -> 写入 `lists`。
 - 列表管理：`createList / renameList / deleteList / moveListItems` -> 更新 `lists`。
 - AI 分组：`aiGroupTabs` -> 生成分组 -> `saveGroupedTabs` 写入新列表。
 - 自动冻结：定时扫描 -> `discardSession` + `historyBatches` 更新。
 - 近期标签页：监听 tabs 事件 -> 更新 `recentTabsOpenAt`；“已阅”更新 `recentTabsState.lastReviewedAt`；提醒定时器读取统计并触发气泡。
+- 树结构：tabs 事件（创建/关闭/移动/跨窗口） -> 后台内存树更新 -> 脏窗口空闲防抖 -> `treeStructure:<windowId>` 覆盖写 + `treeStructureWindows` 索引更新。
+- 树视图：管理页 `getTreeStructure` 读取内存树 -> 本地 DFS 扁平化 + 折叠（`treeCollapsed`） -> 渲染。

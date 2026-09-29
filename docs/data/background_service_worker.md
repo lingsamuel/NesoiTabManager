@@ -2,8 +2,9 @@
 
 ## 模块定位
 - 入口：`background.js`（Manifest V3 service worker）。
-- 子模块：`background/context_menu.js`、`background/lists.js`、`background/ai.js`、`background/discard.js`、`background/storage.js`。
-- 职责：统一事件监听、消息路由、持久化与自动冻结调度。
+- 子模块：`background/context_menu.js`、`background/lists.js`、`background/ai.js`、`background/discard.js`、`background/recent_tabs.js`、`background/tree.js`、`background/tree_core.js`、`background/storage.js`。
+- 职责：统一事件监听、消息路由、持久化、自动冻结调度与树状结构维护。
+- `background/tree_core.js` 为**无 chrome API 依赖的纯逻辑**（建树、对齐、提升、移动推断、扁平化），既被 `tree.js` 调用，也被 `scripts/bench_tree.mjs` 直接引用，保证基准测的就是生产代码。
 
 ## 核心功能
 - 扩展启动与安装：清理 action 弹窗、重建右键菜单、重置冻结跟踪状态并初始化自动冻结定时器。
@@ -11,7 +12,14 @@
 - 右键菜单：根据列表动态生成“保存到列表 / 关闭并保存到列表”子项。
 - 自动冻结：监听 `chrome.alarms`、标签激活与窗口焦点变化、标签增删替换，用于计算闲置与冻结候选。
 - 近期标签页提醒：监听标签新增/关闭、维护打开时间与启动期状态、按间隔触发提醒，并向内容脚本广播气泡展示。
-- 消息接口：统一处理 UI 与内容脚本的运行时消息（保存标签、列表管理、AI 分组、冻结配置等）。
+- 树状结构：监听标签创建/关闭/移动/跨窗口/`openerTabId` 变化，按窗口懒加载并维护内存树，空闲防抖后写入 `chrome.storage.local`。
+- 消息接口：统一处理 UI 与内容脚本的运行时消息（保存标签、列表管理、AI 分组、冻结配置、树结构等）。
+
+## 树状结构维护
+- 采用**按窗口懒加载**：后台顶层只注册监听，不做计算；首次需要某窗口的树时才读取快照 + 当前标签做一次 O(n log n) 对齐。
+- 浏览器启动/会话恢复期间进入「启动静默期」，结构事件只置「需要重建」标记，不加载、不对齐、不写盘，避免 10K 标签恢复时产生逐事件处理与磁盘写入。
+- 结构变化只改内存并置脏；落盘由空闲防抖（默认 5s，突发批量操作时延长到 15s）、兜底 alarm `treeFlush`、`runtime.onSuspend` 触发，且只覆盖发生变化的窗口。
+- 详细规则（父子推断、promote intelligently、不变量、对齐算法）见 `docs/ui/tree_style_tabs.md`。
 
 ## 标签跳转
 - 激活标签页统一由后台执行（`activateTab` 消息）：先前置标签所在窗口，再激活标签。
@@ -37,6 +45,8 @@
 - `markRecentReviewed`：标记“已阅”，更新 `lastReviewedAt` 并结束 startup 期。
 - `getRecentBubblePosition` / `saveRecentBubblePosition`：读取/写入气泡拖动位置。
 - `getRecentConfig` / `saveRecentConfig`：读取/保存近期标签页提醒配置。
+- `getTreeStructure`：读取指定（或缺省全部）窗口的树父子映射，供管理页渲染树状视图。
+- `moveTabTree`：管理页拖拽改变父子关系，并同步 `chrome.tabs.move` 移动被拖标签及其子树。
 
 ## 存储模型
 - 详细存储结构与字段说明见：`docs/data/storage_model.md`。
@@ -46,3 +56,5 @@
 - 列表变化触发 `chrome.storage.onChanged` 自动刷新右键菜单。
 - 自动冻结配置变更会即时更新定时器与历史上限裁剪。
 - 非可冻结 URL（如 `chrome://`、`edge://`）会被过滤，避免误操作。
+- 树状结构不新增任何浏览器权限：只使用已有的 `tabs` / `storage` / `alarms`。
+- 非用户操作时，后台不会主动移动标签页；只有管理页拖拽改父子与跨窗口子树迁移会调用 `chrome.tabs.move`。
