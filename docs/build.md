@@ -86,7 +86,7 @@ npm run bench:tree     # 树算法 10K 级性能基准（含阈值校验）
 - `scripts/write-manifest.mjs`：读取 `manifest.json` 基础清单，按目标生成 `dist/<target>/manifest.json`。
 - `scripts/package-builds.mjs`：读取 `package.json` 版本号，打包两个 zip，并清理历史包。
 - `scripts/build.mjs`：串联 UI 构建、产物组装、manifest 写入与打包。
-- `scripts/bench_tree.mjs` / `scripts/test_tree.mjs` / `scripts/test_tree_ui.mjs`：树状功能的基准与回归测试，不参与产物构建。
+- `scripts/bench_tree.mjs` / `scripts/test_tree.mjs` / `scripts/test_tree_ui.mjs` / `scripts/test_sidebar_pinned.mjs`：树状与固定标签功能的基准与回归测试，不参与产物构建。
 
 ## 5. 验收标准
 
