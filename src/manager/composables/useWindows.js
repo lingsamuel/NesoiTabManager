@@ -1,4 +1,7 @@
 import { computed, reactive, ref } from "vue";
+// 树的扁平化（DFS 顺序、折叠隐藏、被隐藏父标签的就近提升）与后台、基准测试共用同一份实现，
+// 避免"基准测的是一套、线上跑的是另一套"。
+import { flattenTree } from "../../../background/tree_core.js";
 import { getSelectedTabsFrom, matchesTabQuery } from "../utils/helpers.js";
 
 function useWindows(options = {}) {
@@ -61,8 +64,8 @@ function useWindows(options = {}) {
    *
    * 与平铺模式的关键差异：过滤时不能只留下匹配项，否则树会断成一片片的孤立节点，
    * 因此要把匹配项的**全部祖先**一并保留（祖先只作为路径显示，不算匹配项）。
-   * 返回的 nearestKept 记录每个可见标签"最近的被保留祖先"，用于把被隐藏标签的子标签
-   * 就近提升，避免出现"父行不显示、子行却缩进"的悬空行。
+   * 返回的 parentMap 覆盖全部可见标签（包含被隐藏的父标签），
+   * 这样 flattenTree 才能在父标签不可见时把子标签就近提升。
    */
   function buildTreeRender(win) {
     const visible = getVisibleTabs(win.tabs).slice().sort(byIndex);
@@ -98,28 +101,6 @@ function useWindows(options = {}) {
       }
     }
 
-    const nearestKept = new Map();
-    for (const tab of visible) {
-      const key = String(tab.id);
-      let resolved = null;
-      let cursor = parents[key];
-      let guard = 0;
-      while (cursor !== undefined && cursor !== null && guard <= visible.length) {
-        const parentKey = String(cursor);
-        if (keep.has(parentKey)) {
-          resolved = parentKey;
-          break;
-        }
-        if (nearestKept.has(parentKey)) {
-          resolved = nearestKept.get(parentKey);
-          break;
-        }
-        cursor = parents[parentKey];
-        guard += 1;
-      }
-      nearestKept.set(key, resolved);
-    }
-
     const tabs = [];
     const markMatches = hasKeyword();
     for (const tab of visible) {
@@ -131,7 +112,16 @@ function useWindows(options = {}) {
         });
       }
     }
-    return { tabs, nearestKept };
+
+    const parentMap = new Map();
+    for (const [childId, parentId] of Object.entries(parents)) {
+      const child = Number(childId);
+      const parent = Number(parentId);
+      if (Number.isFinite(child) && Number.isFinite(parent)) {
+        parentMap.set(child, parent);
+      }
+    }
+    return { tabs, parentMap };
   }
 
   function makeTabRow(tab, index, treeInfo) {
@@ -234,43 +224,24 @@ function useWindows(options = {}) {
         return;
       }
 
-      // 按"最近的保留祖先"把标签组织成森林，再按树的 DFS 顺序输出。
-      const { nearestKept } = render;
-      const childrenOf = new Map();
-      const roots = [];
-      for (const tab of tabs) {
-        const key = String(tab.id);
-        const parentKey = nearestKept.get(key);
-        if (parentKey === null || parentKey === undefined) {
-          roots.push(tab);
+      // 交给与后台/基准共用的 flattenTree：它负责 DFS 顺序、折叠隐藏，
+      // 以及"父标签不在渲染集合内时把子标签就近提升"。
+      const flatRows = flattenTree(
+        tabs.map((tab) => Number(tab.id)),
+        render.parentMap,
+        {
+          collapsedIds: tree.collapsedSetFor ? tree.collapsedSetFor(win.id) : null,
+          forceExpand,
+        }
+      );
+      const tabById = new Map(tabs.map((tab) => [Number(tab.id), tab]));
+      for (const flatRow of flatRows) {
+        const tab = tabById.get(flatRow.id);
+        if (!tab) {
           continue;
         }
-        let children = childrenOf.get(parentKey);
-        if (!children) {
-          children = [];
-          childrenOf.set(parentKey, children);
-        }
-        children.push(tab);
-      }
-
-      // 显式栈而非递归：深层链（成千上万层）会直接把调用栈撑爆。
-      const stack = [];
-      for (let i = roots.length - 1; i >= 0; i -= 1) {
-        stack.push({ tab: roots[i], depth: 0 });
-      }
-      while (stack.length > 0) {
-        const { tab, depth } = stack.pop();
-        const children = childrenOf.get(String(tab.id)) || [];
-        const hasChildren = children.length > 0;
-        const collapsed =
-          hasChildren && !forceExpand && Boolean(tree.isCollapsed(win.id, tab.id));
-        rows.push(makeTabRow(tab, globalIndex, { depth, hasChildren, collapsed }));
+        rows.push(makeTabRow(tab, globalIndex, flatRow));
         globalIndex += 1;
-        if (hasChildren && !collapsed) {
-          for (let i = children.length - 1; i >= 0; i -= 1) {
-            stack.push({ tab: children[i], depth: depth + 1 });
-          }
-        }
       }
     });
     return rows;

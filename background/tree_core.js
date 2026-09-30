@@ -16,14 +16,6 @@ export const TREE_SNAPSHOT_VERSION = 1;
 // 顶层标签在快照中的父下标。
 export const SNAPSHOT_ROOT_PARENT = -1;
 
-/** 创建一个空的窗口树状态。 */
-export function createTreeState() {
-  return {
-    parentById: new Map(),
-    childIdsById: new Map(),
-  };
-}
-
 /** 由 parentById 重建 childIdsById（数组顺序无意义）。 */
 export function buildChildIndex(parentById) {
   const childIdsById = new Map();
@@ -754,10 +746,12 @@ export function inferParentFromNewPosition(params) {
 }
 
 /**
- * 按 DFS 顺序扁平化一棵树，供虚拟列表渲染。
+ * 按 DFS 顺序扁平化一棵树，供虚拟列表渲染与基准测试共用。
  *
- * @param {number[]} orderedTabIds 窗口内标签按 index 升序的 id 列表；兄弟顺序与顶层顺序都由它派生
- * @param {Map<number, number|null>} parentById 父映射；父不在 orderedTabIds 内的标签按顶层处理
+ * @param {number[]} orderedTabIds 窗口内（或当前渲染集合内）标签按 index 升序的 id 列表；
+ *        兄弟顺序与顶层顺序都由它派生
+ * @param {Map<number, number|null>} parentById 父映射；父不在 orderedTabIds 内的标签会向上
+ *        就近提升到最近的可见祖先，避免出现"父行不显示、子行却缩进"的悬空行
  * @param {{collapsedIds?: Set<number>|null, forceExpand?: boolean}} options
  *        forceExpand 用于筛选场景：必须让匹配项可见，因此忽略折叠状态
  * @returns {Array<{id: number, depth: number, hasChildren: boolean, collapsed: boolean}>}
@@ -765,19 +759,19 @@ export function inferParentFromNewPosition(params) {
 export function flattenTree(orderedTabIds, parentById, options = {}) {
   const { collapsedIds = null, forceExpand = false } = options;
   const inWindow = new Set(orderedTabIds);
+  // 提升结果按 tabId 记忆。不变量保证父一定排在子之前，因此按顺序一趟即可算完，
+  // 整体 O(n)；若不做记忆，深层链会退化成 O(n·深度)。
+  const resolvedParent = new Map();
   const childrenById = new Map();
   const roots = [];
-  for (let i = 0; i < orderedTabIds.length; i += 1) {
+  const limit = orderedTabIds.length;
+
+  for (let i = 0; i < limit; i += 1) {
     const tabId = orderedTabIds[i];
-    let parentId = parentById.has(tabId) ? parentById.get(tabId) : null;
-    // 父不在当前渲染集合内时向上寻找最近的可见祖先，找不到就当作顶层，
-    // 避免出现"父行不显示、子行却缩进"的悬空行。
-    let guard = 0;
-    while (parentId != null && !inWindow.has(parentId) && guard <= orderedTabIds.length) {
-      parentId = parentById.has(parentId) ? parentById.get(parentId) : null;
-      guard += 1;
-    }
-    if (parentId == null) {
+    const rawParent = parentById.has(tabId) ? parentById.get(tabId) : null;
+    const parentId = resolveVisibleParent(rawParent, inWindow, parentById, resolvedParent, limit);
+    resolvedParent.set(tabId, parentId);
+    if (parentId === null) {
       roots.push(tabId);
     } else {
       let children = childrenById.get(parentId);
@@ -807,6 +801,31 @@ export function flattenTree(orderedTabIds, parentById, options = {}) {
     }
   }
   return rows;
+}
+
+/** 把一个"不在渲染集合内"的父标签沿父链向上提升到最近的可见祖先；路径上的节点都会被记忆。 */
+function resolveVisibleParent(rawParent, inWindow, parentById, resolvedParent, limit) {
+  let current = rawParent;
+  const path = [];
+  let guard = 0;
+  while (current !== null && current !== undefined && !inWindow.has(current) && guard <= limit) {
+    const cached = resolvedParent.get(current);
+    if (cached !== undefined) {
+      current = cached;
+      break;
+    }
+    path.push(current);
+    current = parentById.has(current) ? parentById.get(current) : null;
+    guard += 1;
+  }
+  if (current !== null && current !== undefined && !inWindow.has(current)) {
+    current = null;
+  }
+  const resolved = current === undefined ? null : current;
+  for (const node of path) {
+    resolvedParent.set(node, resolved);
+  }
+  return resolved;
 }
 
 /**

@@ -71,6 +71,14 @@ function main() {
     mode: treeMode,
     parentsFor: () => ({ ...parents }),
     isCollapsed: (windowId, tabId) => Boolean(collapsed.value[String(windowId)]?.[String(tabId)]),
+    collapsedSetFor: (windowId) => {
+      const map = collapsed.value[String(windowId)];
+      if (!map) {
+        return null;
+      }
+      const ids = Object.keys(map);
+      return ids.length > 0 ? new Set(ids.map(Number)) : null;
+    },
   };
 
   const hideDiscarded = ref(false);

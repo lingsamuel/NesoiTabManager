@@ -65,6 +65,8 @@ zip 内部直接包含扩展文件本身（`manifest.json`、`background.js` 等
 npm run build          # 一键构建两套产物 + zip
 npm run build:chrome   # 仅构建 Chrome 目录产物
 npm run build:firefox  # 仅构建 Firefox 目录产物
+npm run test:tree      # 树状结构回归测试（后台事件链路 + 管理页行构建，纯 Node，无需浏览器）
+npm run bench:tree     # 树算法 10K 级性能基准（含阈值校验）
 ```
 
 ### 4.2 步骤分解
@@ -80,6 +82,7 @@ npm run build:firefox  # 仅构建 Firefox 目录产物
 - `scripts/write-manifest.mjs`：读取 `manifest.json` 基础清单，按目标生成 `dist/<target>/manifest.json`。
 - `scripts/package-builds.mjs`：读取 `package.json` 版本号，打包两个 zip，并清理历史包。
 - `scripts/build.mjs`：串联 UI 构建、产物组装、manifest 写入与打包。
+- `scripts/bench_tree.mjs` / `scripts/test_tree.mjs` / `scripts/test_tree_ui.mjs`：树状功能的基准与回归测试，不参与产物构建。
 
 ## 5. 验收标准
 

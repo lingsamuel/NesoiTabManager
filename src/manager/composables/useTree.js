@@ -131,6 +131,19 @@ function useTree() {
     return Boolean(map && map[String(tabId)]);
   }
 
+  /** 供 flattenTree 使用的折叠集合；没有任何折叠时返回 null，省去一次 Set 构造。 */
+  function collapsedSetFor(windowId) {
+    const map = collapsedByWindow[String(windowId)];
+    if (!map) {
+      return null;
+    }
+    const ids = Object.keys(map);
+    if (ids.length === 0) {
+      return null;
+    }
+    return new Set(ids.map(Number).filter(Number.isFinite));
+  }
+
   function toggleCollapse(windowId, tabId) {
     const windowKey = String(windowId);
     const tabKey = String(tabId);
@@ -193,6 +206,7 @@ function useTree() {
     loadForWindows,
     parentsFor,
     isCollapsed,
+    collapsedSetFor,
     toggleCollapse,
     pruneCollapsed,
   };

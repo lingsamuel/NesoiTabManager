@@ -49,6 +49,7 @@
 - 一键构建：`npm run build`（同时生成 Chrome 与 Firefox 两套产物及 zip）
 - 单独构建：`npm run build:chrome` / `npm run build:firefox`
 - 树算法基准：`npm run bench:tree`（10K 标签的建树 / 快照 / 对齐 / 扁平化耗时与阈值校验）
+- 树功能回归测试：`npm run test:tree`（后台事件链路与页面行构建，纯 Node 运行）
 - 产物目录：`dist/chrome/`（Chrome/Edge 加载）、`dist/firefox/`（Firefox 加载，115+）
 - 发布包：`dist/nesoi-tab-manager-<target>-<version>.zip`
 - 详细方案见 `docs/build.md`。

@@ -45,8 +45,8 @@
 - `markRecentReviewed`：标记“已阅”，更新 `lastReviewedAt` 并结束 startup 期。
 - `getRecentBubblePosition` / `saveRecentBubblePosition`：读取/写入气泡拖动位置。
 - `getRecentConfig` / `saveRecentConfig`：读取/保存近期标签页提醒配置。
-- `getTreeStructure`：读取指定（或缺省全部）窗口的树父子映射，供管理页渲染树状视图。
-- `moveTabTree`：管理页拖拽改变父子关系，并同步 `chrome.tabs.move` 移动被拖标签及其子树。
+- `getTreeStructure`：读取指定（或缺省全部）窗口的树父子映射（仅含有父标签的条目，缺省即顶层），供管理页渲染树状视图。
+- `moveTabTree`：管理页拖拽改变父子关系，并同步 `chrome.tabs.move` 移动被拖标签及其整棵子树。
 
 ## 存储模型
 - 详细存储结构与字段说明见：`docs/data/storage_model.md`。
