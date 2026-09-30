@@ -164,6 +164,8 @@ async function refresh() {
   }
   const list = await queryWindowTabs(id);
   tabs.value = list;
+  // 折叠状态是与管理页共用的会话级记录，标签关闭后要顺手裁掉无效条目，避免越积越多。
+  tree.pruneCollapsed(new Set(list.map((tab) => String(tab.id))));
   // 父子映射仍由后台提供：树是后台维护的唯一真相，前端不再自行推断。
   const ok = await tree.loadForWindows([id]);
   if (!ok) {

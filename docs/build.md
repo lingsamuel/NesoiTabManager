@@ -95,6 +95,7 @@ npm run bench:tree     # 树算法 10K 级性能基准（含阈值校验）
 3. Firefox（115+）可在 `about:debugging` 加载 `dist/firefox`。
 4. 任一 zip 解压后根层直接包含扩展文件。
 5. 历史 zip 超出 3 个版本时，下一次构建自动删除更早版本。
+6. `ui/` 同时产出 `manager.html` 与 `sidebar.html`；`dist/firefox/manifest.json` 含 `sidebar_action`，`dist/chrome/manifest.json` 不含（Chrome 无该键）。
 
 ## 6. 参考资料
 
