@@ -25,6 +25,8 @@ import {
 import {
   clearActionPopup,
   handleContextMenuClick,
+  handleContextMenuShown,
+  handleWindowsChanged,
   rebuildContextMenus,
 } from "./background/context_menu.js";
 import {
@@ -159,6 +161,13 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   handleContextMenuClick(info, tab);
 });
 
+// 菜单即将弹出时按被右键标签的真实状态刷新文案/可用性（Firefox 专有事件，Chrome 需判空）。
+if (chrome.contextMenus.onShown) {
+  chrome.contextMenus.onShown.addListener((info, tab) => {
+    handleContextMenuShown(info, tab);
+  });
+}
+
 chrome.alarms.onAlarm.addListener((alarm) => {
   handleDiscardAlarm(alarm);
   handleRecentAlarm(alarm);
@@ -184,6 +193,12 @@ chrome.windows.onFocusChanged.addListener((windowId) => {
 
 chrome.windows.onRemoved.addListener((windowId) => {
   handleTreeWindowRemoved(windowId);
+  // 「移动到窗口」子菜单里要移除已关闭的窗口。
+  handleWindowsChanged();
+});
+
+chrome.windows.onCreated.addListener(() => {
+  handleWindowsChanged();
 });
 
 chrome.tabs.onCreated.addListener((tab) => {

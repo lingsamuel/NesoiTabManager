@@ -12,6 +12,15 @@
 - 空列表提示：无列表时展示“暂无列表”禁用项。
 - 执行动作：点击后调用后台保存当前页面，可选关闭标签页。
 
+## 右键菜单（标签上下文，仅 Firefox）
+- 用途：Firefox 侧边栏右键标签时，用 `menus.overrideContext({ context: "tab", tabId })` 把上下文切到 "tab"，
+  由 Firefox **原生菜单控件**渲染本插件注册的菜单项（详见 `docs/ui/firefox_sidebar.md` 的「右键菜单」）。
+- 注册的菜单项（`contexts: ["tab"]`）：刷新标签页 / 固定标签页(取消固定) / 静音标签页(取消静音) /
+  冻结标签页 / 复制链接 / 移动到窗口 ▸（各窗口 + 移动到新窗口）。
+- 这些项同样会出现在 Firefox 自带标签栏的右键菜单里。
+- 只在 Firefox 注册（侧边栏是 Firefox 专有实现，且“复制链接”依赖后台页面的 DOM）；Chrome 侧右键菜单不受影响。
+- 需要 Firefox 专有权限 `menus.overrideContext`，只写进 Firefox 目标清单。
+
 ## 页面悬浮组件（content script）
 - 位置与触发：固定在页面左下角，鼠标靠近自动展开。
 - 展开面板：展示现有列表与两种动作（保存 / 保存并关闭）。

@@ -153,7 +153,7 @@ function onDragEnd() {
         @click="emit('activate', tab)"
         @auxclick="onAuxClick(tab, $event)"
         @mousedown="onMouseDown"
-        @contextmenu.prevent="onContextMenu(tab, $event)"
+        @contextmenu="onContextMenu(tab, $event)"
         @dragstart="onDragStart(tab, group, $event)"
         @dragover="onDragOver(tab, group, $event)"
         @dragleave="onDragLeave(tab)"

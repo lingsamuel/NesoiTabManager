@@ -182,7 +182,7 @@ defineExpose({
         @click="emit('activate', item.tab)"
         @auxclick="onAuxClick(item.tab, $event)"
         @mousedown="onMouseDown"
-        @contextmenu.prevent="onContextMenu(item.tab, $event)"
+        @contextmenu="onContextMenu(item.tab, $event)"
         @dragstart="onDragStart(item, $event)"
         @dragover="onDragOver(item, $event)"
         @dragleave="onDragLeave(item)"

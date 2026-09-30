@@ -20,7 +20,6 @@ import { buildTreeRows } from "../../background/tree_core.js";
 import { computePinnedReorderIndex, groupPinnedTabs } from "./pinned_data.js";
 import SidebarPinnedTabs from "./components/SidebarPinnedTabs.vue";
 import SidebarTabTree from "./components/SidebarTabTree.vue";
-import TabContextMenu from "./components/TabContextMenu.vue";
 
 // 结构类事件合并窗口：10K 标签下一次刷新要取回整窗标签，必须避免逐事件刷新。
 const REFRESH_DEBOUNCE_MS = 250;
@@ -32,8 +31,6 @@ const tabs = ref([]);
 const pinnedGroups = ref([]);
 const ready = ref(false);
 const status = reactive({ message: "", type: "" });
-// 自建右键菜单的状态：被作用的标签、鼠标位置与按当前标签状态生成的菜单项。
-const contextMenu = reactive({ visible: false, x: 0, y: 0, tab: null, items: [] });
 
 const tree = useTree();
 const filter = useFilterQuery();
@@ -212,7 +209,6 @@ async function refresh() {
   }
   await refreshPinned();
   ready.value = true;
-  pruneContextMenuTarget();
 }
 
 /**
@@ -230,7 +226,6 @@ async function refreshPinned() {
     // 窗口编号与组顺序都按 windows.getAll() 的位次，与管理页的「窗口 N」口径一致。
     windowOrder: windows.map((win) => Number(win.id)),
   });
-  pruneContextMenuTarget();
 }
 
 /**
@@ -532,160 +527,33 @@ function onPinnedReorder(payload) {
 // ---------------------------------------------------------------------------
 
 /**
- * 按被右键标签的当前状态生成菜单项。
- * 固定/取消固定、静音/取消静音各只显示与当前状态相反的那一项；
- * 冻结复用后台的 manualDiscard，与行内按钮、管理页冻结走同一条路径。
+ * 右键某个标签：把上下文交给 Firefox 的原生标签菜单。
+ *
+ * menus.overrideContext({ context: "tab", tabId }) 的语义是**隐藏所有默认 Firefox 菜单项**，
+ * 只渲染「本扩展 + 其它扩展注册到 tab 上下文的项」——也就是说它提供的是原生菜单**外壳**
+ * （原生外观、键盘导航、自动合并其它扩展的项），菜单**内容**由后台注册的那些项提供。
+ * 因此这里只覆盖上下文，绝不 preventDefault：让 Firefox 自己把菜单弹出来。
  */
-function buildContextMenuItems(tab) {
-  return [
-    { key: "reload", label: "刷新标签页" },
-    { key: "duplicate", label: "复制标签页" },
-    { key: "pin", label: tab.pinned ? "取消固定" : "固定标签页", separatorBefore: true },
-    { key: "mute", label: tab.muted ? "取消静音" : "静音标签页" },
-    { key: "freeze", label: "冻结标签页", disabled: Boolean(tab.discarded) },
-    { key: "copyUrl", label: "复制链接", disabled: !tab.url },
-    { key: "moveToNewWindow", label: "移动到新窗口", separatorBefore: true },
-    { key: "close", label: "关闭标签页", danger: true, separatorBefore: true },
-    { key: "closeOthers", label: "关闭其他标签页", danger: true },
-    { key: "closeRight", label: "关闭右侧标签页", danger: true },
-  ];
-}
-
-function openTabContextMenu(tab, event) {
-  if (!tab || !tab.id) {
+function openTabContextMenu(tab) {
+  if (!tab || !Number.isFinite(Number(tab.id))) {
     return;
   }
-  contextMenu.tab = tab;
-  contextMenu.x = event && Number.isFinite(event.clientX) ? event.clientX : 0;
-  contextMenu.y = event && Number.isFinite(event.clientY) ? event.clientY : 0;
-  contextMenu.items = buildContextMenuItems(tab);
-  contextMenu.visible = true;
-}
-
-function closeTabContextMenu() {
-  contextMenu.visible = false;
-  contextMenu.tab = null;
-}
-
-/** 被右键的标签消失（被关闭/被移走）时收起菜单；仅数据刷新不打断用户操作。 */
-function pruneContextMenuTarget() {
-  if (!contextMenu.visible || !contextMenu.tab) {
-    return;
-  }
-  const id = Number(contextMenu.tab.id);
-  const alive =
-    tabs.value.some((tab) => Number(tab.id) === id) ||
-    pinnedGroups.value.some((group) => group.tabs.some((tab) => Number(tab.id) === id));
-  if (!alive) {
-    closeTabContextMenu();
-  }
-}
-
-async function closeTabsByIds(ids) {
-  if (!Array.isArray(ids) || ids.length === 0) {
-    return;
-  }
-  await new Promise((resolve) => {
-    chrome.tabs.remove(ids, () => {
-      if (chrome.runtime.lastError) {
-        setStatus(chrome.runtime.lastError.message || "关闭标签页失败。", "error");
-      } else {
-        setStatus("", "");
-      }
-      resolve();
-    });
-  });
-}
-
-/**
- * 关闭其他标签页：保留固定标签（与浏览器原生行为一致）。
- * 目标标签可能来自其它窗口，因此这里按需查询它所在窗口的标签，而不是复用本窗口的缓存。
- */
-async function closeOtherTabs(tab) {
-  const siblings = await queryWindowTabs(tab.windowId);
-  const ids = siblings
-    .filter((item) => Number(item.id) !== Number(tab.id) && !item.pinned)
-    .map((item) => Number(item.id));
-  await closeTabsByIds(ids);
-}
-
-/** 关闭右侧标签页：按物理位置在其右侧，同样保留固定标签。 */
-async function closeRightTabs(tab) {
-  const siblings = await queryWindowTabs(tab.windowId);
-  const baseIndex = Number.isFinite(Number(tab.index)) ? Number(tab.index) : -1;
-  const ids = siblings
-    .filter((item) => !item.pinned && (item.index || 0) > baseIndex)
-    .map((item) => Number(item.id));
-  await closeTabsByIds(ids);
-}
-
-async function copyTabUrl(tab) {
-  const url = tab && tab.url ? String(tab.url) : "";
-  if (!url) {
+  // 使用 contextMenus 别名时 API 挂在 chrome.contextMenus 下；若浏览器暴露 chrome.menus 也一并兼容。
+  const api = (typeof chrome.menus !== "undefined" &&
+    chrome.menus &&
+    typeof chrome.menus.overrideContext === "function")
+    ? chrome.menus
+    : (chrome.contextMenus && typeof chrome.contextMenus.overrideContext === "function"
+      ? chrome.contextMenus
+      : null);
+  if (!api) {
+    // 没有该能力时什么都不做，浏览器会退回默认菜单。
     return;
   }
   try {
-    await navigator.clipboard.writeText(url);
-    setStatus("已复制链接。", "ok");
-    return;
+    api.overrideContext({ context: "tab", tabId: Number(tab.id) });
   } catch (error) {
-    // 少数环境（或权限受限）下异步剪贴板不可用，退回到临时文本框方案。
-  }
-  try {
-    const helper = document.createElement("textarea");
-    helper.value = url;
-    helper.setAttribute("readonly", "");
-    helper.style.position = "fixed";
-    helper.style.opacity = "0";
-    document.body.appendChild(helper);
-    helper.select();
-    document.execCommand("copy");
-    document.body.removeChild(helper);
-    setStatus("已复制链接。", "ok");
-  } catch (error) {
-    setStatus("复制链接失败。", "error");
-  }
-}
-
-async function runContextAction(key) {
-  const tab = contextMenu.tab;
-  closeTabContextMenu();
-  if (!tab || !tab.id) {
-    return;
-  }
-  switch (key) {
-    case "reload":
-      chrome.tabs.reload(tab.id);
-      break;
-    case "duplicate":
-      chrome.tabs.duplicate(tab.id);
-      break;
-    case "pin":
-      chrome.tabs.update(tab.id, { pinned: !tab.pinned });
-      break;
-    case "mute":
-      chrome.tabs.update(tab.id, { muted: !tab.muted });
-      break;
-    case "freeze":
-      await discardTab(tab);
-      break;
-    case "copyUrl":
-      await copyTabUrl(tab);
-      break;
-    case "moveToNewWindow":
-      chrome.windows.create({ tabId: tab.id });
-      break;
-    case "close":
-      closeTab(tab);
-      break;
-    case "closeOthers":
-      await closeOtherTabs(tab);
-      break;
-    case "closeRight":
-      await closeRightTabs(tab);
-      break;
-    default:
-      break;
+    console.warn("切换右键菜单上下文失败：", String(error && error.message ? error.message : error));
   }
 }
 
@@ -788,14 +656,5 @@ onBeforeUnmount(() => {
       />
       <div v-else class="sb-empty">{{ treeEmptyText }}</div>
     </template>
-
-    <TabContextMenu
-      v-if="contextMenu.visible"
-      :items="contextMenu.items"
-      :x="contextMenu.x"
-      :y="contextMenu.y"
-      @select="runContextAction"
-      @close="closeTabContextMenu"
-    />
   </div>
 </template>

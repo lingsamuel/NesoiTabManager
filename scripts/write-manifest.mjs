@@ -22,9 +22,16 @@ function buildManifest(baseManifest, target) {
   }
 
   const backgroundScript = baseManifest.background?.service_worker || "background.js";
+  // `menus.overrideContext` 是 Firefox 专有必需权限：侧边栏右键标签时用它把上下文切到 "tab"，
+  // 从而由 Firefox 原生菜单控件渲染我们注册的标签菜单项。Chrome 不认识这个权限，因此只加在 Firefox 目标上。
+  const permissions = Array.isArray(baseManifest.permissions) ? baseManifest.permissions.slice() : [];
+  if (!permissions.includes("menus.overrideContext")) {
+    permissions.push("menus.overrideContext");
+  }
 
   return {
     ...baseManifest,
+    permissions,
     background: {
       scripts: [backgroundScript],
       type: "module"
