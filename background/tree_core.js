@@ -872,18 +872,27 @@ export function selectTreeIds(orderedTabIds, parentById, isMatch = null) {
  *
  * @param {Array<{id: number}>} orderedTabs 按 index 升序的标签（至少要有 id）
  * @param {Map<number, number|null>} parentById 父映射
- * @param {{collapsedIds?: Set<number>|null, forceExpand?: boolean, matchId?: ((id: number) => boolean)|null}} options
+ * @param {{collapsedIds?: Set<number>|null, forceExpand?: boolean, matchId?: ((id: number) => boolean)|null,
+ *          pruneToMatches?: boolean}} options
+ *   matchId 只负责"哪些行算匹配项"；pruneToMatches 决定"是否只保留匹配项及其祖先"。
+ *   两者必须分开：跳转模式要保留完整树、只标记匹配项（否则会退化成过滤，匹配导航也会失效）。
  * @returns {Array<{id: number, depth: number, hasChildren: boolean, collapsed: boolean, matched: boolean}>}
  */
 export function buildTreeRows(orderedTabs, parentById, options = {}) {
-  const { collapsedIds = null, forceExpand = false, matchId = null } = options;
+  const {
+    collapsedIds = null,
+    forceExpand = false,
+    matchId = null,
+    pruneToMatches = true,
+  } = options;
   const total = orderedTabs.length;
   const orderedIds = new Array(total);
   for (let i = 0; i < total; i += 1) {
     orderedIds[i] = Number(orderedTabs[i].id);
   }
   const matchedIds = matchId ? new Set(orderedIds.filter((id) => matchId(id))) : null;
-  const visibleIds = matchedIds
+  // 只有"有匹配项"且"要求剪枝"时才裁掉非匹配行；否则保留完整树，仅靠 matched 标记做高亮。
+  const visibleIds = matchedIds && pruneToMatches
     ? selectTreeIds(orderedIds, parentById, (id) => matchedIds.has(id))
     : orderedIds;
   const rows = flattenTree(visibleIds, parentById, { collapsedIds, forceExpand });

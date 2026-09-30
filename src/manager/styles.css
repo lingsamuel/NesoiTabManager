@@ -5,8 +5,11 @@
 @import "./styles/navigation.css";
 @import "./styles/panels.css";
 @import "./styles/lists.css";
-@import "./styles/filter.css";
 @import "./styles/forms.css";
+/* filter.css 必须排在 forms.css 之后：forms.css 里的 input[type="text"] 与
+   .filter-input input 特异性相同（都是 0,1,1），谁在后面谁生效；
+   顺序反了会让筛选输入框丢掉左侧 30px 内边距，文字压到放大镜图标上。 */
+@import "./styles/filter.css";
 @import "./styles/buttons.css";
 @import "./styles/modals.css";
 @import "./styles/utilities.css";

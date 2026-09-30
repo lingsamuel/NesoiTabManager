@@ -83,6 +83,8 @@ const rowModel = computed(() => {
     collapsedIds: tree.collapsedSetFor(id),
     forceExpand: hasKeyword,
     matchId,
+    // 跳转模式必须保留完整树、只标记匹配项；否则会退化成过滤。
+    pruneToMatches: filter.mode.value === "filter",
   });
   return { rows, tabById };
 });

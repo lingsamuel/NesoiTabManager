@@ -125,9 +125,18 @@ function main() {
     .map((row) => row.tab.id);
   assertDeepEqual(matchedIds, [3], "只有真正匹配的标签被标记为 matched");
 
-  console.log("场景 4：跳转模式保持完整树");
+  console.log("场景 4：跳转模式保持完整树，同时仍然标记匹配项");
   filterMode.value = "jump";
   assertDeepEqual(rowIds(api.windowRows.value), [1, 2, 3, 4, 5], "跳转模式不隐藏任何标签");
+  // 回归：曾经跳转模式下 matchId 传的是 null，导致没有任何行被标记为匹配，
+  // 匹配导航的匹配数恒为 0，界面一直显示"无匹配"。
+  assertDeepEqual(
+    api.windowRows.value
+      .filter((row) => row.type === "tab" && row.tab.matched)
+      .map((row) => row.tab.id),
+    [3],
+    "跳转模式下匹配项仍被标记（否则会显示无匹配）"
+  );
 
   console.log("场景 5：隐藏已冻结时，子标签提升到最近的可见祖先");
   filterQuery.value = "";
@@ -204,6 +213,19 @@ function main() {
     selectTreeIds(orderedIds, parentMap, (id) => id === 4),
     [1, 4],
     "selectTreeIds 只返回「匹配项 + 祖先」"
+  );
+  // pruneToMatches=false 是"跳转模式"的语义：保留完整树，但把匹配项标出来。
+  const jumpRows = buildTreeRows(tabs, parentMap, { matchId: (id) => id === 4, pruneToMatches: false });
+  assertDeepEqual(jumpRows.map((row) => row.id), [1, 2, 3, 4, 5], "pruneToMatches=false 时不裁掉非匹配行");
+  assertDeepEqual(
+    jumpRows.filter((row) => row.matched).map((row) => row.id),
+    [4],
+    "pruneToMatches=false 时仍然标记匹配项"
+  );
+  assertDeepEqual(
+    buildTreeRows(tabs, parentMap, { matchId: (id) => id === 4 }).map((row) => row.id),
+    [1, 4],
+    "默认 pruneToMatches=true 仍然只保留匹配项与祖先"
   );
   // 父标签不可见时，子标签提升到最近的可见祖先（侧边栏隐藏固定/冻结标签时同样适用）
   const withoutParent = [tabs[0], tabs[2], tabs[3], tabs[4]];

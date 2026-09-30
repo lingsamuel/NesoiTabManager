@@ -183,9 +183,11 @@ function useWindows(options = {}) {
       // 交给与后台/基准/侧边栏共用的 buildTreeRows：它负责筛选补祖先、DFS 顺序、折叠隐藏，
       // 以及"父标签不在渲染集合内时把子标签就近提升"。
       const tabById = new Map(tabs.map((tab) => [Number(tab.id), tab]));
-      const filtering = shouldFilterRows();
       const keyword = getKeyword();
-      const matchId = filtering
+      // 只要有关键词就标记匹配项：跳转模式要靠它高亮并支持上下跳转。
+      // 若像以前那样只在过滤模式传 matchId，跳转模式下所有行的 matched 都是 false，
+      // 匹配数恒为 0，界面会一直显示"无匹配"。
+      const matchId = hasKeyword()
         ? (id) => {
             const tab = tabById.get(Number(id));
             return Boolean(tab && matchesTabQuery(tab, keyword));
@@ -195,6 +197,8 @@ function useWindows(options = {}) {
         collapsedIds: tree.collapsedSetFor ? tree.collapsedSetFor(win.id) : null,
         forceExpand,
         matchId,
+        // 是否把非匹配行裁掉：只有过滤模式才裁，跳转模式保留完整树。
+        pruneToMatches: shouldFilterRows(),
       });
       for (const flatRow of flatRows) {
         const tab = tabById.get(flatRow.id);
