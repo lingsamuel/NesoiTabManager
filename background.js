@@ -41,6 +41,21 @@ import {
 } from "./background/lists.js";
 import { aiGroupTabs, getAiConfig, setAiConfig } from "./background/ai.js";
 import {
+  getTreeStructure,
+  handleTreeAlarm,
+  handleTreeSuspend,
+  handleTreeTabActivated,
+  handleTreeTabAttached,
+  handleTreeTabCreated,
+  handleTreeTabDetached,
+  handleTreeTabMoved,
+  handleTreeTabRemoved,
+  handleTreeWindowFocusChanged,
+  handleTreeWindowRemoved,
+  initializeTreeSystem,
+  moveTabTree,
+} from "./background/tree.js";
+import {
   getRecentConfig,
   getRecentBubblePosition,
   getRecentTabsSnapshot,
@@ -65,6 +80,7 @@ chrome.runtime.onInstalled.addListener(() => {
   resetTabActivity();
   resetDiscardSession().then(() => initializeDiscardSystem());
   initializeRecentSystem({ forceStartup: true });
+  initializeTreeSystem({ forceStartup: true });
 });
 
 chrome.runtime.onStartup.addListener(() => {
@@ -73,6 +89,8 @@ chrome.runtime.onStartup.addListener(() => {
   resetTabActivity();
   resetDiscardSession().then(() => initializeDiscardSystem());
   initializeRecentSystem({ forceStartup: true });
+  // 浏览器启动会恢复大量标签页：树系统据此进入静默期，避免逐事件对齐与写盘。
+  initializeTreeSystem({ forceStartup: true });
 });
 
 // 激活指定标签页：先把其所在窗口前置，再激活该标签。
@@ -144,26 +162,52 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 chrome.alarms.onAlarm.addListener((alarm) => {
   handleDiscardAlarm(alarm);
   handleRecentAlarm(alarm);
+  handleTreeAlarm(alarm);
+});
+
+// MV3 的 SW 会在空闲后被回收，此时把尚未落盘的树结构尽力写出去。
+chrome.runtime.onSuspend.addListener(() => {
+  handleTreeSuspend();
 });
 
 chrome.tabs.onActivated.addListener((activeInfo) => {
   handleTabActivated(activeInfo);
   handleRecentTabActivated(activeInfo);
+  handleTreeTabActivated(activeInfo);
 });
 
 chrome.windows.onFocusChanged.addListener((windowId) => {
   handleWindowFocusChanged(windowId);
   handleRecentWindowFocusChanged(windowId);
+  handleTreeWindowFocusChanged(windowId);
+});
+
+chrome.windows.onRemoved.addListener((windowId) => {
+  handleTreeWindowRemoved(windowId);
 });
 
 chrome.tabs.onCreated.addListener((tab) => {
   handleTabCreated(tab);
   handleRecentTabCreated(tab);
+  handleTreeTabCreated(tab);
 });
 
-chrome.tabs.onRemoved.addListener((tabId) => {
+chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
   handleTabRemoved(tabId);
   handleRecentTabRemoved(tabId);
+  handleTreeTabRemoved(tabId, removeInfo);
+});
+
+chrome.tabs.onMoved.addListener((tabId, moveInfo) => {
+  handleTreeTabMoved(tabId, moveInfo);
+});
+
+chrome.tabs.onDetached.addListener((tabId, detachInfo) => {
+  handleTreeTabDetached(tabId, detachInfo);
+});
+
+chrome.tabs.onAttached.addListener((tabId, attachInfo) => {
+  handleTreeTabAttached(tabId, attachInfo);
 });
 
 chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
@@ -425,8 +469,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (action === "getTreeStructure") {
+    getTreeStructure(Array.isArray(message.windowIds) ? message.windowIds : null)
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
+    return true;
+  }
+
+  if (action === "moveTabTree") {
+    moveTabTree(message)
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
+    return true;
+  }
+
   return false;
 });
 
 initializeDiscardSystem();
 initializeRecentSystem();
+initializeTreeSystem();

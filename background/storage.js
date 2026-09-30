@@ -12,6 +12,12 @@ export function storageSet(obj) {
   });
 }
 
+export function storageRemove(keys) {
+  return new Promise((resolve) => {
+    chrome.storage.local.remove(keys, () => resolve());
+  });
+}
+
 export function storageSessionGet(key) {
   if (!HAS_SESSION_STORAGE) {
     return Promise.resolve(undefined);
