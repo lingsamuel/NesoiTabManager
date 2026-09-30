@@ -6,6 +6,22 @@
         <div class="content-subtitle">{{ windowSubtitle }}</div>
       </div>
       <div class="content-actions">
+        <div class="mode-switch" role="group" aria-label="展示模式">
+          <button
+            type="button"
+            :class="{ active: treeMode }"
+            @click="handleToggleTreeMode(true)"
+          >
+            树状
+          </button>
+          <button
+            type="button"
+            :class="{ active: !treeMode }"
+            @click="handleToggleTreeMode(false)"
+          >
+            平铺
+          </button>
+        </div>
         <FilterBar
           :model-value="filterQuery"
           :mode="filterMode"
@@ -91,6 +107,7 @@
       :selected-map="selectedTabIds"
       :ai-tags="aiTags"
       :enable-drag="true"
+      :tree-mode="treeMode"
       :empty-text="emptyText"
       empty-row-text="此窗口没有标签页。"
       :highlight-matches="isJumpMode"
@@ -102,6 +119,9 @@
       :on-discard="onDiscard"
       :on-save-ai-group="onSaveAiGroup"
       :on-drop-tab="onDropTab"
+      :on-toggle-collapse="onToggleCollapse"
+      :on-tree-drop="onTreeDrop"
+      :is-tree-descendant="isTreeDescendant"
     />
   </section>
 </template>
@@ -144,6 +164,26 @@ const props = defineProps({
   hideDiscarded: {
     type: Boolean,
     default: false,
+  },
+  treeMode: {
+    type: Boolean,
+    default: false,
+  },
+  onToggleTreeMode: {
+    type: Function,
+    default: null,
+  },
+  onToggleCollapse: {
+    type: Function,
+    default: null,
+  },
+  onTreeDrop: {
+    type: Function,
+    default: null,
+  },
+  isTreeDescendant: {
+    type: Function,
+    default: null,
   },
   onUpdateFilterQuery: {
     type: Function,
@@ -244,6 +284,12 @@ const {
 function handleToggleHideDiscarded(checked) {
   if (props.onToggleHideDiscarded) {
     props.onToggleHideDiscarded(checked);
+  }
+}
+
+function handleToggleTreeMode(treeMode) {
+  if (props.onToggleTreeMode) {
+    props.onToggleTreeMode(treeMode);
   }
 }
 </script>

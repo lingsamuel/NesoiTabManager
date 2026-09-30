@@ -87,9 +87,11 @@
         :selected-tab-ids="selectedTabIds"
         :ai-tags="aiTags"
         :hide-discarded="hideDiscarded"
+        :tree-mode="tree.mode.value"
         :on-update-filter-query="windowsFilter.update"
         :on-commit-filter-query="windowsFilter.commit"
         :on-mode-change="windowsFilter.setMode"
+        :on-toggle-tree-mode="toggleTreeMode"
         :on-select-all="() => setVisibleSelection(true)"
         :on-clear="() => setVisibleSelection(false)"
         :on-close-selected="closeSelectedTabs"
@@ -105,6 +107,9 @@
         :on-close="closeTab"
         :on-discard="discardTab"
         :on-save-ai-group="saveTabToAiGroup"
+        :on-toggle-collapse="handleTreeCollapseToggle"
+        :on-tree-drop="handleWindowTreeDrop"
+        :is-tree-descendant="isTreeDescendant"
       />
 
       <ListsView
@@ -501,6 +506,7 @@ import { useAiGrouping } from "./composables/useAiGrouping.js";
 import { useDiscard } from "./composables/useDiscard.js";
 import { useFilterQuery } from "./composables/useFilterQuery.js";
 import { useRecent } from "./composables/useRecent.js";
+import { useTree } from "./composables/useTree.js";
 import { MOVE_NEW_LIST_VALUE, NEW_LIST_VALUE, useLists } from "./composables/useLists.js";
 import { useWindows } from "./composables/useWindows.js";
 import { request } from "./utils/request.js";
@@ -568,6 +574,9 @@ const listsFilter = useFilterQuery();
 const recentFilter = useFilterQuery();
 const historyFilter = useFilterQuery();
 
+// 树状视图状态：视图模式/折叠状态由前端持有，父子映射由后台提供。
+const tree = useTree();
+
 const {
   windows,
   selectedWindowId,
@@ -587,6 +596,7 @@ const {
   hideDiscarded,
   filterQuery: windowsFilter.committed,
   filterMode: windowsFilter.mode,
+  tree,
 });
 
 const {
@@ -706,9 +716,95 @@ const windowMoveTargets = computed(() =>
 
 let resetAiTags = () => {};
 const refreshWindows = async () => {
-  await loadWindows();
+  const aliveTabIds = await loadWindows();
+  if (!isOverlay.value) {
+    // 只在树状模式下拉取父子映射：平铺模式完全用不到，避免多余的 IPC 与后台对齐。
+    if (tree.mode.value) {
+      await tree.loadForWindows(windows.value.map((win) => win.id));
+    }
+    if (aliveTabIds) {
+      tree.pruneCollapsed(aliveTabIds);
+    }
+  }
   resetAiTags();
 };
+
+async function toggleTreeMode(nextMode) {
+  if (tree.mode.value === Boolean(nextMode)) {
+    return;
+  }
+  await tree.setMode(nextMode);
+  if (tree.mode.value) {
+    await tree.loadForWindows(windows.value.map((win) => win.id));
+  }
+}
+
+function handleTreeCollapseToggle(tab) {
+  if (!tab || !tab.id || tab.windowId === undefined) {
+    return;
+  }
+  tree.toggleCollapse(tab.windowId, tab.id);
+}
+
+/** 沿父链判断 candidateId 是否位于 ancestorId 的子树内，用于禁止把标签拖到自己的子孙上。 */
+function isTreeDescendant(ancestorId, candidateId, windowId) {
+  const parents = tree.parentsFor(windowId);
+  let cursor = parents[String(candidateId)];
+  let guard = 0;
+  while (cursor !== undefined && cursor !== null && guard <= 100000) {
+    if (String(cursor) === String(ancestorId)) {
+      return true;
+    }
+    cursor = parents[String(cursor)];
+    guard += 1;
+  }
+  return false;
+}
+
+/**
+ * 树状视图的拖拽落点处理。
+ * 落点分区与 TST 一致：行上 1/4 → 前一个兄弟，行下 1/4 → 后一个兄弟，行中间 → 子标签。
+ * 真正的父子改写与物理移动都由后台完成（后台还要负责整棵子树一起搬动）。
+ */
+async function handleWindowTreeDrop(draggedTab, targetTab, zone) {
+  if (!draggedTab || !targetTab || !draggedTab.id || !targetTab.id) {
+    return;
+  }
+  if (String(draggedTab.windowId) !== String(targetTab.windowId)) {
+    return;
+  }
+  const parents = tree.parentsFor(targetTab.windowId);
+  const targetParentRaw = parents[String(targetTab.id)];
+  const targetParentId = targetParentRaw === undefined || targetParentRaw === null
+    ? null
+    : targetParentRaw;
+  let parentId = targetParentId;
+  let afterTabId = null;
+  let beforeTabId = null;
+  if (zone === "child") {
+    parentId = targetTab.id;
+    afterTabId = targetTab.id;
+  } else if (zone === "before") {
+    beforeTabId = targetTab.id;
+  } else {
+    afterTabId = targetTab.id;
+  }
+
+  setStatus(status, "正在调整标签层级...", "");
+  const response = await request("moveTabTree", {
+    tabId: draggedTab.id,
+    parentId,
+    afterTabId,
+    beforeTabId,
+  });
+  if (!response.ok) {
+    setStatus(status, response.error || "调整标签层级失败。", "error");
+    return;
+  }
+  setStatus(status, "已调整标签层级。", "ok");
+  clearWindowSelection();
+  await refreshWindows();
+}
 
 const getSelectedTabsForView = (targetView) => {
   if (targetView === "discard") {
@@ -1246,6 +1342,8 @@ onMounted(async () => {
     await loadRecentTabs();
     return;
   }
+  // 先恢复视图偏好（树状/平铺 + 折叠状态），再按偏好决定是否拉取树结构。
+  await tree.loadPreferences();
   await refreshWindows();
   await loadLists();
   await loadAiConfig();

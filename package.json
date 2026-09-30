@@ -9,7 +9,7 @@
     "build:chrome": "node scripts/build.mjs chrome",
     "build:firefox": "node scripts/build.mjs firefox",
     "bench:tree": "node scripts/bench_tree.mjs",
-    "test:tree": "node scripts/test_tree.mjs",
+    "test:tree": "node scripts/test_tree.mjs && node scripts/test_tree_ui.mjs",
     "preview": "vite preview --config vite.config.js"
   },
   "dependencies": {

@@ -29,6 +29,36 @@
   flex-wrap: wrap;
 }
 
+/* 「树状 / 平铺」分段切换：与 content-actions 内其它胶囊按钮同一视觉体系 */
+.mode-switch {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border-radius: 999px;
+  border: 1px solid var(--stroke);
+  background: #f3f4f6;
+}
+
+.mode-switch button {
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: none;
+}
+
+.mode-switch button:hover {
+  transform: none;
+}
+
+.mode-switch button.active {
+  background: var(--panel);
+  color: var(--ink);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.14);
+}
+
 .content-actions .checkbox-toggle {
   display: inline-flex;
   align-items: center;

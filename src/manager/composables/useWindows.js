@@ -5,6 +5,8 @@ function useWindows(options = {}) {
   const hideDiscarded = options.hideDiscarded;
   const filterQuery = options.filterQuery;
   const filterMode = options.filterMode;
+  // 树状视图的状态（可缺省：缺省时全部行为与之前的平铺模式一致）。
+  const tree = options.tree || null;
   const windows = ref([]);
   const selectedWindowId = ref("all");
   const selectedTabIds = reactive({});
@@ -34,6 +36,14 @@ function useWindows(options = {}) {
     return filterMode ? filterMode.value === "filter" && hasKeyword() : hasKeyword();
   }
 
+  function isTreeMode() {
+    return Boolean(tree && tree.mode && tree.mode.value);
+  }
+
+  function byIndex(left, right) {
+    return (left.index || 0) - (right.index || 0);
+  }
+
   function getDisplayTabs(tabs) {
     const keyword = getKeyword();
     const filtering = shouldFilterRows();
@@ -44,6 +54,107 @@ function useWindows(options = {}) {
         // 仅在存在关键词时标记匹配，避免无关键词时整表误高亮。
         matched: hasKeyword() && matchesTabQuery(tab, keyword),
       }));
+  }
+
+  /**
+   * 树状模式下的可见标签集合。
+   *
+   * 与平铺模式的关键差异：过滤时不能只留下匹配项，否则树会断成一片片的孤立节点，
+   * 因此要把匹配项的**全部祖先**一并保留（祖先只作为路径显示，不算匹配项）。
+   * 返回的 nearestKept 记录每个可见标签"最近的被保留祖先"，用于把被隐藏标签的子标签
+   * 就近提升，避免出现"父行不显示、子行却缩进"的悬空行。
+   */
+  function buildTreeRender(win) {
+    const visible = getVisibleTabs(win.tabs).slice().sort(byIndex);
+    const parents = tree.parentsFor(win.id);
+    const keep = new Set();
+    const keyword = getKeyword();
+    const filtering = shouldFilterRows();
+
+    if (filtering) {
+      for (const tab of visible) {
+        if (!matchesTabQuery(tab, keyword)) {
+          continue;
+        }
+        // 沿父链向上补齐祖先，直到遇到已保留的节点或顶层。
+        let cursor = String(tab.id);
+        let guard = 0;
+        while (guard <= visible.length) {
+          if (keep.has(cursor)) {
+            break;
+          }
+          keep.add(cursor);
+          const parentId = parents[cursor];
+          if (parentId === undefined || parentId === null) {
+            break;
+          }
+          cursor = String(parentId);
+          guard += 1;
+        }
+      }
+    } else {
+      for (const tab of visible) {
+        keep.add(String(tab.id));
+      }
+    }
+
+    const nearestKept = new Map();
+    for (const tab of visible) {
+      const key = String(tab.id);
+      let resolved = null;
+      let cursor = parents[key];
+      let guard = 0;
+      while (cursor !== undefined && cursor !== null && guard <= visible.length) {
+        const parentKey = String(cursor);
+        if (keep.has(parentKey)) {
+          resolved = parentKey;
+          break;
+        }
+        if (nearestKept.has(parentKey)) {
+          resolved = nearestKept.get(parentKey);
+          break;
+        }
+        cursor = parents[parentKey];
+        guard += 1;
+      }
+      nearestKept.set(key, resolved);
+    }
+
+    const tabs = [];
+    const markMatches = hasKeyword();
+    for (const tab of visible) {
+      if (keep.has(String(tab.id))) {
+        // 与平铺模式一致：只有真正匹配的标签才标记 matched，被补齐的祖先只作为路径显示。
+        tabs.push({
+          ...tab,
+          matched: markMatches && matchesTabQuery(tab, keyword),
+        });
+      }
+    }
+    return { tabs, nearestKept };
+  }
+
+  function makeTabRow(tab, index, treeInfo) {
+    return {
+      type: "tab",
+      key: `tab-${tab.id}`,
+      tab: {
+        id: tab.id,
+        windowId: tab.windowId,
+        title: tab.title,
+        url: tab.url,
+        favIconUrl: tab.favIconUrl,
+        discarded: Boolean(tab.discarded),
+        pinned: Boolean(tab.pinned),
+        active: Boolean(tab.active),
+        windowIndex: tab.index,
+        index,
+        matched: Boolean(tab.matched),
+        depth: treeInfo.depth || 0,
+        hasChildren: Boolean(treeInfo.hasChildren),
+        collapsed: Boolean(treeInfo.collapsed),
+      },
+    };
   }
 
   const totalTabCount = computed(() =>
@@ -85,12 +196,18 @@ function useWindows(options = {}) {
   const windowRows = computed(() => {
     const rows = [];
     let globalIndex = 0;
+    const treeMode = isTreeMode();
+    // 关键词存在时忽略折叠状态：否则匹配项可能被折叠的祖先藏起来，导致"搜到了却看不见"。
+    const forceExpand = hasKeyword();
+
     windowsToRender.value.forEach((win) => {
       const actualIndex = windows.value.findIndex(
         (item) => String(item.id) === String(win.id)
       );
       const labelIndex = actualIndex >= 0 ? actualIndex + 1 : 1;
-      const tabs = getDisplayTabs(win.tabs);
+      const render = treeMode ? buildTreeRender(win) : null;
+      const tabs = treeMode ? render.tabs : getDisplayTabs(win.tabs);
+
       if (tabs.length === 0 && shouldFilterRows()) {
         return;
       }
@@ -109,26 +226,52 @@ function useWindows(options = {}) {
         return;
       }
 
-      tabs.forEach((tab) => {
-        rows.push({
-          type: "tab",
-          key: `tab-${tab.id}`,
-          tab: {
-            id: tab.id,
-            windowId: tab.windowId,
-            title: tab.title,
-            url: tab.url,
-            favIconUrl: tab.favIconUrl,
-            discarded: Boolean(tab.discarded),
-            pinned: Boolean(tab.pinned),
-          active: Boolean(tab.active),
-          windowIndex: tab.index,
-          index: globalIndex,
-          matched: Boolean(tab.matched),
-        },
-      });
+      if (!treeMode) {
+        tabs.forEach((tab) => {
+          rows.push(makeTabRow(tab, globalIndex, {}));
+          globalIndex += 1;
+        });
+        return;
+      }
+
+      // 按"最近的保留祖先"把标签组织成森林，再按树的 DFS 顺序输出。
+      const { nearestKept } = render;
+      const childrenOf = new Map();
+      const roots = [];
+      for (const tab of tabs) {
+        const key = String(tab.id);
+        const parentKey = nearestKept.get(key);
+        if (parentKey === null || parentKey === undefined) {
+          roots.push(tab);
+          continue;
+        }
+        let children = childrenOf.get(parentKey);
+        if (!children) {
+          children = [];
+          childrenOf.set(parentKey, children);
+        }
+        children.push(tab);
+      }
+
+      // 显式栈而非递归：深层链（成千上万层）会直接把调用栈撑爆。
+      const stack = [];
+      for (let i = roots.length - 1; i >= 0; i -= 1) {
+        stack.push({ tab: roots[i], depth: 0 });
+      }
+      while (stack.length > 0) {
+        const { tab, depth } = stack.pop();
+        const children = childrenOf.get(String(tab.id)) || [];
+        const hasChildren = children.length > 0;
+        const collapsed =
+          hasChildren && !forceExpand && Boolean(tree.isCollapsed(win.id, tab.id));
+        rows.push(makeTabRow(tab, globalIndex, { depth, hasChildren, collapsed }));
         globalIndex += 1;
-      });
+        if (hasChildren && !collapsed) {
+          for (let i = children.length - 1; i >= 0; i -= 1) {
+            stack.push({ tab: children[i], depth: depth + 1 });
+          }
+        }
+      }
     });
     return rows;
   });
@@ -138,9 +281,25 @@ function useWindows(options = {}) {
     Object.keys(selectedTabIds).forEach((key) => delete selectedTabIds[key]);
   }
 
+  /**
+   * 当前窗口里"全选应当作用到"的标签。
+   * 过滤模式下只包含真正匹配的标签（祖先只是路径，不参与批量操作），跳转模式包含全部。
+   */
+  function getSelectableTabs(win) {
+    if (!isTreeMode()) {
+      return getDisplayTabs(win.tabs);
+    }
+    const { tabs } = buildTreeRender(win);
+    if (shouldFilterRows()) {
+      const keyword = getKeyword();
+      return tabs.filter((tab) => matchesTabQuery(tab, keyword));
+    }
+    return tabs;
+  }
+
   function setVisibleSelection(checked) {
     windowsToRender.value.forEach((win) => {
-      getDisplayTabs(win.tabs).forEach((tab) => {
+      getSelectableTabs(win).forEach((tab) => {
         if (checked) {
           selectedTabIds[tab.id] = true;
         } else {
@@ -213,6 +372,7 @@ function useWindows(options = {}) {
     ) {
       selectedWindowId.value = "all";
     }
+    return existing;
   }
 
   return {
@@ -223,6 +383,7 @@ function useWindows(options = {}) {
     windowSubItems,
     windowSubtitle,
     windowRows,
+    isTreeMode,
     setSelectedWindow,
     setVisibleSelection,
     toggleTab,
