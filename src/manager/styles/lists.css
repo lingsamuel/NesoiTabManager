@@ -63,6 +63,15 @@
   background: #f8fafc;
 }
 
+/*
+  活动标签被折叠或被筛选隐藏时，它最近的可见祖先行加一圈蓝边，
+  与滚动条轨道上的空心蓝条配合，指出"活动标签在这棵子树里"。
+  放在 :hover 之后，保证悬停时蓝边也不会被 hover 的背景/阴影盖掉。
+*/
+.tab-row.active-ancestor {
+  box-shadow: inset 0 0 0 1.5px #4b7bec;
+}
+
 .tab-row.draggable {
   cursor: grab;
 }

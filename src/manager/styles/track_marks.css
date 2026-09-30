@@ -1,0 +1,90 @@
+/*
+  滚动条轨道标记（管理页与侧边栏共用）。
+  复刻原生 Ctrl+F 的做法：在滚动条轨道上按"行序号 / 总行数"的比例画出刻度。
+
+  结构约定：
+  .track-host            定位容器（position: relative），内部是滚动容器 + .track-marks
+                         标记层必须放在滚动容器**外面**，放里面会跟着内容一起滚走
+  .track-marks.on-left   滚动条在左侧（侧边栏）
+  .track-marks.on-right  滚动条在右侧（管理页）
+  .track-mark            单个刻度；kind 决定配色
+*/
+
+.track-host {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.track-marks {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 14px;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.track-marks.on-left {
+  left: 0;
+}
+
+.track-marks.on-right {
+  right: 0;
+}
+
+.track-mark {
+  position: absolute;
+  width: 12px;
+  height: 3px;
+  padding: 0;
+  border: none;
+  border-radius: 2px;
+  pointer-events: auto;
+  cursor: pointer;
+  transform: translateY(-1px);
+  box-shadow: none;
+}
+
+.track-marks.on-left .track-mark {
+  left: 1px;
+}
+
+.track-marks.on-right .track-mark {
+  right: 1px;
+}
+
+.track-mark:hover {
+  transform: translateY(-1px) scaleY(1.8);
+}
+
+/* 当前活动标签：实心蓝条 */
+.track-mark.active {
+  background: #4b7bec;
+}
+
+/* 活动标签本身不在列表里（被折叠/被筛选隐藏）时标到最近的可见祖先：空心蓝条以示区别 */
+.track-mark.active-ancestor {
+  background: transparent;
+  border: 1.5px solid #4b7bec;
+}
+
+/* 跳转模式下的搜索匹配：琥珀色刻度，当前匹配加深 */
+.track-mark.match {
+  background: #f0b429;
+}
+
+.track-mark.match-current {
+  background: #e8590c;
+}
+
+/*
+  合并后同时含"当前匹配项"与"活动标签"：蓝色优先，另加高亮边框，
+  这样两类信息都不会被对方盖掉。
+*/
+.track-mark.active-current {
+  background: #4b7bec;
+  border: 1.5px solid #e8590c;
+}

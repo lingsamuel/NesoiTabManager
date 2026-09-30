@@ -31,8 +31,8 @@
           @update:model-value="onUpdateFilterQuery"
           @commit="onCommitFilterQuery"
           @mode-change="onModeChange"
-          @next="goToNext"
-          @prev="goToPrev"
+          @next="goToNextMatch"
+          @prev="goToPrevMatch"
         />
         <button class="ghost btn-icon" @click="onSelectAll">
           <span class="icon" aria-hidden="true">
@@ -102,7 +102,10 @@
     </div>
 
     <TabListPanel
+      ref="panelRef"
       :rows="windowRows"
+      :active-rows="activeRows"
+      :auto-scroll-to-match="false"
       :item-height="44"
       :selected-map="selectedTabIds"
       :ai-tags="aiTags"
@@ -122,15 +125,18 @@
       :on-toggle-collapse="onToggleCollapse"
       :on-tree-drop="onTreeDrop"
       :is-tree-descendant="isTreeDescendant"
+      @marker-click="onMarkerClick"
+      @visible-range="onVisibleRange"
     />
   </section>
 </template>
 
 <script setup>
-import { computed } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import FilterBar from "../components/FilterBar.vue";
 import TabListPanel from "../components/TabListPanel.vue";
 import { useMatchNavigation } from "../composables/useMatchNavigation.js";
+import { pickCurrentMatchFromVisibleRange } from "../utils/scroll_markers.js";
 
 const props = defineProps({
   windowSubtitle: {
@@ -138,6 +144,11 @@ const props = defineProps({
     default: "",
   },
   windowRows: {
+    type: Array,
+    default: () => [],
+  },
+  // 每个窗口的活动标签所在行（滚动条轨道上的蓝色刻度）
+  activeRows: {
     type: Array,
     default: () => [],
   },
@@ -290,6 +301,7 @@ const {
   currentMatchPosition,
   goToNext,
   goToPrev,
+  setCurrentMatchByRowIndex,
 } = useMatchNavigation({
   rows: computed(() => props.windowRows),
   isMatchRow: (item) =>
@@ -297,6 +309,92 @@ const {
   mode: computed(() => props.filterMode),
   hasQuery: computed(() => Boolean(props.committedFilterQuery)),
 });
+
+const panelRef = ref(null);
+
+/**
+ * 所有"匹配行"的行号（升序）。
+ * 一次扫描缓存下来，滚动时就不用每帧重新遍历整份行数据。
+ */
+const matchRowIndexes = computed(() => {
+  const result = [];
+  props.windowRows.forEach((row, index) => {
+    if (row.type === "tab" && row.tab && row.tab.matched) {
+      result.push(index);
+    }
+  });
+  return result;
+});
+
+/** 把某一行滚动到可视区并居中。 */
+function scrollToRow(index) {
+  if (index < 0 || !panelRef.value || typeof panelRef.value.scrollToIndex !== "function") {
+    return;
+  }
+  panelRef.value.scrollToIndex(index);
+}
+
+/** 滚动到当前跳转项（导航动作专用；滚动同步本身不会调用它）。 */
+function scrollToCurrentMatch() {
+  scrollToRow(currentMatchIndex.value);
+}
+
+function goToNextMatch() {
+  goToNext();
+  scrollToCurrentMatch();
+}
+
+function goToPrevMatch() {
+  goToPrev();
+  scrollToCurrentMatch();
+}
+
+/**
+ * 可见行区间变化 → 让"当前跳转项"跟随可见范围（与侧边栏同一规则）。
+ * 只改状态、不滚动：一旦滚动就会变成"用户一滚就被拉回去"。
+ * 列表因此关闭了自动滚动（auto-scroll-to-match=false），改由上面那些动作显式滚动。
+ */
+function onVisibleRange(range) {
+  if (props.filterMode !== "jump" || !range) {
+    return;
+  }
+  const next = pickCurrentMatchFromVisibleRange({
+    matchRowIndexes: matchRowIndexes.value,
+    currentMatchRowIndex: currentMatchIndex.value,
+    startIndex: range.startIndex,
+    endIndex: range.endIndex,
+  });
+  if (next !== null) {
+    setCurrentMatchByRowIndex(next);
+  }
+}
+
+/**
+ * 点击滚动条刻度。匹配刻度要同步"当前跳转项"，这样 ↑/↓ 从用户点的那一项继续；
+ * 合并过的刻度只在"点击目标本身就是匹配项"时才带 matchIndex，因此点蓝色活动刻度不碰搜索状态。
+ */
+function onMarkerClick(marker) {
+  if (!marker) {
+    return;
+  }
+  if (props.filterMode === "jump" && Number.isFinite(marker.matchIndex)) {
+    setCurrentMatchByRowIndex(marker.matchIndex);
+  }
+  scrollToRow(marker.index);
+}
+
+// 切到跳转模式时 useMatchNavigation 会把当前项重置为第一个匹配；
+// 因为列表关闭了自动滚动，这里必须显式滚过去。
+watch(
+  () => props.filterMode,
+  async (mode) => {
+    if (mode !== "jump") {
+      return;
+    }
+    await nextTick();
+    scrollToCurrentMatch();
+  }
+);
 
 function handleToggleHideDiscarded(checked) {
   if (props.onToggleHideDiscarded) {

@@ -18,7 +18,7 @@ import { request } from "../manager/utils/request.js";
 // 与管理页树状视图、后台、基准测试共用同一份行模型（筛选补祖先 + DFS + 折叠）
 import { buildTreeRows } from "../../background/tree_core.js";
 import { computePinnedReorderIndex, groupPinnedTabs } from "./pinned_data.js";
-import { pickCurrentMatchFromVisibleRange, resolveActiveRow } from "./scroll_markers.js";
+import { pickCurrentMatchFromVisibleRange, resolveActiveRow } from "../manager/utils/scroll_markers.js";
 import SidebarPinnedTabs from "./components/SidebarPinnedTabs.vue";
 import SidebarTabTree from "./components/SidebarTabTree.vue";
 
@@ -228,14 +228,15 @@ function onVisibleRange(range) {
  * 点击滚动条刻度。
  * 点匹配刻度时要**同步当前跳转项**——这样 ↑/↓ 会从用户点的那一项继续（例：3 个匹配项、
  * 当前在第 2 项，点了第 1 项的刻度后当前项变成第 1 项，此时"上一条"是第 3 项、"下一条"是第 2 项）。
- * 点活动标签的蓝色刻度只滚动，不碰搜索状态。
+ * 合并过的刻度由 buildTrackMarkers 给出 matchIndex：只有"点击目标本身就是匹配项"时才有值，
+ * 因此点活动标签的蓝色刻度不会碰搜索状态。
  */
 function onMarkerClick(marker) {
   if (!marker) {
     return;
   }
-  if (isJumpMode.value && (marker.kind === "match" || marker.kind === "match-current")) {
-    setCurrentMatchByRowIndex(marker.index);
+  if (isJumpMode.value && Number.isFinite(marker.matchIndex)) {
+    setCurrentMatchByRowIndex(marker.matchIndex);
   }
   scrollToRow(marker.index);
 }

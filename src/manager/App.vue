@@ -81,6 +81,7 @@
         v-show="view === 'windows'"
         :window-subtitle="windowSubtitle"
         :window-rows="windowRows"
+        :active-rows="activeRows"
         :filter-query="windowsFilter.query.value"
         :committed-filter-query="windowsFilter.committed.value"
         :filter-mode="windowsFilter.mode.value"
@@ -585,6 +586,7 @@ const {
   windowSubItems,
   windowSubtitle,
   windowRows,
+  activeRows,
   setSelectedWindow: setSelectedWindowBase,
   setVisibleSelection,
   toggleTab,

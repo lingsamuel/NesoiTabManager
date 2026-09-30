@@ -115,6 +115,16 @@
 - 存放在 `chrome.storage.local` 的 `treeViewMode` 键，取值 `"tree"` 或 `"flat"`，全局一份。
 - 用途：管理页「打开的窗口」视图记住用户上次选择的展示模式。
 
+### 筛选模式（filterMode）
+- 存放在 `chrome.storage.local` 的 `filterMode` 键，取值 `"filter"` 或 `"jump"`，全局一份。
+- 用途：记住「过滤 / 跳转」的选择。
+- **全局一份**的原因：`useFilterQuery` 是模块级共享的，管理页一次会创建 4 个实例
+  （Windows / 列表 / 最近 / 历史），侧边栏另有 1 个，但它们表达的是同一个用户偏好，
+  共用同一个 ref 与同一个键（与 `treeViewMode` 的做法一致）。
+- 只在切换时写一次；非法取值一律归一化为 `"filter"`。
+- 各页面在初始化时读取（异步、只读一次），**不做跨页实时同步**：管理页与侧边栏同时打开时，
+  在一边切换模式，另一边要等下次加载才跟上。
+
 ## 数据流
 - 保存标签：UI/右键/悬浮组件 -> `saveTabs` -> 写入 `lists`。
 - 列表管理：`createList / renameList / deleteList / moveListItems` -> 更新 `lists`。

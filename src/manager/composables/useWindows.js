@@ -3,6 +3,7 @@ import { computed, reactive, ref } from "vue";
 // Firefox 侧边栏共用同一份实现，避免"基准测的是一套、线上跑的是另一套"。
 import { buildTreeRows } from "../../../background/tree_core.js";
 import { getSelectedTabsFrom, matchesTabQuery } from "../utils/helpers.js";
+import { resolveActiveRows } from "../utils/scroll_markers.js";
 
 function useWindows(options = {}) {
   const hideDiscarded = options.hideDiscarded;
@@ -160,6 +161,9 @@ function useWindows(options = {}) {
       rows.push({
         type: "window",
         key: `window-${win.id}`,
+        windowId: Number(win.id),
+        // 只挂引用，不额外计算：activeRows 需要它做"活动标签被隐藏时上溯到可见祖先"
+        parents: render ? render.parentMap : null,
         label: `窗口 ${labelIndex}`,
         count: win.tabs ? win.tabs.length : 0,
       });
@@ -311,8 +315,40 @@ function useWindows(options = {}) {
     return existing;
   }
 
+  /**
+   * 滚动条轨道上的蓝色刻度：管理页是多窗口视图，因此**每个窗口各一条**。
+   * 复用与侧边栏相同的规则：活动标签被折叠或被筛选隐藏时，标到它最近的可见祖先行。
+   */
+  const activeRows = computed(() => {
+    const rowIndexById = new Map();
+    const parentsByWindowId = new Map();
+    windowRows.value.forEach((row, index) => {
+      if (row.type === "tab") {
+        rowIndexById.set(Number(row.tab.id), index);
+      } else if (row.type === "window") {
+        parentsByWindowId.set(Number(row.windowId), row.parents || null);
+      }
+    });
+    if (rowIndexById.size === 0) {
+      return [];
+    }
+    const entries = [];
+    for (const win of windowsToRender.value) {
+      const active = (win.tabs || []).find((tab) => tab.active);
+      if (!active) {
+        continue;
+      }
+      entries.push({
+        tabId: Number(active.id),
+        parents: parentsByWindowId.get(Number(win.id)) || null,
+      });
+    }
+    return resolveActiveRows(entries, rowIndexById);
+  });
+
   return {
     windows,
+    activeRows,
     selectedWindowId,
     selectedTabIds,
     totalTabCount,

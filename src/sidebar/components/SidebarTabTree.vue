@@ -9,7 +9,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import VirtualList from "../../manager/components/VirtualList.vue";
 import { getTreeDropZone } from "../../manager/utils/helpers.js";
-import { buildTrackMarkers } from "../scroll_markers.js";
+import { buildTrackMarkers } from "../../manager/utils/scroll_markers.js";
 import TabFavicon from "../../manager/components/TabFavicon.vue";
 
 const props = defineProps({
@@ -116,9 +116,18 @@ const markers = computed(() =>
   })
 );
 
+/** 刻度悬停提示：合并过的刻度要说明它代表多少个，否则看起来和单个刻度没区别。 */
+function markerTitle(marker) {
+  const isMatch = marker.kind === "match" || marker.kind === "match-current";
+  if (marker.merged) {
+    return isMatch ? `跳转到这 ${marker.count} 个匹配项` : `跳转到这一带的 ${marker.count} 个刻度`;
+  }
+  return isMatch ? "跳转到该匹配项" : "跳转到当前标签页";
+}
+
 /** 点击轨道刻度：只上报，由父级统一处理"同步当前项 + 滚动"。 */
 function onMarkerClick(marker) {
-  emit("marker-click", { index: marker.index, kind: marker.kind });
+  emit("marker-click", { index: marker.index, kind: marker.kind, matchIndex: marker.matchIndex });
 }
 
 function onRangeChange(range) {
@@ -213,7 +222,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="wrapperRef" class="sb-tree-wrap">
+  <div ref="wrapperRef" class="track-host">
     <VirtualList
       ref="listRef"
       class="sb-list"
@@ -297,15 +306,15 @@ onBeforeUnmount(() => {
       轨道标记层放在滚动容器**外面**：放进容器里会跟着内容一起滚走。
       作为容器的兄弟节点用绝对定位，因此始终停在视口对应位置。
     -->
-    <div v-if="markers.length > 0" class="sb-marks">
+    <div v-if="markers.length > 0" class="track-marks on-left">
       <button
         v-for="marker in markers"
         :key="marker.key"
         type="button"
-        class="sb-mark"
+        class="track-mark"
         :class="marker.kind"
         :style="{ top: `${marker.top}px` }"
-        :title="marker.kind === 'match' || marker.kind === 'match-current' ? '跳转到该匹配项' : '跳转到当前标签页'"
+        :title="markerTitle(marker)"
         @click.stop="onMarkerClick(marker)"
       ></button>
     </div>

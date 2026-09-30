@@ -1,14 +1,16 @@
 <template>
   <div class="panel tabs-panel">
     <div v-if="rows.length === 0" class="virtual-empty">{{ emptyText }}</div>
-    <VirtualList
-      ref="listRef"
-      v-else
-      class="tabs"
-      :items="rows"
-      :item-height="itemHeight"
-      :current-match-index="currentMatchIndex"
-    >
+    <div v-else ref="wrapperRef" class="track-host">
+      <VirtualList
+        ref="listRef"
+        class="tabs"
+        :items="rows"
+        :item-height="itemHeight"
+        :current-match-index="currentMatchIndex"
+        :auto-scroll-to-match="autoScrollToMatch"
+        @range-change="emit('visible-range', $event)"
+      >
       <template #default="{ item, index }">
         <div v-if="item.type === 'window'" class="window-title-row">
           {{ item.label }}<span v-if="item.count !== undefined">（{{ item.count }}）</span>
@@ -30,6 +32,7 @@
             'drop-child': treeMode && dragOverTabId === item.tab.id && dropZone === 'child',
             matched: highlightMatches && Boolean(item.tab.matched),
             'match-current': index === currentMatchIndex,
+            'active-ancestor': activeAncestorIndexes.has(index),
           }"
           :draggable="enableDrag"
           @click="handleToggleSelection(item.tab.id, $event)"
@@ -127,8 +130,23 @@
             </button>
           </div>
         </div>
-      </template>
-    </VirtualList>
+        </template>
+      </VirtualList>
+
+      <!-- 标记层放在滚动容器外面，否则会跟着内容一起滚走；管理页滚动条在右侧 -->
+      <div v-if="markers.length > 0" class="track-marks on-right">
+        <button
+          v-for="marker in markers"
+          :key="marker.key"
+          type="button"
+          class="track-mark"
+          :class="marker.kind"
+          :style="{ top: `${marker.top}px` }"
+          :title="markerTitle(marker)"
+          @click.stop="onMarkerClick(marker)"
+        ></button>
+      </div>
+    </div>
     <div class="list-fab">
       <button class="ghost btn-icon fab-btn" @click="scrollToTop">
         <span class="icon" aria-hidden="true">
@@ -151,10 +169,13 @@
 </template>
 
 <script setup>
-import { ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import VirtualList from "./VirtualList.vue";
 import TabFavicon from "./TabFavicon.vue";
 import { getTreeDropZone } from "../utils/helpers.js";
+import { buildTrackMarkers } from "../utils/scroll_markers.js";
+
+const emit = defineEmits(["marker-click", "visible-range"]);
 
 const props = defineProps({
   rows: {
@@ -193,6 +214,18 @@ const props = defineProps({
   currentMatchIndex: {
     type: Number,
     default: -1,
+  },
+  // 滚动条轨道上的蓝色刻度：管理页是多窗口视图，因此每个窗口各一条。
+  // 由调用方用 resolveActiveRows 算好（含"活动标签被折叠/筛选隐藏时标到最近的可见祖先"）。
+  activeRows: {
+    type: Array,
+    default: () => [],
+  },
+  // 见 VirtualList.autoScrollToMatch：侧边栏与标签页视图会在滚动时同步当前项，
+  // 那种同步不能再触发滚动，因此它们传 false 并改为显式滚动。
+  autoScrollToMatch: {
+    type: Boolean,
+    default: true,
   },
   emptyText: {
     type: String,
@@ -252,6 +285,10 @@ const dragInProgress = ref(false);
 // 树状模式下的落点分区：before（成为前一个兄弟）/ after（后一个兄弟）/ child（成为子标签）。
 const dropZone = ref(null);
 const listRef = ref(null);
+const wrapperRef = ref(null);
+// 轨道高度 = 滚动容器自身高度：刻度按"行序号 / 总行数"的比例落在它上面。
+const trackHeight = ref(0);
+let trackResizeObserver = null;
 
 function handleToggleSelection(tabId) {
   if (dragInProgress.value) {
@@ -461,5 +498,80 @@ function scrollToBottom() {
     listRef.value.scrollToBottom();
   }
 }
+
+// ---------------------------------------------------------------------------
+// 滚动条轨道标记
+// ---------------------------------------------------------------------------
+
+/** 刻度只认标签行；窗口标题行、分隔行、空行都不参与。 */
+const trackRows = computed(() =>
+  props.rows.map((row) => ({
+    id: row.type === "tab" ? row.tab.id : `${row.type}-${row.label || row.text || ""}`,
+    matched: row.type === "tab" && Boolean(row.tab.matched),
+  }))
+);
+
+/** 行号 → 该行是否为"活动标签被隐藏时所用祖先行"，用于给这一行加蓝边。 */
+const activeAncestorIndexes = computed(() => {
+  const result = new Set();
+  for (const row of props.activeRows) {
+    if (row && row.isAncestor && Number.isFinite(row.index)) {
+      result.add(row.index);
+    }
+  }
+  return result;
+});
+
+const markers = computed(() =>
+  buildTrackMarkers({
+    rows: trackRows.value,
+    activeRows: props.activeRows,
+    highlightMatches: props.highlightMatches,
+    currentMatchIndex: props.currentMatchIndex,
+    trackHeight: trackHeight.value,
+  })
+);
+
+/** 合并过的刻度要说明它代表多少个，否则看起来和单个刻度没有区别。 */
+function markerTitle(marker) {
+  const isMatch = marker.kind === "match" || marker.kind === "match-current";
+  if (marker.merged) {
+    return isMatch ? `跳转到这 ${marker.count} 个匹配项` : `跳转到这一带的 ${marker.count} 个刻度`;
+  }
+  return isMatch ? "跳转到该匹配项" : "跳转到当前活动标签";
+}
+
+function onMarkerClick(marker) {
+  emit("marker-click", { index: marker.index, kind: marker.kind, matchIndex: marker.matchIndex });
+}
+
+function updateTrackHeight() {
+  trackHeight.value = wrapperRef.value ? wrapperRef.value.clientHeight || 0 : 0;
+}
+
+onMounted(() => {
+  updateTrackHeight();
+  // 面板尺寸随窗口与布局变化，轨道高度必须重新测量，否则刻度位置会偏。
+  trackResizeObserver = new ResizeObserver(updateTrackHeight);
+  if (wrapperRef.value) {
+    trackResizeObserver.observe(wrapperRef.value);
+  }
+});
+
+onBeforeUnmount(() => {
+  if (trackResizeObserver) {
+    trackResizeObserver.disconnect();
+    trackResizeObserver = null;
+  }
+});
+
+defineExpose({
+  // 关闭了自动滚动的调用方（标签页视图与侧边栏）需要显式滚动时用它。
+  scrollToIndex(index) {
+    if (listRef.value && listRef.value.scrollToIndex) {
+      listRef.value.scrollToIndex(index);
+    }
+  },
+});
 
 </script>

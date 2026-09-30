@@ -5,10 +5,11 @@
 
 import {
   buildTrackMarkers,
+  resolveActiveRows,
   pickCurrentMatchFromVisibleRange,
   resolveActiveRow,
   toTrackTop,
-} from "../src/sidebar/scroll_markers.js";
+} from "../src/manager/utils/scroll_markers.js";
 
 let failures = 0;
 let checks = 0;
@@ -92,11 +93,11 @@ function main() {
     }).map((m) => [m.kind, m.index]),
     [
       ["match", 0],
+      ["active-ancestor", 1],
       ["match-current", 2],
       ["match", 3],
-      ["active-ancestor", 1],
     ],
-    "匹配刻度 + 当前匹配加深 + 祖先行活动标记"
+    "匹配刻度 + 当前匹配加深 + 祖先行活动标记（按轨道位置排序）"
   );
   assertDeepEqual(buildTrackMarkers({ rows: [], activeRow: null, trackHeight: 80 }), [], "空列表没有标记");
 
@@ -178,6 +179,104 @@ function main() {
     90,
     "滚到末尾时选中最末匹配项"
   );
+
+  console.log("场景 7：距离过近的刻度合并成一个");
+  // 100 行、轨道 100px → 每行 1px；前 10 行都是匹配项 → 刻度间距 1px
+  const dense = Array.from({ length: 100 }, (_, index) => row(index + 1, index < 10));
+  const denseMarkers = buildTrackMarkers({
+    rows: dense,
+    highlightMatches: true,
+    currentMatchIndex: 5,
+    trackHeight: 100,
+  });
+  assertEqual(denseMarkers.length, 1, "10 个紧挨着的刻度合并成 1 条");
+  assertEqual(denseMarkers[0].count, 10, "合并条记录了成员数");
+  assertEqual(denseMarkers[0].merged, true, "标记为已合并");
+  assertEqual(denseMarkers[0].kind, "match-current", "簇内含当前项 → 高亮");
+  assertEqual(denseMarkers[0].index, 5, "点击目标优先当前项（不会把当前项点走）");
+  assertEqual(denseMarkers[0].matchIndex, 5, "同步当前项也指向当前项本身");
+
+  console.log("场景 8：蓝色活动刻度被合并时，蓝色优先 + 高亮边框");
+  const mergedWithActive = buildTrackMarkers({
+    rows: dense,
+    activeRow: { index: 7, isAncestor: false },
+    highlightMatches: true,
+    currentMatchIndex: 5,
+    trackHeight: 100,
+  });
+  assertEqual(mergedWithActive.length, 1, "活动刻度也参与合并");
+  assertEqual(mergedWithActive[0].kind, "active-current", "蓝色优先 + 高亮边框");
+  assertEqual(mergedWithActive[0].index, 5, "点击目标仍是当前项");
+  const activeOnlyCluster = buildTrackMarkers({
+    rows: dense,
+    activeRow: { index: 20, isAncestor: false },
+    highlightMatches: true,
+    currentMatchIndex: 5,
+    trackHeight: 100,
+  });
+  assertEqual(activeOnlyCluster.length, 2, "距离够远的活动刻度不参与合并");
+  assertEqual(activeOnlyCluster[1].kind, "active", "单独一条蓝色刻度");
+
+  console.log("场景 9：合并簇里没有当前项时的点击目标");
+  // 前 4 行是匹配项、活动标签在第 3 行（索引 2）→ 与匹配刻度糊在一起
+  const noCurrent = buildTrackMarkers({
+    rows: Array.from({ length: 100 }, (_, index) => row(index + 1, index < 4)),
+    activeRow: { index: 2, isAncestor: false },
+    highlightMatches: true,
+    currentMatchIndex: -1,
+    trackHeight: 100,
+  });
+  assertEqual(noCurrent.length, 1, "仍然合并成一条");
+  assertEqual(noCurrent[0].kind, "active", "没有当前项时显示蓝色");
+  assertEqual(noCurrent[0].index, 2, "点击目标退到活动标签");
+  assertEqual(noCurrent[0].matchIndex, null, "目标不是匹配项 → 不改动当前跳转项");
+
+  console.log("场景 10：阈值为 6px 时的合并边界");
+  // 轨道 12px、2 行 → 刻度分别在 3px 与 9px，间距 6px（不小于阈值 → 不合并）
+  const boundary = Array.from({ length: 2 }, (_, index) => row(index + 1, true));
+  assertEqual(
+    buildTrackMarkers({ rows: boundary, highlightMatches: true, trackHeight: 12 }).length,
+    2,
+    "间距等于阈值（6px）不合并"
+  );
+  // 轨道 10px、2 行 → 2.5px 与 7.5px，间距 5px（小于阈值 → 合并）
+  assertEqual(
+    buildTrackMarkers({ rows: boundary, highlightMatches: true, trackHeight: 10 }).length,
+    1,
+    "间距小于阈值（5px）合并"
+  );
+  assertEqual(
+    buildTrackMarkers({ rows: boundary, highlightMatches: true, trackHeight: 10, mergeThreshold: 0 }).length,
+    2,
+    "阈值为 0 时不合并"
+  );
+
+  console.log("场景 11：管理页多窗口的活动行批量解析");
+  const multiRows = [row(11), row(12), row(13), row(21), row(22)];
+  const multiIndex = new Map(multiRows.map((item, index) => [item.id, index]));
+  assertDeepEqual(
+    resolveActiveRows(
+      [
+        { tabId: 12, parents: { 12: 11, 13: 12 } },
+        { tabId: 22, parents: { 22: 21 } },
+      ],
+      multiIndex
+    ),
+    [
+      { index: 1, isAncestor: false },
+      { index: 4, isAncestor: false },
+    ],
+    "每个窗口各解析出一条活动行"
+  );
+  // 标签 13 不在渲染集合里（被折叠或筛选隐藏）→ 上溯到它的父 12
+  const hiddenIndex = new Map([row(11), row(12), row(21)].map((item, index) => [item.id, index]));
+  assertDeepEqual(
+    resolveActiveRows([{ tabId: 13, parents: { 13: 12, 12: 11 } }], hiddenIndex),
+    [{ index: 1, isAncestor: true }],
+    "被折叠隐藏时上溯到最近的可见祖先"
+  );
+  assertDeepEqual(resolveActiveRows([{ tabId: 99, parents: {} }], multiIndex), [], "定位不到就整条丢弃");
+  assertDeepEqual(resolveActiveRows([], multiIndex), [], "没有活动标签时返回空数组");
 
   console.log("");
   console.log(`共 ${checks} 项断言，失败 ${failures} 项`);
