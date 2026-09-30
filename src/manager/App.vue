@@ -498,7 +498,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import WindowsView from "./views/WindowsView.vue";
 import ListsView from "./views/ListsView.vue";
 import RecentView from "./views/RecentView.vue";
@@ -511,6 +511,7 @@ import { useRecent } from "./composables/useRecent.js";
 import { useTree } from "./composables/useTree.js";
 import { MOVE_NEW_LIST_VALUE, NEW_LIST_VALUE, useLists } from "./composables/useLists.js";
 import { useWindows } from "./composables/useWindows.js";
+import { useWindowsSync } from "./composables/useWindowsSync.js";
 import { request } from "./utils/request.js";
 import { rememberListId } from "./utils/list_target_memory.js";
 import { moveTabsInBatches, removeTabsInBatches } from "./utils/helpers.js";
@@ -724,13 +725,19 @@ const windowMoveTargets = computed(() =>
 );
 
 let resetAiTags = () => {};
+
+/** 树状模式下才需要父子映射；平铺模式完全用不到，避免多余的 IPC 与后台对齐。 */
+async function loadTreeForCurrentWindows() {
+  if (!tree.mode.value) {
+    return;
+  }
+  await tree.loadForWindows(windows.value.map((win) => win.id));
+}
+
 const refreshWindows = async () => {
   const aliveTabIds = await loadWindows();
   if (!isOverlay.value) {
-    // 只在树状模式下拉取父子映射：平铺模式完全用不到，避免多余的 IPC 与后台对齐。
-    if (tree.mode.value) {
-      await tree.loadForWindows(windows.value.map((win) => win.id));
-    }
+    await loadTreeForCurrentWindows();
     if (aliveTabIds) {
       tree.pruneCollapsed(aliveTabIds);
     }
@@ -738,13 +745,50 @@ const refreshWindows = async () => {
   resetAiTags();
 };
 
+/**
+ * 「打开的窗口」的实时跟随：
+ * 管理页被复用时不会重新挂载，必须订阅 chrome 事件，否则在别处开关/移动标签后切回来看到的是快照。
+ *
+ * 两道闸门决定"是否真的查询"：
+ * - 页面不可见时不查，只置 pending，回到可见时补一次（事件在后台标签页里照样会到达）；
+ * - 当前不在「打开的窗口」视图时不查：树状模式下刷新还要额外拉一次父子映射，
+ *   在别的视图上刷新不只是浪费一次 getAll。切回本视图由 setView 负责刷新。
+ * 浮层模式不订阅：它是网页内嵌 iframe（chrome.* 受限），且只有「近期标签页」视图。
+ */
+const windowsSync = isOverlay.value
+  ? null
+  : useWindowsSync({
+      canRefresh: () => view.value === "windows",
+      refresh: refreshWindows,
+    });
+
+if (windowsSync) {
+  windowsSync.start();
+  // selfTabId 用于识别"被激活的是管理页自己"（复用入口切回来时补一次刷新）。
+  // 查询失败只让这条同步路径失效，不影响其余事件订阅。
+  if (typeof chrome.tabs.getCurrent === "function") {
+    chrome.tabs.getCurrent((tab) => {
+      void chrome.runtime.lastError;
+      if (tab && tab.id !== undefined && tab.id !== null) {
+        windowsSync.setSelfTabId(tab.id);
+      }
+    });
+  }
+}
+
+onBeforeUnmount(() => {
+  if (windowsSync) {
+    windowsSync.dispose();
+  }
+});
+
 async function toggleTreeMode(nextMode) {
   if (tree.mode.value === Boolean(nextMode)) {
     return;
   }
   await tree.setMode(nextMode);
   if (tree.mode.value) {
-    await tree.loadForWindows(windows.value.map((win) => win.id));
+    await loadTreeForCurrentWindows();
   }
 }
 
