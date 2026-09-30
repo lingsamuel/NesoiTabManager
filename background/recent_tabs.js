@@ -8,6 +8,9 @@ import { storageGet, storageSet, storageSessionGet, storageSessionSet } from "./
 import { formatDuration } from "./utils.js";
 
 const DEFAULT_RECENT_CONFIG = {
+  // 提醒总开关：关闭后只停止页面浮窗与后台定时器，
+  // 管理页「近期标签页」的展示与统计不受影响。
+  reminderEnabled: true,
   reminderIntervalMin: 15,
   startupDelaySec: 60,
   startupQuietSec: 15,
@@ -81,6 +84,10 @@ function isReminderDue(now) {
 
 function sanitizeRecentConfig(raw) {
   const config = raw && typeof raw === "object" ? raw : {};
+  // 开关只接受布尔值：老版本存储里没有这个字段，缺省或异常值一律按开启处理，
+  // 保证升级后行为与升级前一致，不会静默把用户的提醒关掉。
+  const reminderEnabled =
+    typeof config.reminderEnabled === "boolean" ? config.reminderEnabled : true;
   const reminderIntervalMin = Number.isFinite(Number(config.reminderIntervalMin))
     ? Math.max(1, Math.min(240, Number(config.reminderIntervalMin)))
     : DEFAULT_RECENT_CONFIG.reminderIntervalMin;
@@ -94,6 +101,7 @@ function sanitizeRecentConfig(raw) {
     ? Math.max(60, Math.min(7200, Number(config.startupMaxGraceSec)))
     : DEFAULT_RECENT_CONFIG.startupMaxGraceSec;
   return {
+    reminderEnabled,
     reminderIntervalMin,
     startupDelaySec,
     startupQuietSec,
@@ -427,6 +435,12 @@ function endStartup({ manual }) {
 }
 
 async function ensureRecentAlarm(config) {
+  // 提醒开关关闭后不需要任何定时器：直接清掉 alarm 让后台彻底静默。
+  // 重新开启时会走到下面的 chrome.alarms.get：此时拿不到已存在的 alarm，自然重建。
+  if (!config || !config.reminderEnabled) {
+    chrome.alarms.clear(RECENT_ALARM);
+    return;
+  }
   const period = Math.max(1, Number(config.reminderIntervalMin) || DEFAULT_RECENT_CONFIG.reminderIntervalMin);
   chrome.alarms.get(RECENT_ALARM, (alarm) => {
     if (alarm && Number(alarm.periodInMinutes) === period) {
@@ -465,9 +479,17 @@ async function getRecentBubblePosition() {
 
 async function setRecentConfig(config) {
   const sanitized = sanitizeRecentConfig(config);
+  const wasEnabled = !recentConfigCache || recentConfigCache.reminderEnabled !== false;
   recentConfigCache = sanitized;
   await storageSet({ [RECENT_CONFIG_KEY]: sanitized });
   await ensureRecentAlarm(sanitized);
+  if (!sanitized.reminderEnabled && wasEnabled) {
+    // 为什么不在 handleRecentConfigChanged 里处理这一次切换：
+    // 上面已经把 recentConfigCache 改成新值，随后触发的 storage.onChanged
+    // 在那边读不到"旧的开启态"，判定不出是由开转关，所以必须在写盘前记下旧值并在本地补播一次，
+    // 让页面上已经显示的提醒气泡随开关关闭立刻消失。
+    sendRecentClearToActiveTabs();
+  }
   if (recentState.startupActive) {
     scheduleStartupTimers(sanitized);
   }
@@ -475,8 +497,17 @@ async function setRecentConfig(config) {
 }
 
 function handleRecentConfigChanged(newValue) {
+  const previous = recentConfigCache;
   recentConfigCache = sanitizeRecentConfig(newValue || {});
   ensureRecentAlarm(recentConfigCache);
+  if (
+    !recentConfigCache.reminderEnabled &&
+    (!previous || previous.reminderEnabled !== false)
+  ) {
+    // 由开启切到关闭（例如其他扩展上下文直接改写了存储）：
+    // 立即向各窗口活动标签广播隐藏消息，回收已经显示出来的提醒气泡。
+    sendRecentClearToActiveTabs();
+  }
   if (recentState.startupActive) {
     scheduleStartupTimers(recentConfigCache);
   }
@@ -586,6 +617,11 @@ async function getRecentTabsSnapshot() {
 }
 
 async function sendRecentReminder() {
+  await ensureRecentConfig();
+  // 关闭提醒后定时器已被清除，这里再兜一层：即使有残留 alarm 也不广播气泡。
+  if (!recentConfigCache || !recentConfigCache.reminderEnabled) {
+    return;
+  }
   chrome.tabs.query({ active: true }, (tabs) => {
     sendRecentReminderToTabs(tabs || [], { hideWhenEmpty: false });
   });
@@ -609,6 +645,14 @@ function sendPayloadToTabs(tabs, payload) {
 
 async function sendRecentReminderToTabs(tabs, options = {}) {
   await ensureRecentConfig();
+  // 开关关闭时绝不推送计数气泡；但 hideWhenEmpty 的那次调用必须保留"隐藏"消息，
+  // 否则在开关关闭之前已经显示气泡的页面会一直挂着旧气泡（切换标签/窗口时才可能被清理）。
+  if (!recentConfigCache || !recentConfigCache.reminderEnabled) {
+    if (options.hideWhenEmpty) {
+      sendPayloadToTabs(tabs, { action: "recentReminder", count: 0, durationText: "" });
+    }
+    return;
+  }
   await ensureRecentState();
   const now = Date.now();
   if (!isReminderDue(now)) {

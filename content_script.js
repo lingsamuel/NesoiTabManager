@@ -72,7 +72,10 @@
     #${WIDGET_ID} .ntm-panel {
       position: absolute;
       left: 0;
-      bottom: 78px;
+      /* 与 .ntm-hotzone 的 72px 高度对齐，只留 2px 视觉缝隙。
+         这条缝隙由 isPointerOverWidget 的桥接带覆盖，
+         否则指针划过硬缝时既不命中气泡也不命中面板，会被误判成已移出而收起面板。 */
+      bottom: 74px;
       width: 220px;
       max-height: 280px;
       overflow: hidden;
@@ -323,10 +326,15 @@
     suppressBubbleClick: false,
     suppressCloseClick: false,
   };
+  // 指针坐标缓存：mousemove 是唯一的位置来源，供 isPointerOverWidget 做几何判定。
+  const pointerState = { x: 0, y: 0, valid: false };
   const DRAG_THRESHOLD = 4;
   const BUBBLE_MARGIN = 8;
   const PANEL_MARGIN = 8;
   const PANEL_GAP = 8;
+  // 气泡与面板之间的桥接带宽度（像素）：悬停判定时把矩形外扩这么多，
+  // 指针滑过两者之间的窄缝时不会被判定为已移出。
+  const HOVER_BRIDGE = 8;
 
   function clamp(value, min, max) {
     return Math.min(max, Math.max(min, value));
@@ -606,14 +614,51 @@
     }
   }
 
+  function isPointInRect(x, y, rect, padding) {
+    return (
+      x >= rect.left - padding &&
+      x <= rect.right + padding &&
+      y >= rect.top - padding &&
+      y <= rect.bottom + padding
+    );
+  }
+
+  /**
+   * 判断指针是否仍在“气泡体系”内（气泡本体，以及已展开的面板 + 两者之间的桥接带）。
+   * 背景：面板紧贴气泡上方弹出，两者之间必然存在缝隙；只按 CSS :hover 判定时，
+   * 指针落进缝隙会同时不命中 widget 与 panel，被误判成已移出而立刻收起面板。
+   * 这里改用指针坐标与 getBoundingClientRect 做几何判定，并把面板矩形外扩 HOVER_BRIDGE 像素，
+   * 使穿过缝隙时仍算在体系内。
+   * 约束：面板关闭时虽然不可见（opacity/transform 隐藏）但仍占据布局位置，
+   * 若关闭态也把面板矩形算进来，指针从气泡上方掠过就会误判为悬停并弹出面板，
+   * 因此关闭态只认气泡本体。
+   */
+  function isPointerOverWidget() {
+    if (!pointerState.valid) {
+      // 还没收到过 mousemove，或者指针刚移出文档（见 handlePointerLeaveDocument）：
+      // 两种情况下缓存的坐标都不可信，退回 :hover 判定。
+      return widget.matches(":hover") || panel.matches(":hover");
+    }
+    const { x, y } = pointerState;
+    if (isPointInRect(x, y, widget.getBoundingClientRect(), 0)) {
+      return true;
+    }
+    // 这里直接读 .open class，而不是文件后段用 let 声明的 isOpen：
+    // 二者由 setOpen 保持同步，但函数声明会被提升，读 let 变量存在 TDZ 风险，
+    // 读已经初始化的 widget 上的 class 则永远不会踩到未初始化绑定。
+    if (!widget.classList.contains("open")) {
+      return false;
+    }
+    return isPointInRect(x, y, panel.getBoundingClientRect(), HOVER_BRIDGE);
+  }
+
   function scheduleCollapse() {
     if (closeTimer) {
       return;
     }
     closeTimer = setTimeout(() => {
       closeTimer = null;
-      const hoveringWidget = widget.matches(":hover") || panel.matches(":hover");
-      if (hoveringWidget) {
+      if (isPointerOverWidget()) {
         return;
       }
       setExpanded(false);
@@ -626,8 +671,7 @@
     }
     rafId = requestAnimationFrame(() => {
       rafId = null;
-      const hoveringWidget = widget.matches(":hover") || panel.matches(":hover");
-      if (hoveringWidget) {
+      if (isPointerOverWidget()) {
         clearCloseTimer();
         setExpanded(true);
         setOpen(true);
@@ -638,9 +682,27 @@
     });
   }
 
-  document.addEventListener("mousemove", () => {
+  document.addEventListener("mousemove", (event) => {
+    // 必须先记录坐标再调度判定：判定函数读取的是最近一次指针位置。
+    pointerState.x = event.clientX;
+    pointerState.y = event.clientY;
+    pointerState.valid = true;
     scheduleCheck();
   });
+
+  /**
+   * 指针离开文档/窗口（移到浏览器 UI、切到别的窗口或应用）后的收尾。
+   * 这类离开不会再产生 mousemove，若继续沿用缓存坐标，而最后一帧恰好停在气泡或面板内，
+   * scheduleCheck/scheduleCollapse 会一直判定为“仍在悬停”，面板就再也收不起来。
+   * 因此这里让坐标失效（判定退回 :hover），并主动触发一次检查去收起面板。
+   */
+  function handlePointerLeaveDocument() {
+    pointerState.valid = false;
+    scheduleCheck();
+  }
+
+  document.addEventListener("mouseleave", handlePointerLeaveDocument);
+  window.addEventListener("blur", handlePointerLeaveDocument);
 
   panel.addEventListener("click", async (event) => {
     const button = event.target.closest("button[data-action]");
