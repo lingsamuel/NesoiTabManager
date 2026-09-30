@@ -24,6 +24,7 @@
 | --- | --- | --- |
 | 后台声明 | `background.service_worker` + `type: "module"` | `background.scripts` + `type: "module"`（event page） |
 | 后台代码 | ES Module 源码（多文件） | esbuild 打包后的单文件 |
+| 侧边栏 | 无（本次不做 `sidePanel`） | `sidebar_action.default_panel = ui/sidebar.html` |
 | 扩展 ID | 无要求 | `browser_specific_settings.gecko.id` |
 | 最低版本 | 无 | `strict_min_version: "115.0"` |
 
@@ -46,9 +47,12 @@ dist/
 │   ├── background/                  # 后台子模块源码
 │   ├── content_script.js
 │   ├── popup.html / popup.css / popup.js
-│   └── ui/                          # Vite 构建的管理界面
+│   ├── ui/                          # Vite 构建的管理界面
+│   │   ├── manager.html             # 管理页
+│   │   └── sidebar.html             # 侧边栏（仅 Firefox 清单引用）
+│   └── ...
 ├── firefox/                         # Firefox 直接加载目录
-│   ├── manifest.json                # scripts + type: module + gecko.id
+│   ├── manifest.json                # scripts + type: module + gecko.id + sidebar_action
 │   ├── background.js                # esbuild 打包后的单文件
 │   └── （其余文件同 Chrome）
 ├── nesoi-tab-manager-chrome-<version>.zip
@@ -71,9 +75,9 @@ npm run bench:tree     # 树算法 10K 级性能基准（含阈值校验）
 
 ### 4.2 步骤分解
 
-1. Vite 构建管理界面（`src/manager`）输出到 `ui/`。
+1. Vite 构建界面（`src/manager`）输出到 `ui/`，包含 `manager.html` 与 `sidebar.html` 两个入口（共用同一份 JS/CSS chunk）。
 2. Chrome 产物：复制后台源码（`background.js` + `background/`）、popup、content script 与 `ui/`，写入原样 manifest。
-3. Firefox 产物：esbuild 将 `background.js` 及其子模块打包为单文件 ESM，复制其余静态文件，写入 Firefox 适配 manifest（`background.scripts` + `gecko.id` 等）。
+3. Firefox 产物：esbuild 将 `background.js` 及其子模块打包为单文件 ESM，复制其余静态文件，写入 Firefox 适配 manifest（`background.scripts` + `gecko.id` + `sidebar_action` 等）。
 4. 进入各产物目录执行 `zip` 打包，输出到 `dist/` 根目录。
 5. 清理超出保留数量的历史 zip。
 
