@@ -196,7 +196,7 @@
           <div class="modal-body">
             <div class="form-row">
               <label for="move-list-select">目标列表</label>
-              <select id="move-list-select" v-model="moveTargetListId">
+              <select id="move-list-select" :value="moveTargetListId" @change="setMoveTargetListId($event.target.value)">
                 <option
                   v-for="list in moveTargetLists"
                   :key="list.id"
@@ -341,7 +341,7 @@
           <div class="modal-body">
             <div class="form-row">
               <label for="list-select">目标列表</label>
-              <select id="list-select" v-model="selectedListTarget">
+              <select id="list-select" :value="selectedListTarget" @change="setSaveListTarget($event.target.value)">
                 <option v-if="lists.length === 0" :value="NEW_LIST_VALUE">新建列表</option>
                 <template v-else>
                   <option v-for="list in lists" :key="list.id" :value="list.id">
@@ -511,6 +511,7 @@ import { useTree } from "./composables/useTree.js";
 import { MOVE_NEW_LIST_VALUE, NEW_LIST_VALUE, useLists } from "./composables/useLists.js";
 import { useWindows } from "./composables/useWindows.js";
 import { request } from "./utils/request.js";
+import { rememberListId } from "./utils/list_target_memory.js";
 import { moveTabsInBatches, removeTabsInBatches } from "./utils/helpers.js";
 
 const navItems = [
@@ -562,6 +563,8 @@ const status = reactive({ message: "", type: "" });
 const settingsStatus = reactive({ message: "", type: "" });
 const windowMoveStatus = reactive({ message: "", type: "" });
 const recentConfig = reactive({
+  // 是否在网页上显示近期标签页提醒气泡；默认开启，缺字段时按 true 处理。
+  reminderEnabled: true,
   reminderIntervalMin: 15,
   startupDelaySec: 60,
   startupQuietSec: 15,
@@ -636,6 +639,9 @@ const {
   clearListSelection,
   toggleListItem,
   toggleListItemSelection,
+  setSaveListTarget,
+  setMoveTargetListId,
+  resetSaveTargetTouched,
   saveListName,
   saveListDescription,
   moveSelectedListItems,
@@ -857,6 +863,11 @@ function setStatus(target, message, type) {
 }
 
 function applyRecentConfig(config) {
+  // 必须在布尔上下文里判空：直接写 Boolean(config.reminderEnabled) 会把"老数据没有这个字段"变成 false，
+  // 相当于给升级用户默认关闭提醒，与"默认开启"的要求相反。
+  recentConfig.reminderEnabled = config.reminderEnabled === undefined
+    ? true
+    : Boolean(config.reminderEnabled);
   recentConfig.reminderIntervalMin = Number.isFinite(Number(config.reminderIntervalMin))
     ? Number(config.reminderIntervalMin)
     : 15;
@@ -882,6 +893,7 @@ async function loadRecentConfig() {
 
 async function saveRecentConfig() {
   const payload = {
+    reminderEnabled: Boolean(recentConfig.reminderEnabled),
     reminderIntervalMin: Number(recentConfig.reminderIntervalMin),
     startupDelaySec: Number(recentConfig.startupDelaySec),
     startupQuietSec: Number(recentConfig.startupQuietSec),
@@ -984,6 +996,8 @@ function closeAiModal() {
 function openSaveModal() {
   setStatus(status, "", "");
   saveContextView.value = view.value;
+  // 每次打开都让"记忆的分组"重新生效：上次选过但没保存成功的选择不应长期压住记忆值。
+  resetSaveTargetTouched();
   showSaveModal.value = true;
 }
 
@@ -1318,6 +1332,15 @@ async function saveSelectedTabs() {
 
   const savedCount = response.result ? response.result.savedCount : 0;
   setStatus(status, `已保存 ${savedCount} 个标签页。`, "ok");
+  /*
+    记住这次真正落到的分组，供下次打开弹窗时默认选中。
+    选「新建列表」时后台会回传新建出来的 listId，一并记为记忆值——
+    下次就能直接存进同一个列表，而不是又落到新建表单。
+  */
+  const savedListId = response.result && response.result.listId ? response.result.listId : listId;
+  if (savedListId) {
+    rememberListId("save", savedListId);
+  }
   newListName.value = "";
   newListDescription.value = "";
   await loadLists();

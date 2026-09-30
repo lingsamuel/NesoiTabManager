@@ -1,8 +1,14 @@
 import { computed, reactive, ref } from "vue";
 import { matchesTabQuery } from "../utils/helpers.js";
+import {
+  MOVE_NEW_LIST_VALUE as MOVE_NEW_VALUE,
+  NEW_LIST_VALUE as NEW_VALUE,
+  rememberListId,
+  resolveRememberedListId,
+} from "../utils/list_target_memory.js";
 
-const NEW_LIST_VALUE = "__new__";
-const MOVE_NEW_LIST_VALUE = "__move_new__";
+const NEW_LIST_VALUE = NEW_VALUE;
+const MOVE_NEW_LIST_VALUE = MOVE_NEW_VALUE;
 
 function useLists({ request, statusTarget, filterQuery, filterMode }) {
   const lists = ref([]);
@@ -34,6 +40,14 @@ function useLists({ request, statusTarget, filterQuery, filterMode }) {
   const importReplace = ref(false);
   const createListName = ref("");
   const createListDescription = ref("");
+
+  /*
+    用户是否在本会话里主动选过分组。
+    为什么要这个标记：恢复记忆是异步读 storage 的，返回时用户可能已经自己选好了目标；
+    若无条件写回记忆值，用户的手动选择会被悄悄改掉。只有"还没选过"时才自动恢复。
+  */
+  let saveTargetTouched = false;
+  let moveTargetTouched = false;
 
   const selectedList = computed(() =>
     lists.value.find((item) => item.id === selectedListId.value) || null
@@ -117,6 +131,28 @@ function useLists({ request, statusTarget, filterQuery, filterMode }) {
 
   function updateImportReplace(value) {
     importReplace.value = value;
+  }
+
+  /**
+   * 「保存所选」弹窗的目标列表变化。
+   * 由 App.vue 用 @change 绑定（而不是 v-model），这样才能区分"用户主动选的"与"自动恢复的记忆值"：
+   * 前者要落在内存标记上，后者要写盘——只有用户的选择才值得记住。
+   */
+  function setSaveListTarget(listId) {
+    selectedListTarget.value = listId;
+    saveTargetTouched = true;
+    if (listId !== NEW_LIST_VALUE) {
+      rememberListId("save", listId);
+    }
+  }
+
+  /** 「移动到」弹窗的目标列表变化，语义同上。 */
+  function setMoveTargetListId(listId) {
+    moveTargetListId.value = listId;
+    moveTargetTouched = true;
+    if (listId !== MOVE_NEW_LIST_VALUE) {
+      rememberListId("move", listId);
+    }
   }
 
   function syncListDescription() {
@@ -261,6 +297,18 @@ function useLists({ request, statusTarget, filterQuery, filterMode }) {
     setListStatus(`已移动 ${moved} 个标签。`, "ok");
     moveNewListName.value = "";
     clearListSelection();
+    /*
+      记住这次真正落到的目标列表：选了「新建列表」时后台会回传新建出来的 targetListId，
+      用它写入记忆，下次打开弹窗就默认是那个列表（而不是又回到新建表单）。
+      必须在 loadLists 之前记住——loadLists 会触发一次自动恢复，那时若内存里还没有值，
+      恢复逻辑会把弹窗选择改回"新建列表"。
+    */
+    const movedTargetId =
+      response.result && response.result.targetListId ? response.result.targetListId : targetListId;
+    if (movedTargetId) {
+      moveTargetTouched = true;
+      await rememberListId("move", movedTargetId);
+    }
     await loadLists();
   }
 
@@ -283,7 +331,13 @@ function useLists({ request, statusTarget, filterQuery, filterMode }) {
     createListName.value = "";
     createListDescription.value = "";
     if (created && created.id) {
+      // 新建后立刻切到这个列表是原有行为；若当前停在列表视图，顺手把「保存所选」的目标也切过去，
+      // 避免"左边显示的是新列表、保存弹窗还指着旧列表"这种不一致。
       selectedListId.value = created.id;
+      if (selectedListTarget.value !== NEW_LIST_VALUE) {
+        selectedListTarget.value = created.id;
+        saveTargetTouched = true;
+      }
     }
     await loadLists();
     return created;
@@ -432,12 +486,49 @@ function useLists({ request, statusTarget, filterQuery, filterMode }) {
     syncListDescription();
     syncMoveTarget();
 
-    if (selectedListTarget.value !== NEW_LIST_VALUE) {
-      const exists = lists.value.some((list) => list.id === selectedListTarget.value);
-      if (!exists) {
-        selectedListTarget.value = NEW_LIST_VALUE;
-      }
+    /*
+      恢复"上次选择的分组"（两个弹窗各记各的）。
+      必须在同步的存活校验**之前**读记忆：异步读盘返回时用户可能已经改过选择，
+      这里只在"用户还没做过选择"时才写回，避免把用户的当前选择覆盖掉。
+      被记住的列表已被删除时 resolveRememberedListId 返回 null，于是回退到"新建列表"。
+    */
+    await restoreRememberedTargets();
+  }
+
+  /**
+   * 读取两个弹窗各自记忆的分组并校验存活。
+   * 同步先做一次"当前值是否还在列表里"的兜底（列表被删时立刻回退），
+   * 异步读盘回来后只在用户尚未选择过时应用记忆值。
+   */
+  async function restoreRememberedTargets() {
+    if (
+      selectedListTarget.value !== NEW_LIST_VALUE &&
+      !lists.value.some((list) => list.id === selectedListTarget.value)
+    ) {
+      selectedListTarget.value = NEW_LIST_VALUE;
     }
+
+    const [saveMemory, moveMemory] = await Promise.all([
+      resolveRememberedListId("save", lists.value),
+      resolveRememberedListId("move", lists.value, selectedListId.value),
+    ]);
+
+    // 用户已经自己选过（不是"新建列表"）就不再动，尊重当下操作。
+    if (saveMemory && selectedListTarget.value === NEW_LIST_VALUE && !saveTargetTouched) {
+      selectedListTarget.value = saveMemory;
+    }
+    if (moveMemory && moveTargetListId.value === MOVE_NEW_LIST_VALUE && !moveTargetTouched) {
+      moveTargetListId.value = moveMemory;
+    }
+  }
+
+  /**
+   * 打开「保存所选」弹窗时调用：清掉"用户已选过"标记。
+   * 为什么每次开弹窗都要清：用户可能先选了 A 又放弃（或保存失败），下次打开仍应回到记忆值，
+   * 而记忆值恰恰就是上一次真正保存成功的目标，这才符合"记住上次选择的分组"。
+   */
+  function resetSaveTargetTouched() {
+    saveTargetTouched = false;
   }
 
   return {
@@ -466,6 +557,9 @@ function useLists({ request, statusTarget, filterQuery, filterMode }) {
     updateListNameDraft,
     updateListDescriptionDraft,
     updateImportReplace,
+    setSaveListTarget,
+    setMoveTargetListId,
+    resetSaveTargetTouched,
     syncMoveTarget,
     clearListDescription,
     setSelectedList,

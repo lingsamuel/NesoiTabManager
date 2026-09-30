@@ -177,6 +177,12 @@
         <h2>近期标签页提醒</h2>
       </div>
       <div class="settings-grid">
+        <div class="form-row checkbox-row full">
+          <label>
+            <input type="checkbox" v-model="recentConfig.reminderEnabled" />
+            启用页面气泡提醒（关闭后不再在网页上显示近期标签页浮窗）
+          </label>
+        </div>
         <div class="form-row">
           <label for="recent-interval">提醒间隔（分钟）</label>
           <input
