@@ -246,7 +246,12 @@
 }
 
 .list-item {
-  height: 100%;
+  /*
+    不能用 height: 100%：行的实际高度由 VirtualList 通过 .virtual-row 的行高（60px）给定，
+    外层再留出 4px 间距，`height: 100%` 会退化成"撑满外层 64px"，行与行的间距就没了。
+    这里只声明内容盒高度，与外层行高保持一致的视觉节奏。
+  */
+  height: 60px;
   padding: 6px 8px;
   border-radius: 12px;
   background: transparent;
@@ -285,9 +290,12 @@
   height: 16px;
 }
 
+/*
+  排版对齐「打开的窗口」的标签行：那里标题是 11px 常规字重、网址 10px 灰色。
+  保存列表以前用 12px + font-weight:600，整列看上去全是粗体，与标签行不一致。
+*/
 .list-title {
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 11px;
   line-height: 1.25;
 }
 
@@ -303,6 +311,7 @@
   line-height: 1.35;
 }
 
+/* 标题与网址都可点开：用省略号截断，避免长 URL 把删除按钮顶出可视区 */
 .list-link {
   display: inline-block;
   max-width: 100%;
