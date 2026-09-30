@@ -169,6 +169,18 @@ body {
 
 /* ---- 标签树 ---- */
 
+/*
+  树的定位容器：虚拟列表与滚动条轨道标记层是兄弟节点。
+  标记层必须放在滚动容器**外面**，否则会跟着内容一起滚走。
+*/
+.sb-tree-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .sb-list {
   flex: 1;
   min-height: 0;
@@ -505,4 +517,63 @@ body {
   stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+/* ---- 滚动条轨道标记（活动标签 / 搜索匹配）---- */
+
+/*
+  复刻原生 Ctrl+F 的做法：在滚动条轨道上按"行序号 / 总行数"的比例画出刻度。
+  容器铺满滚动条所在的一侧（滚动条已被放到左侧），本身不接收事件，只有刻度可点。
+*/
+.sb-marks {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 14px;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.sb-mark {
+  position: absolute;
+  left: 1px;
+  width: 12px;
+  height: 3px;
+  padding: 0;
+  border: none;
+  border-radius: 2px;
+  pointer-events: auto;
+  cursor: pointer;
+  transform: translateY(-1px);
+  box-shadow: none;
+}
+
+.sb-mark:hover {
+  transform: translateY(-1px) scaleY(1.8);
+}
+
+/* 当前活动标签：实心蓝条 */
+.sb-mark.active {
+  background: #4b7bec;
+}
+
+/* 活动标签本身不在列表里（被折叠/被筛选隐藏）时标到最近的可见祖先：空心蓝条以示区别 */
+.sb-mark.active-ancestor {
+  background: transparent;
+  border: 1.5px solid #4b7bec;
+}
+
+/* 跳转模式下的搜索匹配：琥珀色刻度，当前匹配加深 */
+.sb-mark.match {
+  background: #f0b429;
+}
+
+.sb-mark.match-current {
+  background: #e8590c;
+}
+
+/* 活动标签被隐藏时，它最近的可见祖先行加一圈蓝边，明确指出"活动标签在这棵子树里" */
+.sb-row.active-ancestor {
+  box-shadow: inset 0 0 0 1.5px #4b7bec;
 }

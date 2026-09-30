@@ -8,7 +8,7 @@
 // 生命周期：Firefox 每个窗口各有一份独立的侧边栏文档实例，窗口关闭或用户收起侧边栏时文档被卸载，
 // 监听器随之销毁——所以这个页面不常驻，对浏览器启动零开销。
 
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import FilterInput from "../manager/components/FilterInput.vue";
 import { useFilterQuery } from "../manager/composables/useFilterQuery.js";
 import { useMatchNavigation } from "../manager/composables/useMatchNavigation.js";
@@ -18,6 +18,7 @@ import { request } from "../manager/utils/request.js";
 // 与管理页树状视图、后台、基准测试共用同一份行模型（筛选补祖先 + DFS + 折叠）
 import { buildTreeRows } from "../../background/tree_core.js";
 import { computePinnedReorderIndex, groupPinnedTabs } from "./pinned_data.js";
+import { resolveActiveRow } from "./scroll_markers.js";
 import SidebarPinnedTabs from "./components/SidebarPinnedTabs.vue";
 import SidebarTabTree from "./components/SidebarTabTree.vue";
 
@@ -34,8 +35,6 @@ const status = reactive({ message: "", type: "" });
 
 const tree = useTree();
 const filter = useFilterQuery();
-// 树的模板引用：底部 New Tab 创建后需要把列表滚到底部。
-const treeRef = ref(null);
 
 let refreshTimer = null;
 let pendingWhileHidden = false;
@@ -99,6 +98,22 @@ const items = computed(() => {
     result.push({ ...row, key: `tab-${row.id}`, tab });
   }
   return result;
+});
+
+/**
+ * 活动标签在行序列里的位置，供滚动条轨道标记使用。
+ * 固定标签常驻可见（在固定标签区里，不随列表滚动），因此不参与轨道标记。
+ */
+const activeRow = computed(() => {
+  const id = windowId.value;
+  if (id === null) {
+    return null;
+  }
+  const activeTab = tabs.value.find((tab) => tab.active && !tab.pinned);
+  if (!activeTab) {
+    return null;
+  }
+  return resolveActiveRow(activeTab.id, items.value, tree.parentsFor(id));
 });
 
 const hasCommittedQuery = computed(() => Boolean(String(filter.committed.value || "").trim()));
@@ -431,7 +446,9 @@ function createTab() {
  *
  * 与工具栏 ＋ 的区别是有意的：＋ 走后台默认规则（挂在当前标签的子树里），
  * 这里则要求"顶层 + 最末尾"，因此必须由后台创建（它要显式指定 index 并跳过挂载规则）。
- * 创建完成后滚到底部——新标签在最末尾，不滚动的话用户可能看不到它。
+ *
+ * 创建后**不**滚动列表：用户把列表滚到别处通常是有原因的，硬把他拉到底部会打断浏览。
+ * 新标签是活动标签，滚动条轨道上的活动标记会直接指出它在哪，用户想跳过去点一下即可。
  */
 async function createRootTab() {
   if (windowId.value === null) {
@@ -444,10 +461,6 @@ async function createRootTab() {
   }
   setStatus("", "");
   await refresh();
-  await nextTick();
-  if (treeRef.value && typeof treeRef.value.scrollToBottom === "function") {
-    treeRef.value.scrollToBottom();
-  }
 }
 
 function openManager() {
@@ -669,8 +682,8 @@ onBeforeUnmount(() => {
       />
       <SidebarTabTree
         v-if="items.length > 0"
-        ref="treeRef"
         :items="items"
+        :active-row="activeRow"
         :highlight-matches="isJumpMode"
         :current-match-index="currentMatchIndex"
         :is-tree-descendant="isTreeDescendant"

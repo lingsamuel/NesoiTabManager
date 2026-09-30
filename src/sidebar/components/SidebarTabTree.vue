@@ -6,9 +6,10 @@
 // 拖拽落点规则沿用与管理页完全一致的三分区（上 1/4 兄弟 / 下 1/4 兄弟 / 中间子标签），
 // 分区判定本身也复用同一个工具函数。
 
-import { ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import VirtualList from "../../manager/components/VirtualList.vue";
 import { getTreeDropZone } from "../../manager/utils/helpers.js";
+import { buildTrackMarkers } from "../scroll_markers.js";
 import TabFavicon from "../../manager/components/TabFavicon.vue";
 
 const props = defineProps({
@@ -37,6 +38,11 @@ const props = defineProps({
     type: Number,
     default: -1,
   },
+  // 活动标签在行序列里的位置（可能指向它最近的可见祖先，见 scroll_markers.js）
+  activeRow: {
+    type: Object,
+    default: null,
+  },
   // 判断 candidateId 是否位于 ancestorId 的子树内：禁止把标签拖到自己的子孙上。
   isTreeDescendant: {
     type: Function,
@@ -54,6 +60,10 @@ const emit = defineEmits([
 ]);
 
 const listRef = ref(null);
+const wrapperRef = ref(null);
+// 轨道高度 = 滚动容器自身高度：刻度按"行序号 / 总行数"的比例落在它上面。
+const trackHeight = ref(0);
+let trackResizeObserver = null;
 const draggingId = ref(null);
 const draggingPinned = ref(false);
 const dropTargetId = ref(null);
@@ -90,6 +100,28 @@ function onDragStart(item, event) {
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("text/plain", String(item.id));
   }
+}
+
+const markers = computed(() =>
+  buildTrackMarkers({
+    rows: props.items,
+    activeRow: props.activeRow,
+    highlightMatches: props.highlightMatches,
+    currentMatchIndex: props.currentMatchIndex,
+    trackHeight: trackHeight.value,
+  })
+);
+
+/** 点击轨道刻度 → 把对应行滚动到可视区并居中（与原生查找的刻度一致）。 */
+function onMarkerClick(marker) {
+  if (!listRef.value || !listRef.value.scrollToIndex) {
+    return;
+  }
+  listRef.value.scrollToIndex(marker.index);
+}
+
+function updateTrackHeight() {
+  trackHeight.value = wrapperRef.value ? wrapperRef.value.clientHeight || 0 : 0;
 }
 
 /** 固定标签不参与父子；不能拖到自己的子孙上。 */
@@ -148,30 +180,33 @@ function onDragEnd() {
   dropZone.value = null;
 }
 
-defineExpose({
-  scrollToIndex(index) {
-    if (listRef.value && listRef.value.scrollToIndex) {
-      listRef.value.scrollToIndex(index);
-    }
-  },
-  // 底部 New Tab 会把新标签放在窗口末尾，创建后需要滚到底部让用户看得到。
-  scrollToBottom() {
-    if (listRef.value && listRef.value.scrollToBottom) {
-      listRef.value.scrollToBottom();
-    }
-  },
+onMounted(() => {
+  updateTrackHeight();
+  // 侧边栏宽度/高度都会随窗口变化，轨道高度必须跟着重新测量，否则刻度位置会偏。
+  trackResizeObserver = new ResizeObserver(updateTrackHeight);
+  if (wrapperRef.value) {
+    trackResizeObserver.observe(wrapperRef.value);
+  }
+});
+
+onBeforeUnmount(() => {
+  if (trackResizeObserver) {
+    trackResizeObserver.disconnect();
+    trackResizeObserver = null;
+  }
 });
 </script>
 
 <template>
-  <VirtualList
-    ref="listRef"
-    class="sb-list"
-    :items="items"
-    :item-height="itemHeight"
-    :current-match-index="currentMatchIndex"
-  >
-    <template #default="{ item }">
+  <div ref="wrapperRef" class="sb-tree-wrap">
+    <VirtualList
+      ref="listRef"
+      class="sb-list"
+      :items="items"
+      :item-height="itemHeight"
+      :current-match-index="currentMatchIndex"
+    >
+    <template #default="{ item, index }">
       <div
         class="sb-row"
         :class="{
@@ -179,6 +214,7 @@ defineExpose({
           discarded: item.tab.discarded,
           pinned: item.tab.pinned,
           matched: highlightMatches && item.matched,
+          'active-ancestor': Boolean(activeRow && activeRow.isAncestor && activeRow.index === index),
           dragging: draggingId === item.id,
           'drop-before': dropTargetId === item.id && dropZone === 'before',
           'drop-after': dropTargetId === item.id && dropZone === 'after',
@@ -238,5 +274,23 @@ defineExpose({
         </span>
       </div>
     </template>
-  </VirtualList>
+    </VirtualList>
+
+    <!--
+      轨道标记层放在滚动容器**外面**：放进容器里会跟着内容一起滚走。
+      作为容器的兄弟节点用绝对定位，因此始终停在视口对应位置。
+    -->
+    <div v-if="markers.length > 0" class="sb-marks">
+      <button
+        v-for="marker in markers"
+        :key="marker.key"
+        type="button"
+        class="sb-mark"
+        :class="marker.kind"
+        :style="{ top: `${marker.top}px` }"
+        :title="marker.kind === 'match' || marker.kind === 'match-current' ? '跳转到该匹配项' : '跳转到当前标签页'"
+        @click.stop="onMarkerClick(marker)"
+      ></button>
+    </div>
+  </div>
 </template>
