@@ -32,7 +32,7 @@
               <path d="M6 6l12 12M18 6l-12 12" />
             </svg>
           </span>
-          清空
+          全不选
         </button>
         <button class="ghost danger btn-icon" @click="onCloseSelected">
           <span class="icon" aria-hidden="true">

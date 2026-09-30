@@ -5,7 +5,7 @@
         <h1>打开的窗口</h1>
         <div class="content-subtitle">{{ windowSubtitle }}</div>
       </div>
-      <div class="content-actions">
+      <div class="content-actions title-actions">
         <div class="mode-switch" role="group" aria-label="展示模式">
           <button
             type="button"
@@ -22,18 +22,28 @@
             平铺
           </button>
         </div>
-        <FilterBar
-          :model-value="filterQuery"
-          :mode="filterMode"
-          :match-count="matchCount"
-          :current-index="currentMatchPosition"
-          :has-query="Boolean(committedFilterQuery)"
-          @update:model-value="onUpdateFilterQuery"
-          @commit="onCommitFilterQuery"
-          @mode-change="onModeChange"
-          @next="goToNextMatch"
-          @prev="goToPrevMatch"
-        />
+      </div>
+    </div>
+
+    <!--
+      按钮固定在两行：第一行只有展示模式切换（跟标题同行），
+      第二行左边是会被撑宽的筛选框，右边固定放"全选 / 全不选 / 关闭所选"，
+      其余动作放第三行。理由见 ListsView 的同名注释与文档「固定按钮位置」。
+    -->
+    <div class="filter-row">
+      <FilterBar
+        :model-value="filterQuery"
+        :mode="filterMode"
+        :match-count="matchCount"
+        :current-index="currentMatchPosition"
+        :has-query="Boolean(committedFilterQuery)"
+        @update:model-value="onUpdateFilterQuery"
+        @commit="onCommitFilterQuery"
+        @mode-change="onModeChange"
+        @next="goToNextMatch"
+        @prev="goToPrevMatch"
+      />
+      <div class="filter-actions">
         <button class="ghost btn-icon" @click="onSelectAll">
           <span class="icon" aria-hidden="true">
             <svg viewBox="0 0 24 24">
@@ -48,16 +58,8 @@
               <path d="M6 6l12 12M18 6l-12 12" />
             </svg>
           </span>
-          清空
+          全不选
         </button>
-        <label class="checkbox-toggle">
-          <input
-            type="checkbox"
-            :checked="hideDiscarded"
-            @change="handleToggleHideDiscarded($event.target.checked)"
-          />
-          隐藏已冻结
-        </label>
         <button class="ghost danger btn-icon" @click="onCloseSelected">
           <span class="icon" aria-hidden="true">
             <svg viewBox="0 0 24 24">
@@ -66,13 +68,26 @@
           </span>
           关闭所选
         </button>
-        <button class="ghost btn-icon" @click="onDiscardSelected">
+      </div>
+    </div>
+
+    <div class="filter-row secondary">
+      <label class="checkbox-toggle">
+        <input
+          type="checkbox"
+          :checked="hideDiscarded"
+          @change="handleToggleHideDiscarded($event.target.checked)"
+        />
+        隐藏已冻结
+      </label>
+      <div class="filter-actions">
+        <button class="ghost btn-icon" @click="onOpenSave">
           <span class="icon" aria-hidden="true">
             <svg viewBox="0 0 24 24">
-              <path d="M7 5h4v14H7zM13 5h4v14h-4z" />
+              <path d="M6 20h12V8l-4-4H6zM9 20v-6h6v6" />
             </svg>
           </span>
-          冻结所选
+          保存所选
         </button>
         <button class="ghost btn-icon" @click="onOpenMoveModal">
           <span class="icon" aria-hidden="true">
@@ -82,6 +97,14 @@
           </span>
           移动到
         </button>
+        <button class="ghost btn-icon" @click="onDiscardSelected">
+          <span class="icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M7 5h4v14H7zM13 5h4v14h-4z" />
+            </svg>
+          </span>
+          冻结所选
+        </button>
         <button class="ghost btn-icon" @click="onOpenAi">
           <span class="icon" aria-hidden="true">
             <svg viewBox="0 0 24 24">
@@ -89,14 +112,6 @@
             </svg>
           </span>
           AI 分组
-        </button>
-        <button class="ghost btn-icon" @click="onOpenSave">
-          <span class="icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24">
-              <path d="M6 20h12V8l-4-4H6zM9 20v-6h6v6" />
-            </svg>
-          </span>
-          保存所选
         </button>
       </div>
     </div>

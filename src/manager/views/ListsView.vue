@@ -39,51 +39,12 @@
         </h1>
         <div class="content-subtitle">{{ listSubtitle }}</div>
       </div>
-      <div class="content-actions">
-        <FilterBar
-          :model-value="filterQuery"
-          :mode="filterMode"
-          :match-count="matchCount"
-          :current-index="currentMatchPosition"
-          :has-query="Boolean(committedFilterQuery)"
-          @update:model-value="onUpdateFilterQuery"
-          @commit="onCommitFilterQuery"
-          @mode-change="onModeChange"
-          @next="goToNext"
-          @prev="goToPrev"
-        />
-        <button class="ghost btn-icon" @click="onSelectAllListItems">
-          <span class="icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24">
-              <path d="M20 6L9 17l-5-5" />
-            </svg>
-          </span>
-          全选
-        </button>
-        <button class="ghost btn-icon" @click="onClearListSelection">
-          <span class="icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24">
-              <path d="M6 6l12 12M18 6l-12 12" />
-            </svg>
-          </span>
-          清空
-        </button>
-        <button class="ghost danger btn-icon" @click="onDeleteSelectedListItems">
-          <span class="icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24">
-              <path d="M4 7h16M9 7v10M15 7v10M6 7l1-3h10l1 3M7 20h10" />
-            </svg>
-          </span>
-          删除所选
-        </button>
-        <button class="ghost btn-icon" :disabled="!selectedList" @click="onOpenMoveModal">
-          <span class="icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24">
-              <path d="M5 12h14M13 6l6 6-6 6" />
-            </svg>
-          </span>
-          移动所选
-        </button>
+      <!--
+        操作按钮分两行固定：列表级动作跟标题同行，选中集相关动作跟筛选框同行。
+        原因见 docs 里「固定按钮位置」：同一行里既有会被撑宽的筛选框、又有近十个按钮时，
+        一旦换行按钮位置就会漂移，用户每次都要重新找。
+      -->
+      <div class="content-actions title-actions">
         <button class="ghost danger btn-icon" @click="onDeleteList">
           <span class="icon" aria-hidden="true">
             <svg viewBox="0 0 24 24">
@@ -112,6 +73,55 @@
       </div>
     </div>
 
+    <div class="filter-row">
+      <FilterBar
+        :model-value="filterQuery"
+        :mode="filterMode"
+        :match-count="matchCount"
+        :current-index="currentMatchPosition"
+        :has-query="Boolean(committedFilterQuery)"
+        @update:model-value="onUpdateFilterQuery"
+        @commit="onCommitFilterQuery"
+        @mode-change="onModeChange"
+        @next="goToNext"
+        @prev="goToPrev"
+      />
+      <div class="filter-actions">
+        <button class="ghost btn-icon" @click="onSelectAllListItems">
+          <span class="icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M20 6L9 17l-5-5" />
+            </svg>
+          </span>
+          全选
+        </button>
+        <button class="ghost btn-icon" @click="onClearListSelection">
+          <span class="icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M6 6l12 12M18 6l-12 12" />
+            </svg>
+          </span>
+          全不选
+        </button>
+        <button class="ghost danger btn-icon" @click="onDeleteSelectedListItems">
+          <span class="icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M4 7h16M9 7v10M15 7v10M6 7l1-3h10l1 3M7 20h10" />
+            </svg>
+          </span>
+          删除所选
+        </button>
+        <button class="ghost btn-icon" :disabled="!selectedList" @click="onOpenMoveModal">
+          <span class="icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M5 12h14M13 6l6 6-6 6" />
+            </svg>
+          </span>
+          移动所选
+        </button>
+      </div>
+    </div>
+
     <section class="panel">
       <div class="panel-header">
         <h2>列表描述</h2>
@@ -122,7 +132,7 @@
                 <path d="M6 6l12 12M18 6l-12 12" />
               </svg>
             </span>
-            清空
+            清空描述
           </button>
           <button class="primary btn-icon" :disabled="!selectedList" @click="onSaveListDescription">
             <span class="icon" aria-hidden="true">
@@ -147,57 +157,20 @@
       </div>
     </section>
 
-    <div class="panel list-panel">
-      <div v-if="listItems.length === 0" class="virtual-empty">{{ emptyText }}</div>
-      <VirtualList
-        v-else
-        class="list-items"
-        :items="listItems"
-        :item-height="60"
-        :current-match-index="currentMatchIndex"
-      >
-        <template #default="{ item, index }">
-          <div
-            class="list-item"
-            :class="{
-              selected: Boolean(selectedListItemKeys[item.key]),
-              matched: isJumpMode && Boolean(item.matched),
-              'match-current': index === currentMatchIndex,
-            }"
-            @click="onToggleListItemSelection(item.key)"
-          >
-            <input
-              type="checkbox"
-              :checked="Boolean(selectedListItemKeys[item.key])"
-              @click.stop
-              @change="onToggleListItem(item.key, $event.target.checked)"
-            />
-            <TabFavicon class="list-icon" :url="item.favIconUrl" />
-            <div class="list-body">
-              <div class="list-title">
-                <span class="list-link" @click.stop="onOpenSavedInNewWindow(item)">
-                  {{ item.title || item.url || "未命名" }}
-                </span>
-              </div>
-              <div class="list-url">
-                <span class="list-link" @click.stop="onOpenSavedInNewWindow(item)">
-                  {{ item.url || "" }}
-                </span>
-              </div>
-              <div v-if="item.savedAt" class="list-meta">保存时间：{{ item.savedAt }}</div>
-            </div>
-            <button class="ghost list-action danger btn-icon" @click.stop="onDeleteListItem(item)">
-              <span class="icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24">
-                  <path d="M4 7h16M9 7v10M15 7v10M6 7l1-3h10l1 3M7 20h10" />
-                </svg>
-              </span>
-              删除
-            </button>
-          </div>
-        </template>
-      </VirtualList>
-    </div>
+    <ListsPanel
+      ref="panelRef"
+      :items="listItems"
+      :item-height="64"
+      :selected-map="selectedListItemKeys"
+      :highlight-matches="isJumpMode"
+      :current-match-index="currentMatchIndex"
+      :empty-text="emptyText"
+      :on-toggle-selection="onToggleListItemSelection"
+      :on-toggle-item="onToggleListItem"
+      :on-delete-item="onDeleteListItem"
+      :on-open-item="onOpenSavedInNewWindow"
+      @marker-click="onMarkerClick"
+    />
 
     <section class="panel">
       <div class="panel-header">
@@ -221,8 +194,7 @@
 <script setup>
 import { computed, nextTick, ref, watch } from "vue";
 import FilterBar from "../components/FilterBar.vue";
-import TabFavicon from "../components/TabFavicon.vue";
-import VirtualList from "../components/VirtualList.vue";
+import ListsPanel from "../components/ListsPanel.vue";
 import { useMatchNavigation } from "../composables/useMatchNavigation.js";
 
 const props = defineProps({
@@ -368,9 +340,19 @@ const props = defineProps({
   },
 });
 
-const emptyText = computed(() =>
-  props.filterQuery ? "未找到匹配的标签页。" : "暂无已保存的列表。"
-);
+/**
+ * 空状态文案分三种情况，避免"列表里就是空的"被误报成"没有列表"：
+ * 有关键词 → 搜索无结果；完全没有列表 → 提示去新建；选了列表但内容为空 → 说明该列表为空。
+ */
+const emptyText = computed(() => {
+  if (props.filterQuery) {
+    return "未找到匹配的标签页。";
+  }
+  if (!props.selectedList) {
+    return "暂无已保存的列表。";
+  }
+  return "该列表暂无保存的标签页。";
+});
 
 const isJumpMode = computed(
   () => props.filterMode === "jump" && Boolean(props.committedFilterQuery)
@@ -382,12 +364,38 @@ const {
   currentMatchPosition,
   goToNext,
   goToPrev,
+  setCurrentMatchByRowIndex,
 } = useMatchNavigation({
   rows: computed(() => props.listItems),
   isMatchRow: (item) => Boolean(item && item.matched),
   mode: computed(() => props.filterMode),
   hasQuery: computed(() => Boolean(props.committedFilterQuery)),
 });
+
+const panelRef = ref(null);
+
+/** 把某一行滚到可视区并居中（列表自身仍是"当前项变化即自动滚动"）。 */
+function scrollToRow(index) {
+  if (index < 0 || !panelRef.value || typeof panelRef.value.scrollToIndex !== "function") {
+    return;
+  }
+  panelRef.value.scrollToIndex(index);
+}
+
+/**
+ * 点击滚动条刻度：滚到对应行。
+ * 点到的是匹配刻度时同步"当前跳转项"，这样 ↑/↓ 会从用户点的那一项继续——
+ * 与「打开的窗口」视图同一条规则。
+ */
+function onMarkerClick(marker) {
+  if (!marker) {
+    return;
+  }
+  if (props.filterMode === "jump" && Number.isFinite(marker.matchIndex)) {
+    setCurrentMatchByRowIndex(marker.matchIndex);
+  }
+  scrollToRow(marker.index);
+}
 
 const listNameInput = ref(null);
 

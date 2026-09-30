@@ -2,7 +2,10 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 12px;
+  /*
+    不再给 margin-bottom：外层 .view 已经是 gap: 12px 的纵向 flex 容器，
+    这里再加 12px 会变成 24px，标题与紧随其后的筛选行之间出现一条明显的空带。
+  */
   gap: 12px;
   flex-wrap: wrap;
 }
@@ -27,6 +30,42 @@
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+/*
+  固定按钮位置（「打开的窗口」/「保存的列表」）。
+  问题：原先所有按钮与筛选框挤在同一个 flex 容器里，筛选框宽度会随关键词、模式（跳转模式会多出
+  计数与 ↑/↓ 按钮）变化，一旦某个按钮被挤到下一行，整组按钮的位置就整体漂移。
+
+  做法：把动作拆成"跟标题同行"和"跟筛选框同行"的独立容器，并给筛选行里那组按钮加
+  `margin-left: auto`——无论筛选框多宽，这组按钮永远贴着右边缘；换行只可能发生在"筛选框"
+  与"整组按钮"之间，组内按钮的相对位置不变（组内用 nowrap，宁可整组换行也不打散）。
+*/
+.title-actions {
+  flex: 0 0 auto;
+}
+
+.filter-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-height: 32px;
+}
+
+/* 第二行（「打开的窗口」的其余动作）与上一行保持同样的行距 */
+.filter-row.secondary {
+  margin-top: 8px;
+}
+
+.filter-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+  gap: 8px;
+  margin-left: auto;
 }
 
 /* 「树状 / 平铺」分段切换：与 content-actions 内其它胶囊按钮同一视觉体系 */
