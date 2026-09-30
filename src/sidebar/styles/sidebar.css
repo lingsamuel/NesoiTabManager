@@ -1,0 +1,348 @@
+/*
+  Firefox 侧边栏样式。
+  侧边栏很窄（约 250–350px），因此行高压到 30px、冻结/关闭按钮只在悬停时出现，
+  把横向空间尽量留给标题；缩进与层级线沿用管理页树状视图的视觉语言。
+*/
+
+@import "../../manager/styles/base.css";
+@import "../../manager/styles/virtual_list.css";
+@import "../../manager/styles/filter.css";
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-size: 12px;
+  background: var(--panel);
+}
+
+.sb-app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-height: 0;
+}
+
+/* ---- 工具栏 ---- */
+
+.sb-toolbar {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--stroke);
+  background: var(--panel);
+}
+
+.sb-toolbar .filter-input {
+  width: 100%;
+}
+
+.sb-toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sb-spacer {
+  flex: 1;
+}
+
+.sb-mode {
+  display: inline-flex;
+  padding: 1px;
+  border-radius: 999px;
+  border: 1px solid var(--stroke);
+  background: #f3f4f6;
+}
+
+.sb-mode button {
+  padding: 2px 8px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.sb-mode button:hover {
+  transform: none;
+}
+
+.sb-mode button.active {
+  background: var(--panel);
+  color: var(--ink);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.14);
+}
+
+.sb-match-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.sb-match-nav button {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.sb-match-nav button:hover {
+  background: #eef2f7;
+  color: var(--ink);
+  transform: none;
+}
+
+.sb-match-count {
+  min-width: 34px;
+  text-align: center;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.sb-tool {
+  padding: 3px 8px;
+  border: none;
+  border-radius: 6px;
+  background: #f3f4f6;
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.sb-tool:hover {
+  background: #e5e7eb;
+  transform: none;
+}
+
+.sb-status {
+  font-size: 11px;
+  padding: 2px 4px;
+  border-radius: 6px;
+}
+
+.sb-status.ok {
+  color: #067647;
+  background: #ecfdf3;
+}
+
+.sb-status.error {
+  color: #b42318;
+  background: #fef3f2;
+}
+
+.sb-empty {
+  padding: 16px 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* ---- 标签树 ---- */
+
+.sb-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 4px 8px;
+}
+
+.sb-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  padding: 0 4px;
+  border-radius: 6px;
+  cursor: default;
+  user-select: none;
+}
+
+.sb-row:hover {
+  background: #f8fafc;
+}
+
+.sb-row.current {
+  background: #eef2ff;
+}
+
+.sb-row.current .sb-title {
+  font-weight: 600;
+}
+
+.sb-row.discarded .sb-title {
+  color: var(--muted);
+}
+
+.sb-row.pinned .sb-title {
+  font-style: italic;
+}
+
+.sb-row.matched {
+  background: #fffbe6;
+}
+
+.sb-row.dragging {
+  opacity: 0.6;
+}
+
+.sb-row.drop-before {
+  box-shadow: inset 0 2px 0 #60a5fa;
+}
+
+.sb-row.drop-after {
+  box-shadow: inset 0 -2px 0 #60a5fa;
+}
+
+.sb-row.drop-child {
+  background: #eff6ff;
+  box-shadow: inset 0 0 0 2px #60a5fa;
+}
+
+/* 缩进层：每 12px 一条竖线，深度为 d 的行自然画出 d 条祖先层级线 */
+.sb-indent {
+  display: block;
+  align-self: stretch;
+  flex: none;
+  background-image: repeating-linear-gradient(
+    to right,
+    var(--stroke) 0,
+    var(--stroke) 1px,
+    transparent 1px,
+    transparent 12px
+  );
+}
+
+.sb-twisty {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.sb-twisty:hover {
+  background: #e5e7eb;
+  color: var(--ink);
+  transform: none;
+}
+
+.sb-twisty svg {
+  width: 11px;
+  height: 11px;
+  display: block;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 0.12s ease;
+}
+
+.sb-twisty:not(.collapsed) svg {
+  transform: rotate(90deg);
+}
+
+.sb-twisty.collapsed svg {
+  transform: rotate(0deg);
+}
+
+.sb-twisty.placeholder {
+  visibility: hidden;
+  cursor: default;
+}
+
+.sb-favicon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  background: #e5e7eb;
+  object-fit: cover;
+}
+
+.sb-favicon.hidden {
+  display: block;
+  visibility: hidden;
+}
+
+.sb-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sb-actions {
+  flex: none;
+  display: none;
+  align-items: center;
+  gap: 2px;
+}
+
+.sb-row:hover .sb-actions {
+  display: inline-flex;
+}
+
+.sb-action {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.sb-action:hover {
+  background: #e5e7eb;
+  color: var(--ink);
+  transform: none;
+}
+
+.sb-action.danger:hover {
+  background: #fee4e2;
+  color: #b42318;
+}
+
+.sb-action svg {
+  width: 11px;
+  height: 11px;
+  display: block;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}

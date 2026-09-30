@@ -829,6 +829,71 @@ function resolveVisibleParent(rawParent, inWindow, parentById, resolvedParent, l
 }
 
 /**
+ * 计算树状视图下"应当渲染"的标签集合。
+ *
+ * 不传 isMatch 时全部保留；传入时保留匹配项本身，以及它们的**全部祖先**——
+ * 只留匹配项会让树断成一片片孤立节点，祖先只作为路径存在（isMatch 对它们仍为 false）。
+ *
+ * 复杂度 O(n)：祖先链一旦被访问过就会进入 keep，后续匹配项走到这里立刻停下，
+ * 因此不会出现"每个匹配项都把整条父链重走一遍"的退化。
+ */
+export function selectTreeIds(orderedTabIds, parentById, isMatch = null) {
+  if (!isMatch) {
+    return orderedTabIds.slice();
+  }
+  const keep = new Set();
+  const limit = orderedTabIds.length + 1;
+  for (let i = 0; i < orderedTabIds.length; i += 1) {
+    const id = orderedTabIds[i];
+    if (!isMatch(id)) {
+      continue;
+    }
+    let cursor = id;
+    let guard = 0;
+    while (guard < limit) {
+      if (keep.has(cursor)) {
+        break;
+      }
+      keep.add(cursor);
+      const parentId = parentById.has(cursor) ? parentById.get(cursor) : null;
+      if (parentId === null || parentId === undefined) {
+        break;
+      }
+      cursor = parentId;
+      guard += 1;
+    }
+  }
+  return orderedTabIds.filter((id) => keep.has(id));
+}
+
+/**
+ * 树状视图的完整行模型：筛选（匹配项 + 全部祖先）→ DFS 扁平化 → 附带 matched 标记。
+ * 管理页树状视图与 Firefox 侧边栏共用这一份实现，避免两处渲染逻辑各自演化。
+ *
+ * @param {Array<{id: number}>} orderedTabs 按 index 升序的标签（至少要有 id）
+ * @param {Map<number, number|null>} parentById 父映射
+ * @param {{collapsedIds?: Set<number>|null, forceExpand?: boolean, matchId?: ((id: number) => boolean)|null}} options
+ * @returns {Array<{id: number, depth: number, hasChildren: boolean, collapsed: boolean, matched: boolean}>}
+ */
+export function buildTreeRows(orderedTabs, parentById, options = {}) {
+  const { collapsedIds = null, forceExpand = false, matchId = null } = options;
+  const total = orderedTabs.length;
+  const orderedIds = new Array(total);
+  for (let i = 0; i < total; i += 1) {
+    orderedIds[i] = Number(orderedTabs[i].id);
+  }
+  const matchedIds = matchId ? new Set(orderedIds.filter((id) => matchId(id))) : null;
+  const visibleIds = matchedIds
+    ? selectTreeIds(orderedIds, parentById, (id) => matchedIds.has(id))
+    : orderedIds;
+  const rows = flattenTree(visibleIds, parentById, { collapsedIds, forceExpand });
+  if (!matchedIds) {
+    return rows.map((row) => ({ ...row, matched: false }));
+  }
+  return rows.map((row) => ({ ...row, matched: matchedIds.has(row.id) }));
+}
+
+/**
  * 把父映射压缩为消息载荷：只传有父的标签，缺省即顶层。
  * 10K 标签下这样能省掉约一半的条目。
  */

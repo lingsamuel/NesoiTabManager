@@ -158,6 +158,7 @@
 <script setup>
 import { ref } from "vue";
 import VirtualList from "./VirtualList.vue";
+import { getTreeDropZone } from "../utils/helpers.js";
 
 const props = defineProps({
   rows: {
@@ -331,27 +332,11 @@ function handleDragStart(tab, event) {
 }
 
 /**
- * 树状模式的落点判定，规则与 TST 一致：
- * 行上 1/4 → 插到该行之前（同级兄弟）；行下 1/4 → 插到该行之后（同级兄弟）；
- * 中间 1/2 → 成为该行的子标签。
+ * 树状模式的落点判定交给共用工具（管理页与 Firefox 侧边栏口径一致），
+ * 规则为：行上 1/4 → 前一个兄弟；行下 1/4 → 后一个兄弟；中间 1/2 → 子标签。
  */
 function computeDropZone(event) {
-  const element = event.currentTarget;
-  if (!element || typeof element.getBoundingClientRect !== "function") {
-    return "child";
-  }
-  const rect = element.getBoundingClientRect();
-  if (!rect.height) {
-    return "child";
-  }
-  const ratio = (event.clientY - rect.top) / rect.height;
-  if (ratio < 0.25) {
-    return "before";
-  }
-  if (ratio > 0.75) {
-    return "after";
-  }
-  return "child";
+  return getTreeDropZone(event);
 }
 
 /** 判断一个树状落点是否合法（固定标签不参与父子；不能拖到自己的子孙上）。 */

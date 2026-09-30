@@ -1,0 +1,20 @@
+/* 虚拟列表的三条定位规则：管理页与 Firefox 侧边栏都依赖它们，因此单独成文件便于共用。 */
+.virtual-scroller {
+  height: 100%;
+  max-height: none;
+  flex: 1;
+  overflow-y: auto;
+  padding-right: 4px;
+  position: relative;
+}
+
+.virtual-content {
+  position: relative;
+  width: 100%;
+}
+
+.virtual-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+}

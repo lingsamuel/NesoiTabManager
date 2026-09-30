@@ -7,6 +7,7 @@
 // 运行：npm run test:tree
 
 import { ref } from "vue";
+import { buildTreeRows, selectTreeIds } from "../background/tree_core.js";
 import { useWindows } from "../src/manager/composables/useWindows.js";
 
 let failures = 0;
@@ -166,6 +167,56 @@ function main() {
   api.setVisibleSelection(true);
   const selectedInJump = Object.keys(api.selectedTabIds).map(Number).sort((a, b) => a - b);
   assertDeepEqual(selectedInJump, [1, 2, 3, 4, 5], "跳转模式全选作用于完整列表");
+
+  // 场景 8 直接测共享核心：Firefox 侧边栏不走 useWindows，但用的是同一对函数，
+  // 因此这里覆盖到的行为同样适用于侧边栏。
+  console.log("场景 8：共享行模型（buildTreeRows / selectTreeIds）");
+  const orderedIds = [1, 2, 3, 4, 5];
+  const parentMap = new Map([
+    [2, 1],
+    [3, 2],
+    [4, 1],
+  ]);
+  assertDeepEqual(
+    buildTreeRows(tabs, parentMap).map((row) => [row.id, row.depth, row.hasChildren, row.matched]),
+    [
+      [1, 0, true, false],
+      [2, 1, true, false],
+      [3, 2, false, false],
+      [4, 1, false, false],
+      [5, 0, false, false],
+    ],
+    "无关键词时按 DFS 输出且全部未标记匹配"
+  );
+  assertDeepEqual(
+    buildTreeRows(tabs, parentMap, { collapsedIds: new Set([2]) }).map((row) => row.id),
+    [1, 2, 4, 5],
+    "折叠节点的后代被隐藏"
+  );
+  const matchedRows = buildTreeRows(tabs, parentMap, { matchId: (id) => id === 3 });
+  assertDeepEqual(matchedRows.map((row) => row.id), [1, 2, 3], "匹配项及其祖先被保留");
+  assertDeepEqual(
+    matchedRows.filter((row) => row.matched).map((row) => row.id),
+    [3],
+    "祖先只作为路径，不算匹配项"
+  );
+  assertDeepEqual(
+    selectTreeIds(orderedIds, parentMap, (id) => id === 4),
+    [1, 4],
+    "selectTreeIds 只返回「匹配项 + 祖先」"
+  );
+  // 父标签不可见时，子标签提升到最近的可见祖先（侧边栏隐藏固定/冻结标签时同样适用）
+  const withoutParent = [tabs[0], tabs[2], tabs[3], tabs[4]];
+  assertDeepEqual(
+    buildTreeRows(withoutParent, parentMap).map((row) => [row.id, row.depth]),
+    [
+      [1, 0],
+      [3, 1],
+      [4, 1],
+      [5, 0],
+    ],
+    "父标签不在渲染集合内时子标签就近提升"
+  );
 
   console.log("");
   console.log(`共 ${checks} 项断言，失败 ${failures} 项`);

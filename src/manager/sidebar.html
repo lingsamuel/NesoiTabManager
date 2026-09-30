@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>Nesoi 标签侧边栏</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <!--
+      侧边栏入口必须放在 Vite root（src/manager）的顶层，否则 Vite 会按相对路径把它输出到
+      ui/ 的子目录里；而 Firefox 的 sidebar_action.default_panel 需要的是 ui/sidebar.html。
+      因此这里只放一个薄入口，真正的实现都在 src/sidebar/ 下。
+    -->
+    <script type="module" src="../sidebar/main.js"></script>
+  </body>
+</html>

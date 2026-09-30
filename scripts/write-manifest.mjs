@@ -14,8 +14,8 @@ function resolveTarget(rawTarget) {
 }
 
 // Firefox 不支持 MV3 的 background.service_worker（参见 Firefox bug 1573659），
-// 必须改用 background.scripts（event page）；同时补充 AMO 签名所需的 gecko 元数据。
-// Chromium 目标保持基础清单原样，避免引入无关字段。
+// 必须改用 background.scripts（event page）；同时补充 AMO 签名所需的 gecko 元数据与侧边栏声明。
+// Chromium 目标保持基础清单原样，避免引入无关字段（尤其是 sidebar_action 这种 Firefox 专有键）。
 function buildManifest(baseManifest, target) {
   if (target === "chrome") {
     return baseManifest;
@@ -28,6 +28,12 @@ function buildManifest(baseManifest, target) {
     background: {
       scripts: [backgroundScript],
       type: "module"
+    },
+    // 原生侧边栏面板：Firefox 会把它列进「视图 → 侧边栏」菜单。
+    // 每个窗口各有一份独立的面板文档实例，因此面板自身就能确定"自己属于哪个窗口"。
+    sidebar_action: {
+      default_title: "Nesoi 标签侧边栏",
+      default_panel: "ui/sidebar.html"
     },
     browser_specific_settings: {
       gecko: {

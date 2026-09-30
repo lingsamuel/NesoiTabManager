@@ -74,13 +74,40 @@ function useTree() {
 
   /** 读取用户偏好：视图模式（local）与折叠状态（session）。 */
   async function loadPreferences() {
-    const [modeValue, collapsedValue] = await Promise.all([
-      storageLocalGet(MODE_STORAGE_KEY),
-      storageSessionGet(COLLAPSED_STORAGE_KEY),
-    ]);
+    const modeValue = await storageLocalGet(MODE_STORAGE_KEY);
     // 缺省为树状（首次使用即展示树）。
     mode.value = modeValue !== MODE_FLAT;
+    await loadCollapsed();
+  }
+
+  /**
+   * 只读取折叠状态。
+   * Firefox 侧边栏恒为树状、不关心"树状/平铺"这个管理页偏好，因此单独提供这一个入口。
+   */
+  async function loadCollapsed() {
+    const collapsedValue = await storageSessionGet(COLLAPSED_STORAGE_KEY);
     applyCollapsed(collapsedValue);
+  }
+
+  /**
+   * 折叠状态放在 storage.session，管理页与 Firefox 侧边栏会用同一份记录，
+   * 两边同时打开时需要互相跟随，因此这里监听远端变更。
+   * 自己写入的内容也会回流到这里，比较签名后跳过，避免无意义的重新渲染。
+   */
+  function watchCollapsedChanges() {
+    if (!HAS_SESSION_STORAGE || typeof chrome.storage.onChanged === "undefined") {
+      return;
+    }
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== "session" || !changes[COLLAPSED_STORAGE_KEY]) {
+        return;
+      }
+      const incoming = changes[COLLAPSED_STORAGE_KEY].newValue;
+      if (collapsedSignature(incoming) === collapsedSignature(serializeCollapsed())) {
+        return;
+      }
+      applyCollapsed(incoming);
+    });
   }
 
   function applyCollapsed(raw) {
@@ -168,15 +195,40 @@ function useTree() {
     }, COLLAPSED_SAVE_DEBOUNCE_MS);
   }
 
-  async function saveCollapsed() {
+  /** 把当前折叠状态整理成可持久化的形状：只保留非空窗口，并对 id 排序以便比较。 */
+  function serializeCollapsed() {
     const payload = {};
     for (const [windowId, map] of Object.entries(collapsedByWindow)) {
-      const ids = Object.keys(map);
+      const ids = Object.keys(map)
+        .map(Number)
+        .filter(Number.isFinite)
+        .sort((a, b) => a - b);
       if (ids.length > 0) {
-        payload[windowId] = ids.map(Number).filter(Number.isFinite);
+        payload[windowId] = ids;
       }
     }
-    await storageSessionSet({ [COLLAPSED_STORAGE_KEY]: payload });
+    return payload;
+  }
+
+  /** 把任意来源的折叠记录归一成字符串，用于判断"远端变更"是否就是自己刚写的内容。 */
+  function collapsedSignature(raw) {
+    if (!raw || typeof raw !== "object") {
+      return "";
+    }
+    const parts = [];
+    for (const windowId of Object.keys(raw).sort()) {
+      const ids = Array.isArray(raw[windowId])
+        ? raw[windowId].map(Number).filter(Number.isFinite).sort((a, b) => a - b)
+        : [];
+      if (ids.length > 0) {
+        parts.push(`${windowId}:${ids.join(",")}`);
+      }
+    }
+    return parts.join("|");
+  }
+
+  async function saveCollapsed() {
+    await storageSessionSet({ [COLLAPSED_STORAGE_KEY]: serializeCollapsed() });
   }
 
   /**
@@ -198,10 +250,14 @@ function useTree() {
     }
   }
 
+  // 组装阶段就挂上远端变更监听：管理页与侧边栏谁先改动，另一边都能跟上。
+  watchCollapsedChanges();
+
   return {
     mode,
     status,
     loadPreferences,
+    loadCollapsed,
     setMode,
     loadForWindows,
     parentsFor,

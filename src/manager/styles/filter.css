@@ -1,0 +1,75 @@
+/* 筛选输入框：管理页与 Firefox 侧边栏共用同一个 FilterInput 组件，样式也放在一起共享。 */
+.filter-input {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 220px;
+  max-width: 100%;
+}
+
+.filter-input input {
+  width: 100%;
+  padding: 6px 30px 6px 30px;
+  border-radius: 999px;
+  border: 1px solid var(--stroke);
+  font-size: 12px;
+  font-family: inherit;
+  background: #ffffff;
+}
+
+.filter-input input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.filter-input .filter-icon {
+  position: absolute;
+  left: 10px;
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+  pointer-events: none;
+  display: inline-flex;
+}
+
+.filter-input .filter-icon svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.filter-input .filter-clear {
+  position: absolute;
+  right: 5px;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0;
+}
+
+.filter-input .filter-clear:hover {
+  background: #f3f4f6;
+  color: var(--ink);
+}
+
+.filter-input .filter-clear svg {
+  width: 12px;
+  height: 12px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}

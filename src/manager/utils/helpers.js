@@ -95,6 +95,27 @@ function matchesTabQuery(tab, keyword) {
   return title.includes(kw) || url.includes(kw);
 }
 
+// 树状拖拽的落点分区：行上 1/4 → 插到该行之前（同级兄弟），行下 1/4 → 插到该行之后（同级兄弟），
+// 中间 1/2 → 成为该行的子标签。分区口径与 TST 一致，管理页与 Firefox 侧边栏共用。
+function getTreeDropZone(event) {
+  const element = event && event.currentTarget;
+  if (!element || typeof element.getBoundingClientRect !== "function") {
+    return "child";
+  }
+  const rect = element.getBoundingClientRect();
+  if (!rect.height) {
+    return "child";
+  }
+  const ratio = (event.clientY - rect.top) / rect.height;
+  if (ratio < 0.25) {
+    return "before";
+  }
+  if (ratio > 0.75) {
+    return "after";
+  }
+  return "child";
+}
+
 function getBaseDomain(url) {
   if (!url) {
     return "";
@@ -135,6 +156,7 @@ export {
   formatLocalTime,
   getBaseDomain,
   getSelectedTabsFrom,
+  getTreeDropZone,
   matchesTabQuery,
   normalizeWhitelistInput,
   moveTabsInBatches,
