@@ -289,17 +289,8 @@ body {
 }
 
 .sb-favicon {
-  flex: none;
   width: 14px;
   height: 14px;
-  border-radius: 3px;
-  background: #e5e7eb;
-  object-fit: cover;
-}
-
-.sb-favicon.hidden {
-  display: block;
-  visibility: hidden;
 }
 
 .sb-title {
@@ -360,81 +351,121 @@ body {
   stroke-linejoin: round;
 }
 
+/* ---- 标签图标（含无 favicon 时的占位图）---- */
+
+.tab-favicon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+
+.tab-favicon img {
+  width: 100%;
+  height: 100%;
+  border-radius: 3px;
+  object-fit: cover;
+}
+
+/* 占位图标用描边风格，和界面其它图标保持一致 */
+.tab-favicon svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  stroke: var(--muted);
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 /* ---- 固定标签区（pinned）---- */
 
 /*
-  固定标签不参与滚动：它是独立容器，高度自适应但不超过侧边栏可视高度的 40%，
+  对齐 Tree Style Tab 的 pinned 容器：图标是横向铺开的小方块，容器自带底色，
+  当前窗口的活动标签是白底方块。高度自适应但不超过侧边栏可视高度的 40%，
   超出后在容器内部滚动，从而不会把下方的树区域挤没。
 */
 .sb-pinned {
   flex: none;
   max-height: 40vh;
   overflow-y: auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 2px;
   padding: 4px 6px;
   border-bottom: 1px solid var(--stroke);
-  background: #fbfbfd;
+  background: #f4f4f7;
 }
 
-/* 组与组之间的细分隔线：一组 = 一个窗口的固定标签 */
+/* 图标横向排列，因此组与组之间用竖线分隔（一条竖线 = 换了一个窗口） */
 .sb-pinned-sep {
-  height: 1px;
-  margin: 4px 2px;
-  background: var(--stroke);
+  flex: none;
+  width: 1px;
+  height: 20px;
+  margin: 4px 3px;
+  background: #d8d8de;
 }
 
 .sb-pin {
   position: relative;
-  display: flex;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 24px;
-  border-radius: 6px;
   cursor: default;
 }
 
 .sb-pin:hover {
-  background: #eef2f7;
+  background: #e3e3e9;
 }
 
+/* 白底 + 阴影 = "本窗口当前活动的标签页"，与 TST 的表现一致 */
 .sb-pin.current {
-  background: #e0e7ff;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+/* 其它窗口里活动的固定标签只描一圈浅色边，避免聚合后满屏白块 */
+.sb-pin.active-other {
+  box-shadow: inset 0 0 0 1.5px #c7d2fe;
 }
 
 .sb-pin.discarded {
-  opacity: 0.55;
-}
-
-.sb-pin.dragging {
   opacity: 0.5;
 }
 
+.sb-pin.dragging {
+  opacity: 0.45;
+}
+
+/* 横向排列，插入线画在方块的左右边缘 */
 .sb-pin.drop-before {
-  box-shadow: inset 0 2px 0 #60a5fa;
+  box-shadow: inset 2px 0 0 #60a5fa;
 }
 
 .sb-pin.drop-after {
-  box-shadow: inset 0 -2px 0 #60a5fa;
+  box-shadow: inset -2px 0 0 #60a5fa;
 }
 
 .sb-pin-icon {
   width: 16px;
   height: 16px;
-  border-radius: 3px;
-  background: #e5e7eb;
-  object-fit: cover;
 }
 
-.sb-pin-icon.hidden {
-  display: block;
+/* hover 时关闭按钮覆盖在图标位置：28px 的方块里放不下第二个横向元素 */
+.sb-pin:hover .sb-pin-icon {
   visibility: hidden;
 }
 
-/* 关闭按钮覆盖在图标位置上：24px 的行里放不下第二个横向元素 */
 .sb-pin-close {
   position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
+  inset: 0;
+  margin: auto;
   display: none;
   align-items: center;
   justify-content: center;
@@ -449,10 +480,9 @@ body {
   display: inline-flex;
 }
 
-.sb-pin:hover .sb-pin-close:hover {
+.sb-pin-close:hover {
   background: #fee4e2;
   color: #b42318;
-  transform: translate(-50%, -50%);
 }
 
 .sb-pin-close svg {
@@ -468,7 +498,8 @@ body {
 
 .sb-pin-muted {
   position: absolute;
-  right: 6px;
+  top: 3px;
+  right: 3px;
   width: 5px;
   height: 5px;
   border-radius: 999px;

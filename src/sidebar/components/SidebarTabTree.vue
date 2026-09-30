@@ -9,6 +9,7 @@
 import { ref } from "vue";
 import VirtualList from "../../manager/components/VirtualList.vue";
 import { getTreeDropZone } from "../../manager/utils/helpers.js";
+import TabFavicon from "./TabFavicon.vue";
 
 const props = defineProps({
   items: {
@@ -61,10 +62,6 @@ const dropZone = ref(null);
 function indentStyle(depth) {
   const level = Math.min(Number(depth) || 0, props.indentLimit);
   return { width: `${level * props.indentWidth}px` };
-}
-
-function onIconError(event) {
-  event.target.classList.add("hidden");
 }
 
 function onAuxClick(tab, event) {
@@ -207,13 +204,7 @@ defineExpose({
           </svg>
         </button>
         <span v-else class="sb-twisty placeholder" aria-hidden="true"></span>
-        <img
-          class="sb-favicon"
-          :class="{ hidden: !item.tab.favIconUrl }"
-          :src="item.tab.favIconUrl || ''"
-          alt=""
-          @error="onIconError"
-        />
+        <TabFavicon class="sb-favicon" :url="item.tab.favIconUrl" />
         <span class="sb-title" :title="item.tab.title || item.tab.url || ''">
           {{ item.tab.title || item.tab.url || "未命名" }}
         </span>
