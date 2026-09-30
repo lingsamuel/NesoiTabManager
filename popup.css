@@ -255,11 +255,6 @@ body {
   object-fit: cover;
 }
 
-.tab-icon.hidden {
-  display: block;
-  visibility: hidden;
-}
-
 .tab-tag {
   font-size: 10px;
   font-weight: 600;
@@ -309,11 +304,6 @@ body {
   border-radius: 4px;
   background: #efe7da;
   object-fit: cover;
-}
-
-.list-icon.hidden {
-  display: block;
-  visibility: hidden;
 }
 
 .list-title {

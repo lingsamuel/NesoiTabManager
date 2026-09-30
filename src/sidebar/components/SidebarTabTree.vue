@@ -9,7 +9,7 @@
 import { ref } from "vue";
 import VirtualList from "../../manager/components/VirtualList.vue";
 import { getTreeDropZone } from "../../manager/utils/helpers.js";
-import TabFavicon from "./TabFavicon.vue";
+import TabFavicon from "../../manager/components/TabFavicon.vue";
 
 const props = defineProps({
   items: {

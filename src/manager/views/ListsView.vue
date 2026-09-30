@@ -172,12 +172,7 @@
               @click.stop
               @change="onToggleListItem(item.key, $event.target.checked)"
             />
-            <img
-              class="list-icon"
-              :class="{ hidden: !item.favIconUrl }"
-              :src="item.favIconUrl || ''"
-              @error="handleIconError($event)"
-            />
+            <TabFavicon class="list-icon" :url="item.favIconUrl" />
             <div class="list-body">
               <div class="list-title">
                 <span class="list-link" @click.stop="onOpenSavedInNewWindow(item)">
@@ -226,6 +221,7 @@
 <script setup>
 import { computed, nextTick, ref, watch } from "vue";
 import FilterBar from "../components/FilterBar.vue";
+import TabFavicon from "../components/TabFavicon.vue";
 import VirtualList from "../components/VirtualList.vue";
 import { useMatchNavigation } from "../composables/useMatchNavigation.js";
 
@@ -410,7 +406,4 @@ watch(
   }
 );
 
-function handleIconError(event) {
-  event.target.classList.add("hidden");
-}
 </script>

@@ -125,17 +125,10 @@
   white-space: nowrap;
 }
 
+/* 外观（圆角、占位回退）由共用的 .tab-favicon 提供，这里只管尺寸 */
 .tab-icon {
   width: 16px;
   height: 16px;
-  border-radius: 4px;
-  background: #e5e7eb;
-  object-fit: cover;
-}
-
-.tab-icon.hidden {
-  display: block;
-  visibility: hidden;
 }
 
 .discard-dot {
@@ -277,17 +270,10 @@
   min-width: 0;
 }
 
+/* 外观（圆角、占位回退）由共用的 .tab-favicon 提供，这里只管尺寸 */
 .list-icon {
   width: 16px;
   height: 16px;
-  border-radius: 4px;
-  background: #e5e7eb;
-  object-fit: cover;
-}
-
-.list-icon.hidden {
-  display: block;
-  visibility: hidden;
 }
 
 .list-title {

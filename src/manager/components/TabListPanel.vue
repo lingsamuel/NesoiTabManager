@@ -65,12 +65,7 @@
             @click.stop
             @change="handleToggleTab(item.tab.id, $event.target.checked)"
           />
-          <img
-            class="tab-icon"
-            :class="{ hidden: !item.tab.favIconUrl }"
-            :src="item.tab.favIconUrl || ''"
-            @error="handleIconError($event)"
-          />
+          <TabFavicon class="tab-icon" :url="item.tab.favIconUrl" />
           <div class="tab-body">
             <div class="tab-title">
               <span v-if="item.tab.active" class="active-dot" aria-hidden="true"></span>
@@ -158,6 +153,7 @@
 <script setup>
 import { ref } from "vue";
 import VirtualList from "./VirtualList.vue";
+import TabFavicon from "./TabFavicon.vue";
 import { getTreeDropZone } from "../utils/helpers.js";
 
 const props = defineProps({
@@ -466,7 +462,4 @@ function scrollToBottom() {
   }
 }
 
-function handleIconError(event) {
-  event.target.classList.add("hidden");
-}
 </script>

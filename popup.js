@@ -1,5 +1,29 @@
 const NEW_LIST_VALUE = "__new__";
 
+// 站点没有 favicon（或图标加载失败）时回退到内置占位图，避免留下一个空白方块。
+// popup.js 是普通脚本（非模块），因此这里用 data URI 而不是共享的 Vue 组件。
+const FALLBACK_FAVICON = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#8a8a8a" '
+  + 'stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'
+  + '<circle cx="12" cy="12" r="9"/><path d="M3 12h18"/>'
+  + '<path d="M12 3c2.4 2.7 3.7 5.7 3.7 9s-1.3 6.3-3.7 9c-2.4-2.7-3.7-5.7-3.7-9S9.6 5.7 12 3z"/></svg>'
+)}`;
+
+// 统一创建 favicon 元素：无 url 或加载失败都回退到占位图（用标记位防止占位图自身失败时死循环）。
+function createFavicon(className, url) {
+  const icon = document.createElement("img");
+  icon.className = className;
+  icon.src = url || FALLBACK_FAVICON;
+  icon.addEventListener("error", () => {
+    if (icon.dataset.fallback === "1") {
+      return;
+    }
+    icon.dataset.fallback = "1";
+    icon.src = FALLBACK_FAVICON;
+  });
+  return icon;
+}
+
 const tabsContainer = document.getElementById("tabs");
 const listSelect = document.getElementById("list-select");
 const newListRow = document.getElementById("new-list-row");
@@ -328,16 +352,7 @@ function renderTabs() {
           }
         });
 
-        const icon = document.createElement("img");
-        icon.className = "tab-icon";
-        if (tab.favIconUrl) {
-          icon.src = tab.favIconUrl;
-        } else {
-          icon.classList.add("hidden");
-        }
-        icon.addEventListener("error", () => {
-          icon.classList.add("hidden");
-        });
+        const icon = createFavicon("tab-icon", tab.favIconUrl);
 
         const text = document.createElement("div");
         const titleText = document.createElement("div");
@@ -415,16 +430,7 @@ function renderListItems() {
     const header = document.createElement("div");
     header.className = "list-header";
 
-    const icon = document.createElement("img");
-    icon.className = "list-icon";
-    if (item.favIconUrl) {
-      icon.src = item.favIconUrl;
-    } else {
-      icon.classList.add("hidden");
-    }
-    icon.addEventListener("error", () => {
-      icon.classList.add("hidden");
-    });
+    const icon = createFavicon("list-icon", item.favIconUrl);
 
     const title = document.createElement("div");
     title.className = "list-title";

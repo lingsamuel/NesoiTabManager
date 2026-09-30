@@ -7,6 +7,7 @@
 @import "../../manager/styles/base.css";
 @import "../../manager/styles/virtual_list.css";
 @import "../../manager/styles/filter.css";
+@import "../../manager/styles/favicon.css";
 
 html,
 body {
@@ -347,34 +348,6 @@ body {
   stroke: currentColor;
   fill: none;
   stroke-width: 2.2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-/* ---- 标签图标（含无 favicon 时的占位图）---- */
-
-.tab-favicon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
-}
-
-.tab-favicon img {
-  width: 100%;
-  height: 100%;
-  border-radius: 3px;
-  object-fit: cover;
-}
-
-/* 占位图标用描边风格，和界面其它图标保持一致 */
-.tab-favicon svg {
-  width: 100%;
-  height: 100%;
-  display: block;
-  stroke: var(--muted);
-  fill: none;
-  stroke-width: 1.8;
   stroke-linecap: round;
   stroke-linejoin: round;
 }

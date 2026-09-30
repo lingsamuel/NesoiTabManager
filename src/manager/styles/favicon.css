@@ -1,0 +1,31 @@
+/*
+  标签 / 保存项图标：有 favicon 用 favicon，没有或加载失败时回退到内置占位图标。
+
+  由管理页与 Firefox 侧边栏共用，因此单独成文件；
+  具体尺寸由使用方的类控制（.tab-icon / .list-icon / .sb-favicon / .sb-pin-icon）。
+*/
+.tab-favicon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+
+.tab-favicon img {
+  width: 100%;
+  height: 100%;
+  border-radius: 3px;
+  object-fit: cover;
+}
+
+/* 占位图标用描边风格，和界面其它图标保持一致 */
+.tab-favicon svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  stroke: var(--muted);
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}

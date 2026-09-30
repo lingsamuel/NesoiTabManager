@@ -14,7 +14,7 @@
 
 import { ref } from "vue";
 import { pinnedTabTooltip } from "../pinned_data.js";
-import TabFavicon from "./TabFavicon.vue";
+import TabFavicon from "../../manager/components/TabFavicon.vue";
 
 const props = defineProps({
   // groupPinnedTabs() 的结果

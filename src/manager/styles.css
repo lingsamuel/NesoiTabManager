@@ -1,4 +1,5 @@
 @import "./styles/base.css";
+@import "./styles/favicon.css";
 @import "./styles/virtual_list.css";
 @import "./styles/layout.css";
 @import "./styles/navigation.css";
