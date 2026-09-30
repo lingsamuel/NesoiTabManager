@@ -3,7 +3,12 @@
 // 这段逻辑的两处边界在浏览器里很难复现（活动标签被折叠、被筛选隐藏），
 // 而算错的表现只是"小蓝条位置不对"，肉眼容易漏掉，因此用 Node 固定住。
 
-import { buildTrackMarkers, resolveActiveRow, toTrackTop } from "../src/sidebar/scroll_markers.js";
+import {
+  buildTrackMarkers,
+  pickCurrentMatchFromVisibleRange,
+  resolveActiveRow,
+  toTrackTop,
+} from "../src/sidebar/scroll_markers.js";
 
 let failures = 0;
 let checks = 0;
@@ -94,6 +99,85 @@ function main() {
     "匹配刻度 + 当前匹配加深 + 祖先行活动标记"
   );
   assertDeepEqual(buildTrackMarkers({ rows: [], activeRow: null, trackHeight: 80 }), [], "空列表没有标记");
+
+  console.log("场景 6：滚动时同步当前跳转项");
+  // 10 个匹配项，行号 0..90（每 10 行一个）
+  const matchRowIndexes = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90];
+  const visible = (start, end) => ({ startIndex: start, endIndex: end });
+
+  assertEqual(
+    pickCurrentMatchFromVisibleRange({
+      matchRowIndexes,
+      currentMatchRowIndex: 45,
+      ...visible(40, 60),
+    }),
+    null,
+    "当前项可见时不动（避免滚动过程中反复改写）"
+  );
+  assertEqual(
+    pickCurrentMatchFromVisibleRange({
+      matchRowIndexes,
+      currentMatchRowIndex: 10,
+      ...visible(40, 60),
+    }),
+    40,
+    "当前项滚出视野 → 取可见范围内第一个匹配项"
+  );
+  assertEqual(
+    pickCurrentMatchFromVisibleRange({
+      matchRowIndexes,
+      currentMatchRowIndex: 90,
+      ...visible(41, 59),
+    }),
+    50,
+    "可见范围内只有中间的匹配项时也能选中它"
+  );
+  assertEqual(
+    pickCurrentMatchFromVisibleRange({
+      matchRowIndexes,
+      currentMatchRowIndex: 10,
+      ...visible(91, 100),
+    }),
+    null,
+    "可见范围内没有任何匹配项 → 保持不变"
+  );
+  assertEqual(
+    pickCurrentMatchFromVisibleRange({
+      matchRowIndexes: [],
+      currentMatchRowIndex: -1,
+      ...visible(0, 100),
+    }),
+    null,
+    "没有匹配项时不做任何事"
+  );
+  assertEqual(
+    pickCurrentMatchFromVisibleRange({
+      matchRowIndexes,
+      currentMatchRowIndex: -1,
+      ...visible(20, 40),
+    }),
+    20,
+    "尚未选中任何匹配项时也会跟随可见范围"
+  );
+  assertEqual(
+    pickCurrentMatchFromVisibleRange({
+      matchRowIndexes,
+      currentMatchRowIndex: 50,
+      ...visible(50, 50),
+    }),
+    null,
+    "空区间（可见高度尚未测量）时保持不变"
+  );
+  // 边界：可见范围恰好从一个匹配项开始、结束于最后一个匹配项
+  assertEqual(
+    pickCurrentMatchFromVisibleRange({
+      matchRowIndexes,
+      currentMatchRowIndex: 0,
+      ...visible(90, 100),
+    }),
+    90,
+    "滚到末尾时选中最末匹配项"
+  );
 
   console.log("");
   console.log(`共 ${checks} 项断言，失败 ${failures} 项`);

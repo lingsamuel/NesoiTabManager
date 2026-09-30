@@ -103,3 +103,46 @@ export function buildTrackMarkers(options = {}) {
 
   return markers;
 }
+
+/**
+ * 滚动时同步"当前跳转项"的规则。
+ *
+ * 规则：当前项已经不在可见范围内、且可见范围内还有匹配项时，把可见范围内**第一个**匹配项设为当前项；
+ * 当前项仍然可见、或可见范围内没有匹配项时都不改动。
+ * 当前项可见时不动，是为了避免在用户持续滚动时反复改写当前项。
+ *
+ * 只负责"该把哪一行设为当前项"，不涉及滚动：滚动同步绝不能反过来触发自动滚动，
+ * 否则用户每滚一下都会被拉回去。
+ *
+ * @param {{matchRowIndexes: number[], currentMatchRowIndex: number,
+ *          startIndex: number, endIndex: number}} options
+ *   matchRowIndexes 必须按行号升序（由行序列顺序扫描得到）。
+ * @returns {number|null} 需要设为当前项的行号；null 表示保持不变
+ */
+export function pickCurrentMatchFromVisibleRange(options = {}) {
+  const {
+    matchRowIndexes = [],
+    currentMatchRowIndex = -1,
+    startIndex = 0,
+    endIndex = 0,
+  } = options;
+  if (!Array.isArray(matchRowIndexes) || matchRowIndexes.length === 0 || endIndex <= startIndex) {
+    return null;
+  }
+  if (currentMatchRowIndex >= startIndex && currentMatchRowIndex < endIndex) {
+    return null;
+  }
+  // 二分找第一个 >= startIndex 的匹配项：滚动事件很密集，避免每次从头线性扫描。
+  let low = 0;
+  let high = matchRowIndexes.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (matchRowIndexes[mid] < startIndex) {
+      low = mid + 1;
+    } else {
+      high = mid;
+    }
+  }
+  const candidate = matchRowIndexes[low];
+  return candidate !== undefined && candidate < endIndex ? candidate : null;
+}

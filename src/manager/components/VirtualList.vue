@@ -34,7 +34,17 @@ const props = defineProps({
     type: Number,
     default: -1,
   },
+  // 是否在"当前匹配项变化"时自动滚动过去。
+  // 侧边栏会在滚动时同步当前匹配项（见 scroll_markers.js），那种同步绝不能再触发滚动，
+  // 否则用户每滚一下都会被拉回去；因此侧边栏关闭它并改为在导航动作里显式滚动。
+  autoScrollToMatch: {
+    type: Boolean,
+    default: true,
+  },
 });
+
+// 可见区间变化对外广播：侧边栏据此决定"当前跳转项是否该跟着可见范围走"。
+const emit = defineEmits(["range-change"]);
 
 const container = ref(null);
 const scrollTop = ref(0);
@@ -130,6 +140,15 @@ function scrollToIndex(index) {
   syncScrollTop();
 }
 
+// 区间变化用 post 时机广播：父级在回调里读取的是渲染后的真实布局。
+watch(
+  range,
+  (value) => {
+    emit("range-change", { startIndex: value.startIndex, endIndex: value.endIndex });
+  },
+  { flush: "post" }
+);
+
 watch(
   () => props.items.length,
   () => {
@@ -149,7 +168,7 @@ watch(
 watch(
   () => props.currentMatchIndex,
   async (index) => {
-    if (index < 0) {
+    if (index < 0 || !props.autoScrollToMatch) {
       return;
     }
     // post + nextTick：行数变化与匹配变化往往在同一轮里发生，

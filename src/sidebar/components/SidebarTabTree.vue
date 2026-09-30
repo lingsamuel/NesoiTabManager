@@ -57,6 +57,10 @@ const emit = defineEmits([
   "toggle-collapse",
   "tree-drop",
   "context-menu",
+  // 刻度被点击：父级负责"同步当前跳转项 + 滚动"，避免这里和父级各滚一次
+  "marker-click",
+  // 可见行区间变化：父级据此让当前跳转项跟随可见范围
+  "visible-range",
 ]);
 
 const listRef = ref(null);
@@ -112,13 +116,24 @@ const markers = computed(() =>
   })
 );
 
-/** 点击轨道刻度 → 把对应行滚动到可视区并居中（与原生查找的刻度一致）。 */
+/** 点击轨道刻度：只上报，由父级统一处理"同步当前项 + 滚动"。 */
 function onMarkerClick(marker) {
-  if (!listRef.value || !listRef.value.scrollToIndex) {
-    return;
-  }
-  listRef.value.scrollToIndex(marker.index);
+  emit("marker-click", { index: marker.index, kind: marker.kind });
 }
+
+function onRangeChange(range) {
+  emit("visible-range", range);
+}
+
+// 侧边栏关闭列表的自动滚动：当前项由滚动同步改写时不能再触发滚动。
+// 需要滚动时由父级通过这里的 scrollToIndex 显式调用。
+defineExpose({
+  scrollToIndex(index) {
+    if (listRef.value && listRef.value.scrollToIndex) {
+      listRef.value.scrollToIndex(index);
+    }
+  },
+});
 
 function updateTrackHeight() {
   trackHeight.value = wrapperRef.value ? wrapperRef.value.clientHeight || 0 : 0;
@@ -205,6 +220,8 @@ onBeforeUnmount(() => {
       :items="items"
       :item-height="itemHeight"
       :current-match-index="currentMatchIndex"
+      :auto-scroll-to-match="false"
+      @range-change="onRangeChange"
     >
     <template #default="{ item, index }">
       <div

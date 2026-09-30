@@ -8,7 +8,7 @@
 // 生命周期：Firefox 每个窗口各有一份独立的侧边栏文档实例，窗口关闭或用户收起侧边栏时文档被卸载，
 // 监听器随之销毁——所以这个页面不常驻，对浏览器启动零开销。
 
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import FilterInput from "../manager/components/FilterInput.vue";
 import { useFilterQuery } from "../manager/composables/useFilterQuery.js";
 import { useMatchNavigation } from "../manager/composables/useMatchNavigation.js";
@@ -18,7 +18,7 @@ import { request } from "../manager/utils/request.js";
 // 与管理页树状视图、后台、基准测试共用同一份行模型（筛选补祖先 + DFS + 折叠）
 import { buildTreeRows } from "../../background/tree_core.js";
 import { computePinnedReorderIndex, groupPinnedTabs } from "./pinned_data.js";
-import { resolveActiveRow } from "./scroll_markers.js";
+import { pickCurrentMatchFromVisibleRange, resolveActiveRow } from "./scroll_markers.js";
 import SidebarPinnedTabs from "./components/SidebarPinnedTabs.vue";
 import SidebarTabTree from "./components/SidebarTabTree.vue";
 
@@ -35,6 +35,8 @@ const status = reactive({ message: "", type: "" });
 
 const tree = useTree();
 const filter = useFilterQuery();
+// 列表的模板引用：侧边栏关闭了列表的自动滚动，导航动作需要显式滚过去。
+const treeRef = ref(null);
 
 let refreshTimer = null;
 let pendingWhileHidden = false;
@@ -118,6 +120,20 @@ const activeRow = computed(() => {
   return resolveActiveRow(activeTab.id, items.value, tree.parentsFor(id));
 });
 
+/**
+ * 所有"匹配行"的行号（升序）。
+ * 一次扫描缓存下来，滚动时就不用每帧重新遍历整份行数据。
+ */
+const matchRowIndexes = computed(() => {
+  const result = [];
+  items.value.forEach((item, index) => {
+    if (item.matched) {
+      result.push(index);
+    }
+  });
+  return result;
+});
+
 const hasCommittedQuery = computed(() => Boolean(String(filter.committed.value || "").trim()));
 const isJumpMode = computed(() => filter.mode.value === "jump" && hasCommittedQuery.value);
 
@@ -139,6 +155,7 @@ const {
   currentMatchPosition,
   goToNext,
   goToPrev,
+  setCurrentMatchByRowIndex,
 } = useMatchNavigation({
   rows: items,
   isMatchRow: (item) => Boolean(item && item.matched),
@@ -152,6 +169,76 @@ const matchLabel = computed(() => {
   }
   return `${currentMatchPosition.value + 1} / ${matchCount.value}`;
 });
+
+/** 把某一行滚动到可视区并居中。 */
+function scrollToRow(index) {
+  if (index < 0 || !treeRef.value || typeof treeRef.value.scrollToIndex !== "function") {
+    return;
+  }
+  treeRef.value.scrollToIndex(index);
+}
+
+/** 滚动到当前跳转项（导航动作专用；滚动同步本身不会调用它）。 */
+function scrollToCurrentMatch() {
+  scrollToRow(currentMatchIndex.value);
+}
+
+function goToNextMatch() {
+  goToNext();
+  scrollToCurrentMatch();
+}
+
+function goToPrevMatch() {
+  goToPrev();
+  scrollToCurrentMatch();
+}
+
+/**
+ * 切换筛选模式。
+ * 切到跳转模式时 useMatchNavigation 会把当前项重置为第一个匹配；因为侧边栏关闭了列表的
+ * 自动滚动，这里必须显式滚过去，否则会退化回"切模式后停在原地"。
+ */
+async function setFilterMode(mode) {
+  filter.setMode(mode);
+  await nextTick();
+  scrollToCurrentMatch();
+}
+
+/**
+ * 可见行区间变化 → 让"当前跳转项"跟随可见范围。
+ * 只在跳转模式下有意义；当前项仍可见、或可见范围内没有匹配项时都不动。
+ * 这里**只改状态、不滚动**：一旦滚动就会变成"用户一滚就被拉回去"。
+ */
+function onVisibleRange(range) {
+  if (!isJumpMode.value || !range) {
+    return;
+  }
+  const next = pickCurrentMatchFromVisibleRange({
+    matchRowIndexes: matchRowIndexes.value,
+    currentMatchRowIndex: currentMatchIndex.value,
+    startIndex: range.startIndex,
+    endIndex: range.endIndex,
+  });
+  if (next !== null) {
+    setCurrentMatchByRowIndex(next);
+  }
+}
+
+/**
+ * 点击滚动条刻度。
+ * 点匹配刻度时要**同步当前跳转项**——这样 ↑/↓ 会从用户点的那一项继续（例：3 个匹配项、
+ * 当前在第 2 项，点了第 1 项的刻度后当前项变成第 1 项，此时"上一条"是第 3 项、"下一条"是第 2 项）。
+ * 点活动标签的蓝色刻度只滚动，不碰搜索状态。
+ */
+function onMarkerClick(marker) {
+  if (!marker) {
+    return;
+  }
+  if (isJumpMode.value && (marker.kind === "match" || marker.kind === "match-current")) {
+    setCurrentMatchByRowIndex(marker.index);
+  }
+  scrollToRow(marker.index);
+}
 
 const emptyText = computed(() => {
   if (hasCommittedQuery.value && filter.mode.value === "filter") {
@@ -648,8 +735,8 @@ onBeforeUnmount(() => {
         placeholder="筛选标题或网址"
         @update:model-value="filter.update"
         @commit="filter.commit"
-        @next="goToNext"
-        @prev="goToPrev"
+        @next="goToNextMatch"
+        @prev="goToPrevMatch"
       />
       <div class="sb-toolbar-row">
         <div class="sb-mode">
@@ -657,7 +744,7 @@ onBeforeUnmount(() => {
             type="button"
             :class="{ active: filter.mode.value === 'filter' }"
             title="过滤：只显示匹配项及其祖先"
-            @click="filter.setMode('filter')"
+            @click="setFilterMode('filter')"
           >
             过滤
           </button>
@@ -665,15 +752,15 @@ onBeforeUnmount(() => {
             type="button"
             :class="{ active: filter.mode.value === 'jump' }"
             title="跳转：保持完整树，在匹配项之间跳转"
-            @click="filter.setMode('jump')"
+            @click="setFilterMode('jump')"
           >
             跳转
           </button>
         </div>
         <span v-if="isJumpMode" class="sb-match-nav">
-          <button type="button" title="上一个匹配（Shift+Enter）" @click="goToPrev">↑</button>
+          <button type="button" title="上一个匹配（Shift+Enter）" @click="goToPrevMatch">↑</button>
           <span class="sb-match-count">{{ matchLabel }}</span>
-          <button type="button" title="下一个匹配（Enter）" @click="goToNext">↓</button>
+          <button type="button" title="下一个匹配（Enter）" @click="goToNextMatch">↓</button>
         </span>
         <span class="sb-spacer"></span>
         <button type="button" class="sb-tool" title="在当前标签页下新建（工具栏入口）" @click="createTab">＋</button>
@@ -696,6 +783,7 @@ onBeforeUnmount(() => {
       />
       <SidebarTabTree
         v-if="items.length > 0"
+        ref="treeRef"
         :items="items"
         :active-row="activeRow"
         :highlight-matches="highlightMatches"
@@ -707,6 +795,8 @@ onBeforeUnmount(() => {
         @toggle-collapse="toggleCollapse"
         @tree-drop="onTreeDrop"
         @context-menu="openTabContextMenu"
+        @marker-click="onMarkerClick"
+        @visible-range="onVisibleRange"
       />
       <div v-else class="sb-empty">{{ treeEmptyText }}</div>
     </template>

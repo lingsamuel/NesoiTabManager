@@ -51,6 +51,22 @@ function useMatchNavigation(options = {}) {
       (currentMatchIdx.value - 1 + matchCount.value) % matchCount.value;
   }
 
+  /**
+   * 按"行号"设置当前匹配项（滚动条刻度点击、滚动同步都会用到）。
+   * 与 goToNext/goToPrev 一样只改状态：是否滚动由调用方决定，
+   * 因为"滚动同步"绝不能反过来触发滚动，否则会把用户拽回去。
+   *
+   * @returns {boolean} 该行不是匹配项时返回 false
+   */
+  function setCurrentMatchByRowIndex(rowIndex) {
+    const ordinal = matchIndices.value.indexOf(Number(rowIndex));
+    if (ordinal < 0) {
+      return false;
+    }
+    currentMatchIdx.value = ordinal;
+    return true;
+  }
+
   // 关键词变化、模式切换或数据变化时，重置到第一个匹配（或清空）。
   watch([hasQuery, mode, matchCount], () => {
     if (mode.value !== "jump" || !hasQuery.value || matchCount.value === 0) {
@@ -66,6 +82,7 @@ function useMatchNavigation(options = {}) {
     currentMatchPosition,
     goToNext,
     goToPrev,
+    setCurrentMatchByRowIndex,
   };
 }
 
