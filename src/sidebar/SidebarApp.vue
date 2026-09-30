@@ -18,6 +18,13 @@ import { request } from "../manager/utils/request.js";
 // 与管理页树状视图、后台、基准测试共用同一份行模型（筛选补祖先 + DFS + 折叠）
 import { buildTreeRows } from "../../background/tree_core.js";
 import { computePinnedReorderIndex, groupPinnedTabs } from "./pinned_data.js";
+import {
+  buildAppendDropPayload,
+  buildPinnedDropPayload,
+  buildTreeDropPayload,
+  isExternalDropData,
+  parseDroppedItem,
+} from "./dropped_data.js";
 import { pickCurrentMatchFromVisibleRange, resolveActiveRow } from "../manager/utils/scroll_markers.js";
 import SidebarPinnedTabs from "./components/SidebarPinnedTabs.vue";
 import SidebarTabTree from "./components/SidebarTabTree.vue";
@@ -751,6 +758,135 @@ async function onTreeDrop(draggedTab, targetTab, zone) {
 }
 
 // ---------------------------------------------------------------------------
+// 外部拖放（网页里拖过来的链接 / 选中文本）
+// ---------------------------------------------------------------------------
+
+/** 某个标签在本窗口树里的父标签 id（顶层为 null）。 */
+function parentIdOf(tabId) {
+  const parents = tree.parentsFor(windowId.value);
+  const raw = parents[String(tabId)];
+  return raw === undefined || raw === null ? null : raw;
+}
+
+/** 把外部数据解析成"后台能执行的布局意图"，并交给后台。 */
+async function runExternalDrop(item, layout, targetWindowId) {
+  const response = await request("openDroppedItem", {
+    windowId: targetWindowId === null || targetWindowId === undefined ? windowId.value : targetWindowId,
+    ...layout,
+    url: item.kind === "url" ? item.value : "",
+    query: item.kind === "query" ? item.value : "",
+  });
+  if (!response.ok) {
+    setStatus(response.error || "拖放打开失败。", "error");
+    return;
+  }
+  setStatus(item.kind === "query" ? "已在默认搜索引擎中搜索。" : "已打开拖放的内容。", "ok");
+  // 结构变化会由 onCreated / onAttached 触发防抖刷新；这里再排一次，让层级立刻可见。
+  scheduleRefresh();
+}
+
+/** 从拖拽数据里取第一条可用内容；取不到时给出提示并返回 null。 */
+function readDroppedItem(dataTransfer) {
+  const item = parseDroppedItem(dataTransfer);
+  if (!item) {
+    setStatus("拖放的内容无法识别或不被允许。", "error");
+    return null;
+  }
+  return item;
+}
+
+/** 这次拖拽是否带着文件（当前版本不支持，但要吞掉默认行为，避免面板被导航）。 */
+function hasDroppedFiles(dataTransfer) {
+  return Boolean(dataTransfer && dataTransfer.files && dataTransfer.files.length > 0);
+}
+
+/**
+ * 外部内容落在树区域的某一行上。
+ * - 行上/下 1/4 → 在目标行前后插入（层级与内部拖拽同一口径）；
+ * - 行中间 1/2 → 覆盖目标标签。
+ */
+async function onTreeExternalDrop({ tab, zone, dataTransfer }) {
+  const item = readDroppedItem(dataTransfer);
+  if (!item) {
+    return;
+  }
+  const layout = buildTreeDropPayload(tab.id, parentIdOf(tab.id), zone);
+  await runExternalDrop(item, layout, tab.windowId);
+}
+
+/** 外部内容落在固定标签区的某个图标上：两侧 1/4 新建固定标签，中间覆盖。 */
+async function onPinnedExternalDrop({ tab, group, position, dataTransfer }) {
+  const item = readDroppedItem(dataTransfer);
+  if (!item) {
+    return;
+  }
+  const layout = buildPinnedDropPayload(
+    { tabId: tab.id, windowId: group.windowId, isCurrentWindow: group.isCurrent },
+    position
+  );
+  if (!layout) {
+    setStatus("固定标签区的插入只支持本窗口，已忽略。", "error");
+    return;
+  }
+  await runExternalDrop(item, layout, group.windowId);
+}
+
+/** 外部内容落在列表下方空白处：追加到最后一个可见行之后（没有可见行则建为顶层）。 */
+async function onBlankExternalDrop(dataTransfer) {
+  const item = readDroppedItem(dataTransfer);
+  if (!item) {
+    return;
+  }
+  const list = items.value;
+  const last = list.length > 0 ? list[list.length - 1] : null;
+  const layout = last
+    ? buildAppendDropPayload(last.tab.id, parentIdOf(last.tab.id))
+    : buildAppendDropPayload(null, null);
+  await runExternalDrop(item, layout, windowId.value);
+}
+
+/** 侧边栏任意位置的外部拖拽都要 preventDefault：否则 Firefox 可能把面板当成导航目标。 */
+function onRootDragOver(event) {
+  const dataTransfer = event.dataTransfer;
+  if (isExternalDropData(dataTransfer) || hasDroppedFiles(dataTransfer)) {
+    event.preventDefault();
+  }
+}
+
+/**
+ * 根节点兜底处理"没有落在行/图标上"的外部拖放。
+ * 行与固定标签图标有各自的处理器（冒泡到这里时按 DOM 判断跳过，避免重复处理）。
+ */
+async function onRootDrop(event) {
+  const dataTransfer = event.dataTransfer;
+  const external = isExternalDropData(dataTransfer);
+  const files = hasDroppedFiles(dataTransfer);
+  if (!external && !files) {
+    return;
+  }
+  // 无论落在哪里都先吞掉默认行为：侧边栏面板不能因为一次拖放被导航走。
+  event.preventDefault();
+  if (!external) {
+    // 纯文件拖放当前不支持（见文档「已知限制」）：静默忽略，只吞掉默认行为。
+    return;
+  }
+  const target = event.target;
+  const closest =
+    target && typeof target.closest === "function"
+      ? (selector) => target.closest(selector)
+      : () => null;
+  // 行与图标自己的处理器已经处理过这次 drop。
+  if (closest(".sb-row") || closest(".sb-pin")) {
+    return;
+  }
+  // 固定标签区的空白与分隔条、工具栏、底部按钮都不是落点。
+  if (closest(".sb-pinned") || closest(".sb-toolbar") || closest(".sb-newtab-bar")) {
+    return;
+  }
+  await onBlankExternalDrop(dataTransfer);
+}
+
+// ---------------------------------------------------------------------------
 // 固定标签区
 // ---------------------------------------------------------------------------
 
@@ -852,7 +988,11 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="sb-app">
+  <div
+    class="sb-app"
+    @dragover="onRootDragOver"
+    @drop="onRootDrop"
+  >
     <div class="sb-toolbar">
       <FilterInput
         :model-value="filter.query.value"
@@ -912,6 +1052,7 @@ onBeforeUnmount(() => {
         @close="closeTab"
         @context-menu="openTabContextMenu"
         @reorder="onPinnedReorder"
+        @external-drop="onPinnedExternalDrop"
       />
       <SidebarTabTree
         v-if="items.length > 0"
@@ -926,6 +1067,7 @@ onBeforeUnmount(() => {
         @discard="discardTab"
         @toggle-collapse="toggleCollapse"
         @tree-drop="onTreeDrop"
+        @external-drop="onTreeExternalDrop"
         @context-menu="openTabContextMenu"
         @marker-click="onMarkerClick"
         @visible-range="onVisibleRange"

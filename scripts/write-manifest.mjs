@@ -38,11 +38,17 @@ function buildManifest(baseManifest, target) {
   }
 
   const backgroundScript = baseManifest.background?.service_worker || "background.js";
-  // `menus.overrideContext` 是 Firefox 专有必需权限：侧边栏右键标签时用它把上下文切到 "tab"，
-  // 从而由 Firefox 原生菜单控件渲染我们注册的标签菜单项。Chrome 不认识这个权限，因此只加在 Firefox 目标上。
+  // Firefox 目标额外需要的两个权限（Chrome 不认识它们，因此只加在这一侧）：
+  // - `menus.overrideContext`：侧边栏右键标签时用它把上下文切到 "tab"，
+  //   从而由 Firefox 原生菜单控件渲染我们注册的标签菜单项；
+  // - `search`：外部拖放里"非链接文本 → 默认搜索引擎"必须用 `chrome.search.search`，
+  //   浏览器没有提供"不加权限拿到默认引擎搜索地址"的替代路径。
+  // 两个都是必需权限：AMO 用户在扩展更新时会收到一次重新授权提示（见 docs/ui/firefox_sidebar.md）。
   const permissions = Array.isArray(baseManifest.permissions) ? baseManifest.permissions.slice() : [];
-  if (!permissions.includes("menus.overrideContext")) {
-    permissions.push("menus.overrideContext");
+  for (const permission of ["menus.overrideContext", "search"]) {
+    if (!permissions.includes(permission)) {
+      permissions.push(permission);
+    }
   }
 
   return {

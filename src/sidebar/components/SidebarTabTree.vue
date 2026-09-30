@@ -11,6 +11,9 @@ import VirtualList from "../../manager/components/VirtualList.vue";
 import { getTreeDropZone } from "../../manager/utils/helpers.js";
 import { buildTrackMarkers } from "../../manager/utils/scroll_markers.js";
 import TabFavicon from "../../manager/components/TabFavicon.vue";
+// 外部拖放（链接/文本）判定：内部标签拖拽也会写 text/plain（写的是标签 id），
+// 所以这里必须再叠加"当前没有内部拖拽进行中"，两者缺一不可。
+import { isExternalDropData } from "../dropped_data.js";
 
 const props = defineProps({
   items: {
@@ -57,6 +60,8 @@ const emit = defineEmits([
   "toggle-collapse",
   "tree-drop",
   "context-menu",
+  // 外部内容（链接/文本）落在某一行上：父级负责解析数据并发起后台请求
+  "external-drop",
   // 刻度被点击：父级负责"同步当前跳转项 + 滚动"，避免这里和父级各滚一次
   "marker-click",
   // 可见行区间变化：父级据此让当前跳转项跟随可见范围
@@ -72,6 +77,9 @@ const draggingId = ref(null);
 const draggingPinned = ref(false);
 const dropTargetId = ref(null);
 const dropZone = ref(null);
+// 这次拖拽是不是"外部内容"（链接/文本）：行中间区在两种拖拽下语义不同
+// （内部 = 成为子标签，外部 = 覆盖该标签），因此要高亮成不同样式。
+const externalDrag = ref(false);
 
 function indentStyle(depth) {
   const level = Math.min(Number(depth) || 0, props.indentLimit);
@@ -163,7 +171,29 @@ function isDropAllowed(targetItem) {
   return true;
 }
 
+/** 本次拖拽是否是"外部内容"（链接 / 文本），而不是本插件内部的标签拖拽。 */
+function isExternalDrag(event) {
+  if (draggingId.value !== null || draggingPinned.value) {
+    return false;
+  }
+  return isExternalDropData(event.dataTransfer);
+}
+
+function clearDropState() {
+  dropTargetId.value = null;
+  dropZone.value = null;
+  externalDrag.value = false;
+}
+
 function onDragOver(item, event) {
+  if (isExternalDrag(event)) {
+    // 外部拖放允许落在任何非固定标签行上（树区域本来就没有固定标签）。
+    event.preventDefault();
+    externalDrag.value = true;
+    dropTargetId.value = item.id;
+    dropZone.value = getTreeDropZone(event);
+    return;
+  }
   if (!isDropAllowed(item)) {
     dropTargetId.value = null;
     dropZone.value = null;
@@ -176,16 +206,29 @@ function onDragOver(item, event) {
 
 function onDragLeave(item) {
   if (dropTargetId.value === item.id) {
-    dropTargetId.value = null;
-    dropZone.value = null;
+    // 统一走 clearDropState：只清 dropTarget/dropZone 而留着 externalDrag，
+    // 会让下一次内部拖拽错误地显示成"覆盖"高亮。
+    clearDropState();
   }
 }
 
 function onDrop(item, event) {
+  if (isExternalDrag(event)) {
+    event.preventDefault();
+    const zone = dropZone.value || "child";
+    clearDropState();
+    // 由父级解析 dataTransfer 并发起后台请求：解析必须在 drop 的同步栈里完成，
+    // Vue 的 emit 是同步调用，因此把 dataTransfer 直接传出去即可。
+    emit("external-drop", {
+      tab: item.tab,
+      zone,
+      dataTransfer: event.dataTransfer,
+    });
+    return;
+  }
   event.preventDefault();
   const zone = dropZone.value || "child";
-  dropTargetId.value = null;
-  dropZone.value = null;
+  clearDropState();
   if (!isDropAllowed(item) || draggingId.value === null) {
     return;
   }
@@ -200,8 +243,20 @@ function onDrop(item, event) {
 function onDragEnd() {
   draggingId.value = null;
   draggingPinned.value = false;
-  dropTargetId.value = null;
-  dropZone.value = null;
+  clearDropState();
+}
+
+/**
+ * 拖拽离开整个树区域时清掉落点。
+ * 只在 relatedTarget 确实出了 host 时才清：行与行之间移动同样会触发 dragleave，
+ * 清早了会让插入指示闪烁。
+ */
+function onHostDragLeave(event) {
+  const next = event.relatedTarget;
+  if (next && wrapperRef.value && typeof wrapperRef.value.contains === "function" && wrapperRef.value.contains(next)) {
+    return;
+  }
+  clearDropState();
 }
 
 onMounted(() => {
@@ -222,7 +277,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="wrapperRef" class="track-host">
+  <div ref="wrapperRef" class="track-host" @dragleave="onHostDragLeave">
     <VirtualList
       ref="listRef"
       class="sb-list"
@@ -244,7 +299,8 @@ onBeforeUnmount(() => {
           dragging: draggingId === item.id,
           'drop-before': dropTargetId === item.id && dropZone === 'before',
           'drop-after': dropTargetId === item.id && dropZone === 'after',
-          'drop-child': dropTargetId === item.id && dropZone === 'child',
+          'drop-child': dropTargetId === item.id && dropZone === 'child' && !externalDrag,
+          'drop-onto': dropTargetId === item.id && dropZone === 'child' && externalDrag,
         }"
         draggable="true"
         @click="emit('activate', item.tab)"

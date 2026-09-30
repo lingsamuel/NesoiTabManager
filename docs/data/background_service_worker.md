@@ -52,6 +52,12 @@
 - `createRootTab`：在窗口末尾新建一个**顶层**标签页（侧边栏底部 New Tab 使用）。
   创建前会打一个短时效标记，使 `tabs.onCreated` 跳过"无 opener 挂到活动标签下"的默认规则；
   并显式指定 `index = 当前标签数`，避免 Firefox 的 `insertAfterCurrent` 偏好把新标签插到当前标签之后。
+  该标记已泛化为"下一个新标签的落位（parentId）"，`createRootTab` 只是"落位 = 顶层"的特例。
+- `createPlacedTab`：按指定落位新建标签页（侧边栏外部拖放使用）——可指定 `parentId` / `beforeTabId` / `afterTabId` /
+  `pinned`，后台用与 `moveTabTree` 同一套下标口径算出物理位置，并让 `tabs.onCreated` **同步**套用父子关系
+  （路径中没有 await），避免与随后的事件处理竞争导致层级被改回默认规则。
+- `openDroppedItem`：执行一次外部拖放的结果——覆盖指定标签（`tabs.update({url})`）或按落位新建标签页；
+  传入的是搜索词时改用 `chrome.search.search({ query, tabId })`，让结果落在指定的那个标签上。
 
 ## 存储模型
 - 详细存储结构与字段说明见：`docs/data/storage_model.md`。

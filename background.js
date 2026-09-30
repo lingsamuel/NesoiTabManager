@@ -42,6 +42,7 @@ import {
   updateListDescription,
 } from "./background/lists.js";
 import { aiGroupTabs, getAiConfig, setAiConfig } from "./background/ai.js";
+import { openDroppedItem } from "./background/dropped_item.js";
 import {
   createRootTab,
   getTreeStructure,
@@ -502,6 +503,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // 侧边栏底部 New Tab：在窗口末尾新建一个顶层标签页（与工具栏＋的"挂到当前标签下"不同）。
   if (action === "createRootTab") {
     createRootTab({ windowId: message.windowId })
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
+    return true;
+  }
+
+  // 侧边栏外部拖放：覆盖目标标签，或按落位新建标签页（搜索词走默认搜索引擎）。
+  if (action === "openDroppedItem") {
+    openDroppedItem(message)
       .then((result) => sendResponse({ ok: true, ...result }))
       .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
     return true;

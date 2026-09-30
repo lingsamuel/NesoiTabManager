@@ -14,6 +14,7 @@
 
 import { ref } from "vue";
 import { pinnedTabTooltip } from "../pinned_data.js";
+import { isExternalDropData, resolvePinnedDropPosition } from "../dropped_data.js";
 import TabFavicon from "../../manager/components/TabFavicon.vue";
 
 const props = defineProps({
@@ -24,12 +25,14 @@ const props = defineProps({
   },
 });
 
-const emit = defineEmits(["activate", "close", "context-menu", "reorder"]);
+const emit = defineEmits(["activate", "close", "context-menu", "reorder", "external-drop"]);
 
 const draggingId = ref(null);
 const draggingWindowId = ref(null);
 const dropTargetId = ref(null);
 const dropPosition = ref(null);
+// 外部拖放（链接/文本）的落点：与内部重排分开记录，因为分区规则不同。
+const externalPosition = ref(null);
 
 function tooltipFor(tab, group) {
   return pinnedTabTooltip(tab, group);
@@ -87,7 +90,36 @@ function positionFromEvent(event) {
   return event.clientX - rect.left < rect.width / 2 ? "before" : "after";
 }
 
+/**
+ * 本次拖拽是否是"外部内容"（链接 / 文本）。
+ * 内部重排的 draggingId 有值，且内部拖拽也写 text/plain，因此两个条件缺一不可。
+ */
+function isExternalDrag(event) {
+  if (draggingId.value !== null) {
+    return false;
+  }
+  return isExternalDropData(event.dataTransfer);
+}
+
+function clearDropState() {
+  dropTargetId.value = null;
+  dropPosition.value = null;
+  externalPosition.value = null;
+}
+
 function onDragOver(tab, group, event) {
+  if (isExternalDrag(event)) {
+    // 外部拖放的分区与内部重排不同：两侧 1/4 是插入、中间 1/2 是覆盖。
+    event.preventDefault();
+    dropTargetId.value = Number(tab.id);
+    externalPosition.value = resolvePinnedDropPosition(
+      event.clientX,
+      event.currentTarget && typeof event.currentTarget.getBoundingClientRect === "function"
+        ? event.currentTarget.getBoundingClientRect()
+        : null
+    );
+    return;
+  }
   if (!canDrop(tab, group)) {
     dropTargetId.value = null;
     dropPosition.value = null;
@@ -100,18 +132,28 @@ function onDragOver(tab, group, event) {
 
 function onDragLeave(tab) {
   if (dropTargetId.value === Number(tab.id)) {
-    dropTargetId.value = null;
-    dropPosition.value = null;
+    clearDropState();
   }
 }
 
 function onDrop(tab, group, event) {
+  if (isExternalDrag(event)) {
+    event.preventDefault();
+    const position = externalPosition.value || "overwrite";
+    clearDropState();
+    emit("external-drop", {
+      tab,
+      group,
+      position,
+      dataTransfer: event.dataTransfer,
+    });
+    return;
+  }
   event.preventDefault();
   const position = dropPosition.value || "after";
   const allowed = canDrop(tab, group);
   const draggedId = draggingId.value;
-  dropTargetId.value = null;
-  dropPosition.value = null;
+  clearDropState();
   if (!allowed || draggedId === null) {
     return;
   }
@@ -126,13 +168,22 @@ function onDrop(tab, group, event) {
 function onDragEnd() {
   draggingId.value = null;
   draggingWindowId.value = null;
-  dropTargetId.value = null;
-  dropPosition.value = null;
+  clearDropState();
+}
+
+/** 拖出整个固定标签区时清掉落点，避免离开后还留着插入线。 */
+function onContainerDragLeave(event) {
+  const next = event.relatedTarget;
+  const container = event.currentTarget;
+  if (next && container && typeof container.contains === "function" && container.contains(next)) {
+    return;
+  }
+  clearDropState();
 }
 </script>
 
 <template>
-  <div v-if="groups.length > 0" class="sb-pinned">
+  <div v-if="groups.length > 0" class="sb-pinned" @dragleave="onContainerDragLeave">
     <!-- 内层容器负责横向排列：外层为了把滚动条放到左侧用了 direction: rtl，
          若不留这一层，图标的排列与换行顺序也会跟着反过来。 -->
     <div class="sb-pinned-inner">
@@ -148,8 +199,9 @@ function onDragEnd() {
           'active-other': Boolean(tab.active) && !group.isCurrent,
           discarded: Boolean(tab.discarded),
           dragging: draggingId === tab.id,
-          'drop-before': dropTargetId === tab.id && dropPosition === 'before',
-          'drop-after': dropTargetId === tab.id && dropPosition === 'after',
+          'drop-before': dropTargetId === tab.id && (dropPosition === 'before' || externalPosition === 'before'),
+          'drop-after': dropTargetId === tab.id && (dropPosition === 'after' || externalPosition === 'after'),
+          'drop-onto': dropTargetId === tab.id && externalPosition === 'overwrite',
         }"
         draggable="true"
         :title="tooltipFor(tab, group)"

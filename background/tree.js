@@ -82,13 +82,15 @@ const internalMoveIds = new Set();
 const migratingSubtrees = new Map();
 // treeStructureWindows 索引的内存副本。
 let indexCache = null;
-// windowId -> 时间戳数组：记录"由本插件主动创建、且必须作为顶层标签"的创建请求。
+// windowId -> { at, parentId }[]：记录"由本插件主动创建、且落位已经确定"的创建请求。
 // 后台的默认规则是"无 opener 的新标签挂到创建时刻的活动标签下"（对齐 TST 的 open as child），
-// 而侧边栏底部的 New Tab 按钮要求新标签是**顶层**，因此创建前先打一个短时效标记，
-// onCreated 命中该标记时跳过挂载规则。用数组+时效而不是布尔值：一次失败不会永久污染后续创建。
-const pendingRootCreations = new Map();
+// 而侧边栏底部的 New Tab 按钮要求新标签是**顶层**、外部拖放要求落在某个标签的同级，
+// 因此创建前先打一个短时效标记，onCreated 命中该标记时**同步**套用落位并跳过挂载规则。
+// 用数组+时效而不是布尔值：一次失败不会永久污染后续创建。
+// 必须是同步套用（路径中不能有 await）：否则可能与随后的事件处理竞争，把刚定的层级改回默认规则。
+const pendingPlacements = new Map();
 // 标记的有效期：超过这个时间还没被 onCreated 消费就丢弃。
-const PENDING_ROOT_TTL_MS = 3000;
+const PENDING_PLACEMENT_TTL_MS = 3000;
 
 let startupActive = false;
 let startupQuietTimer = null;
@@ -143,35 +145,42 @@ function touchStartupQuiet() {
   startupQuietTimer = setTimeout(finishStartupPhase, STARTUP_QUIET_MS);
 }
 
-/** 标记"下一个在该窗口创建的标签要作为顶层标签"（由 createRootTab 在创建前调用）。 */
-function markNextTabAsRoot(windowId) {
-  const list = pendingRootCreations.get(windowId) || [];
-  list.push(Date.now());
-  pendingRootCreations.set(windowId, list);
+/**
+ * 标记"下一个在该窗口创建的标签的落位"。
+ *
+ * @param {number} windowId
+ * @param {number|null} parentId 父标签 id；null 表示顶层标签。
+ */
+function markNextTabPlacement(windowId, parentId) {
+  const list = pendingPlacements.get(windowId) || [];
+  list.push({ at: Date.now(), parentId: parentId === null ? null : Number(parentId) });
+  pendingPlacements.set(windowId, list);
 }
 
 /**
- * 消费一个"顶层标签"标记。
- * 过期的标记会被顺带丢弃，避免创建失败后把后续某个无关的新标签误判为顶层。
+ * 消费一个"落位"标记。
+ * 过期的标记会被顺带丢弃，避免创建失败后把后续某个无关的新标签误判成这次创建的标签。
+ *
+ * @returns {{parentId: number|null}|null}
  */
-function consumePendingRootCreation(windowId) {
-  const list = pendingRootCreations.get(windowId);
+function consumePendingPlacement(windowId) {
+  const list = pendingPlacements.get(windowId);
   if (!list || list.length === 0) {
-    return false;
+    return null;
   }
   const now = Date.now();
-  while (list.length > 0 && now - list[0] > PENDING_ROOT_TTL_MS) {
+  while (list.length > 0 && now - list[0].at > PENDING_PLACEMENT_TTL_MS) {
     list.shift();
   }
   if (list.length === 0) {
-    pendingRootCreations.delete(windowId);
-    return false;
+    pendingPlacements.delete(windowId);
+    return null;
   }
-  list.shift();
+  const placement = list.shift();
   if (list.length === 0) {
-    pendingRootCreations.delete(windowId);
+    pendingPlacements.delete(windowId);
   }
-  return true;
+  return placement;
 }
 
 /**
@@ -191,7 +200,7 @@ export async function createRootTab(options = {}) {
     throw new Error("窗口参数无效。");
   }
   const tabs = await queryWindowTabs(windowId);
-  markNextTabAsRoot(windowId);
+  markNextTabPlacement(windowId, null);
   const created = await new Promise((resolve, reject) => {
     chrome.tabs.create({ windowId, index: tabs.length, active: true }, (tab) => {
       if (chrome.runtime.lastError || !tab) {
@@ -208,6 +217,101 @@ export async function createRootTab(options = {}) {
     });
   });
   return { tabId: Number(created.id), windowId };
+}
+
+/** 落点 id 归一：缺省/空值一律当作"没有这个锚点"（用 NaN 表示），避免 Number(null) === 0 被当成合法锚点。 */
+function normalizeOptionalTabId(raw) {
+  if (raw === null || raw === undefined || raw === "") {
+    return Number.NaN;
+  }
+  return Number(raw);
+}
+
+/** 固定标签的新建下标：固定标签永远占据窗口最前面若干位，插入点必须落在这个区间内。 */
+function computePinnedCreateIndex(tabs, { beforeTabId, afterTabId }) {
+  const pinnedIds = tabs.filter((tab) => tab.pinned).map((tab) => Number(tab.id));
+  if (Number.isFinite(beforeTabId)) {
+    const position = pinnedIds.indexOf(Number(beforeTabId));
+    return position >= 0 ? position : pinnedIds.length;
+  }
+  if (Number.isFinite(afterTabId)) {
+    const position = pinnedIds.indexOf(Number(afterTabId));
+    return position >= 0 ? position + 1 : pinnedIds.length;
+  }
+  // 没有落点：追加到现有固定标签之后。
+  return pinnedIds.length;
+}
+
+/**
+ * 按落位新建标签页（侧边栏外部拖放使用）。
+ *
+ * 与 `createRootTab` 的差别：物理位置与树里的父标签都要按落点算，而不是固定在窗口末尾的顶层。
+ * 两者共用同一个"落位标记"机制，因此 `tabs.onCreated` 一定能**同步**套用父子关系，
+ * 不会被"无 opener 挂到活动标签下"的默认规则抢先。
+ *
+ * @param {{windowId: number, parentId?: number|null, beforeTabId?: number|null, afterTabId?: number|null,
+ *   pinned?: boolean, url?: string}} options
+ * @returns {Promise<{tabId: number, windowId: number, index: number, parentId: number|null}>}
+ */
+export async function createPlacedTab(options = {}) {
+  const windowId = Number(options.windowId);
+  if (!Number.isFinite(windowId)) {
+    throw new Error("窗口参数无效。");
+  }
+  const pinned = Boolean(options.pinned);
+  const url = typeof options.url === "string" && options.url ? options.url : "about:blank";
+  const beforeTabId = normalizeOptionalTabId(options.beforeTabId);
+  const afterTabId = normalizeOptionalTabId(options.afterTabId);
+  const tree = await ensureTree(windowId);
+  if (!tree) {
+    throw new Error("树结构尚未就绪，请稍后重试。");
+  }
+  const tabs = await queryWindowTabs(windowId);
+
+  let parentId = null;
+  if (!pinned && options.parentId !== null && options.parentId !== undefined && options.parentId !== "") {
+    const candidate = Number(options.parentId);
+    // 父标签必须真的在这个窗口的树里：落点可能因为并发关闭/折叠而失效，失效时退化为顶层。
+    if (Number.isFinite(candidate) && tree.parentById.has(candidate)) {
+      parentId = candidate;
+    }
+  }
+
+  let index;
+  if (pinned) {
+    // 固定标签永远是顶层，不参与父子关系。
+    parentId = null;
+    index = computePinnedCreateIndex(tabs, { beforeTabId, afterTabId });
+  } else {
+    const hasAnchor =
+      Number.isFinite(beforeTabId) || Number.isFinite(afterTabId) || parentId !== null;
+    // 没有任何落点（例如列表为空时的空白处拖放）：追加到窗口末尾。
+    index = hasAnchor
+      ? computeInsertIndex(tabs, tree, {
+          subtreeSet: new Set(),
+          parentId,
+          beforeTabId: Number.isFinite(beforeTabId) ? beforeTabId : null,
+          afterTabId: Number.isFinite(afterTabId) ? afterTabId : null,
+        })
+      : tabs.length;
+  }
+  index = Math.max(0, Math.min(index, tabs.length));
+
+  markNextTabPlacement(windowId, parentId);
+  const created = await new Promise((resolve, reject) => {
+    chrome.tabs.create({ windowId, index, url, active: true, pinned }, (tab) => {
+      if (chrome.runtime.lastError || !tab) {
+        reject(
+          new Error(
+            chrome.runtime.lastError ? chrome.runtime.lastError.message : "新建标签页失败。"
+          )
+        );
+        return;
+      }
+      resolve(tab);
+    });
+  });
+  return { tabId: Number(created.id), windowId, index, parentId };
 }
 
 /** 记录一次结构事件，并对"冷启动时的事件风暴"做兜底判定。 */
@@ -426,7 +530,7 @@ export async function handleTreeTabCreated(tab) {
     return;
   }
   // 先消费标记：即便这一轮因为树未加载而提前返回，标记也不会泄漏到后续的创建事件上。
-  const forcedRoot = consumePendingRootCreation(windowId);
+  const placement = consumePendingPlacement(windowId);
   const tree = trees.get(windowId);
   if (!tree) {
     // 树还没加载：推迟到稍后统一对齐，避免一次开很多标签时反复做 O(n) 对齐。
@@ -434,13 +538,20 @@ export async function handleTreeTabCreated(tab) {
     scheduleEnsureTrees([windowId]);
     return;
   }
-  if (forcedRoot) {
-    // 显式要求顶层的标签（侧边栏底部 New Tab）：不套用"挂到活动标签下"的规则。
-    tree.parentById.set(Number(tab.id), null);
+  if (placement) {
+    // 本插件主动创建、且落位已定：不套用"挂到活动标签下"的规则。
+    // 这里**不能有 await**（见 pendingPlacements 的说明）：否则默认规则可能在这之后才跑完并把层级改回去。
+    const createdId = Number(tab.id);
+    const placedParentId = placement.parentId;
+    if (placedParentId !== null && tree.parentById.has(placedParentId)) {
+      setParent(tree, createdId, placedParentId);
+    } else {
+      tree.parentById.set(createdId, null);
+    }
     const forcedIndex = Number(tab.index);
     if (Number.isFinite(forcedIndex)) {
       shiftIndexesForInsert(tree, forcedIndex);
-      tree.indexById.set(Number(tab.id), forcedIndex);
+      tree.indexById.set(createdId, forcedIndex);
     }
     markDirty(windowId);
     return;
