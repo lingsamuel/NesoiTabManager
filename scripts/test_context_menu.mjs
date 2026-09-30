@@ -13,6 +13,8 @@ const removedIds = [];
 const updatedItems = [];
 let refreshCount = 0;
 const calls = { reload: [], updateTab: [], discard: [], move: [], createWindow: [], clipboard: [] };
+// 每次 tabs.discard 的实参个数（必须恒为 1：只传 tabId，不传 callback）。
+const discardArgs = [];
 
 let windows = [];
 let tabs = [];
@@ -97,11 +99,12 @@ function setupChromeMock() {
         }
       },
       reload: (id) => calls.reload.push(id),
-      discard: (id, callback) => {
-        calls.discard.push(id);
-        if (callback) {
-          callback();
-        }
+      discard: (...args) => {
+        // 记录完整实参表：Firefox 的 tabs.discard 没有 callback 形参，
+        // 多传一个函数会被 schema 校验拒绝（见 scripts/test_discard.mjs）。
+        discardArgs.push(args.length);
+        calls.discard.push(args[0]);
+        return Promise.resolve();
       },
       move: (id, info, callback) => {
         calls.move.push({ id, info: clone(info) });
@@ -298,6 +301,7 @@ async function main() {
 
   await menu.handleContextMenuClick({ menuItemId: "nesoi-tab:discard" }, tab);
   assertDeepEqual(calls.discard, [5], "冻结标签页 → tabs.discard(5)");
+  assertDeepEqual(discardArgs, [1], "tabs.discard 只传 tabId（Firefox 不接受 callback）");
 
   await menu.handleContextMenuClick({ menuItemId: "nesoi-tab:copyUrl" }, tab);
   assertDeepEqual(calls.clipboard, ["https://example.org/page"], "复制链接 → 写入剪贴板");

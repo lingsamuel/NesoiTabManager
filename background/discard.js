@@ -454,22 +454,93 @@ function evaluateDiscardCandidate(tab, config, now) {
   return { lastActive, idleMinutes: Math.floor(idleMs / 60000) };
 }
 
+/**
+ * 把任意来源的标签 id 归一成合法整数；非法时返回 null。
+ * 存在意义：id 可能来自消息（数字会被原样传递，但其它入口可能是字符串/空值），
+ * 而 Firefox 的 tabs.* schema 对 tabId 是严格的 integer 校验，
+ * 传字符串会直接抛 "Incorrect argument types for tabs.get/discard"。
+ */
+function normalizeTabId(raw) {
+  // 必须先排掉 null/undefined/空串：Number(null) 与 Number("") 都是 0，会被误判成合法 id 0。
+  if (raw === null || raw === undefined || raw === "") {
+    return null;
+  }
+  const id = Number(raw);
+  if (!Number.isInteger(id) || id < 0) {
+    return null;
+  }
+  return id;
+}
+
+/**
+ * 冻结（discard）单个标签页。
+ *
+ * 使用场景：自动冻结的批量扫描、手动冻结（侧边栏按钮 / 原生右键菜单 / 管理页）都汇聚到这两个入口。
+ * 前置要求：tabId 是标签 id；非法 id 会同步 reject。
+ *
+ * 为什么**不能**写成 `chrome.tabs.discard(tabId, callback)`：
+ * Firefox 的 `tabs.discard` schema 只声明了 `tabIds` 一个形参（`"async": true`，Promise 形式），
+ * 没有 callback。多传一个函数会被 schema 校验直接拒绝并抛
+ * "Incorrect argument types for tabs.discard"——表现为"按钮点了没反应/控制台报错"。
+ * 因此这里统一走 Promise 形式：Chrome MV3 与 Firefox 都支持。
+ * 极老实现若没有 Promise 形式，调用本身已经发出（事后拿不到 lastError），按成功处理，
+ * 不能因为探测不到 Promise 就把功能判死。
+ *
+ * @param {number} tabId
+ * @returns {Promise<void>}
+ */
+function discardTabById(tabId) {
+  const id = normalizeTabId(tabId);
+  if (id === null) {
+    return Promise.reject(new Error(`标签页 ID 无效：${String(tabId)}`));
+  }
+  return new Promise((resolve, reject) => {
+    let result;
+    try {
+      result = chrome.tabs.discard(id);
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    if (result && typeof result.then === "function") {
+      result.then(
+        () => resolve(),
+        (error) => reject(error instanceof Error ? error : new Error(String(error)))
+      );
+      return;
+    }
+    resolve();
+  });
+}
+
+/**
+ * 批量冻结。
+ *
+ * 前置要求：调用方负责保证 tabIds 里的标签确实存在且未被冻结（本函数不做校验）。
+ * 返回失败清单而不是抛出：自动冻结的每次扫描都是"能做多少做多少"，
+ * 单条失败（已关闭 / 是活动标签 / 页面禁止卸载）不应该中断整批，
+ * 手动冻结则用返回的清单给出诚实的成功/跳过数量。
+ *
+ * @param {number[]} tabIds
+ * @returns {Promise<Array<{tabId: number, error: Error}>>}
+ */
 async function discardTabs(tabIds) {
   const batchSize = 100;
+  const failures = [];
   for (let i = 0; i < tabIds.length; i += batchSize) {
     const batch = tabIds.slice(i, i + batchSize);
     await Promise.all(
-      batch.map(
-        (tabId) =>
-          new Promise((resolve) => {
-            chrome.tabs.discard(tabId, () => resolve());
-          })
+      batch.map((tabId) =>
+        discardTabById(tabId).catch((error) => {
+          failures.push({ tabId, error });
+        })
       )
     );
     if (i + batchSize < tabIds.length) {
       await delay(150);
     }
   }
+  return failures;
 }
 
 async function recordDiscardBatch(items, at, config) {
@@ -542,12 +613,13 @@ async function runDiscardSweep() {
 }
 
 async function manualDiscard(tabId) {
-  if (!tabId) {
+  const id = normalizeTabId(tabId);
+  if (id === null) {
     throw new Error("缺少标签页 ID。");
   }
   await ensureDiscardSession();
   const config = await getDiscardConfig();
-  const tab = await getTabById(tabId);
+  const tab = await getTabById(id);
   if (!tab) {
     throw new Error("未找到标签页。");
   }
@@ -558,8 +630,8 @@ async function manualDiscard(tabId) {
   const lastActive = getLastActive(tab, now);
   const idleMinutes = Math.max(0, Math.floor((now - lastActive) / 60000));
   const counts = discardSession.freezeCounts || {};
-  const nextCount = (counts[tabId] || 0) + 1;
-  counts[tabId] = nextCount;
+  const nextCount = (counts[id] || 0) + 1;
+  counts[id] = nextCount;
   const item = {
     id: tab.id,
     windowId: tab.windowId,
@@ -571,15 +643,7 @@ async function manualDiscard(tabId) {
     discardedAt: now,
     freezeCount: nextCount,
   };
-  await new Promise((resolve, reject) => {
-    chrome.tabs.discard(tabId, () => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message || "冻结失败"));
-        return;
-      }
-      resolve();
-    });
-  });
+  await discardTabById(id);
   discardSession.freezeCounts = counts;
   await recordDiscardBatch([item], now, config);
   return { item };
@@ -591,7 +655,12 @@ async function manualDiscardTabs(tabIds) {
   }
   await ensureDiscardSession();
   const config = await getDiscardConfig();
-  const tabs = await getTabsByIds(tabIds);
+  // 先归一化再查询：非法 id 既查不到也没法 discard，直接算作跳过项。
+  const ids = tabIds.map(normalizeTabId).filter((id) => id !== null);
+  if (ids.length === 0) {
+    throw new Error("缺少标签页 ID。");
+  }
+  const tabs = await getTabsByIds(ids);
   if (tabs.length === 0) {
     throw new Error("未找到标签页。");
   }
@@ -626,10 +695,14 @@ async function manualDiscardTabs(tabIds) {
   if (discardIds.length === 0) {
     return { discarded: 0, skipped: tabIds.length };
   }
-  await discardTabs(discardIds);
+  const failures = await discardTabs(discardIds);
   discardSession.freezeCounts = counts;
   await recordDiscardBatch(items, now, config);
-  return { discarded: discardIds.length, skipped: tabIds.length - discardIds.length };
+  // 失败的单条既不算成功也不算"已冻结跳过"以外的类别：统一并入 skipped，界面不会虚报成功数。
+  return {
+    discarded: discardIds.length - failures.length,
+    skipped: tabIds.length - discardIds.length + failures.length,
+  };
 }
 
 async function getDiscardCandidates(limit) {
