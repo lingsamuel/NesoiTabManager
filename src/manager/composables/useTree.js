@@ -10,6 +10,7 @@
 import { reactive, ref } from "vue";
 import { request } from "../utils/request.js";
 import {
+  HAS_SESSION_STORAGE,
   storageLocalGet,
   storageLocalSet,
   storageSessionGet,

@@ -1,7 +1,7 @@
 {
   "name": "nesoi-tab-manager",
   "private": true,
-  "version": "0.2.6",
+  "version": "0.2.7",
   "type": "module",
   "scripts": {
     "dev": "vite --config vite.config.js",
@@ -9,7 +9,7 @@
     "build:chrome": "node scripts/build.mjs chrome",
     "build:firefox": "node scripts/build.mjs firefox",
     "bench:tree": "node scripts/bench_tree.mjs",
-    "test:tree": "node scripts/test_tree.mjs && node scripts/test_tree_ui.mjs && node scripts/test_sidebar_pinned.mjs && node scripts/test_context_menu.mjs && node scripts/test_scroll_markers.mjs && node scripts/test_virtual_range.mjs && node scripts/test_filter_mode.mjs",
+    "test:tree": "node scripts/test_tree.mjs && node scripts/test_tree_ui.mjs && node scripts/test_sidebar_pinned.mjs && node scripts/test_context_menu.mjs && node scripts/test_scroll_markers.mjs && node scripts/test_virtual_range.mjs && node scripts/test_filter_mode.mjs && node scripts/test_composables_smoke.mjs",
     "preview": "vite preview --config vite.config.js"
   },
   "dependencies": {

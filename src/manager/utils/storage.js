@@ -44,4 +44,11 @@ function storageSessionSet(obj) {
   });
 }
 
-export { storageLocalGet, storageLocalSet, storageSessionGet, storageSessionSet };
+export {
+  HAS_CHROME_STORAGE,
+  HAS_SESSION_STORAGE,
+  storageLocalGet,
+  storageLocalSet,
+  storageSessionGet,
+  storageSessionSet,
+};
