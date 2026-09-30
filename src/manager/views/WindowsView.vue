@@ -5,7 +5,17 @@
         <h1>打开的窗口</h1>
         <div class="content-subtitle">{{ windowSubtitle }}</div>
       </div>
-      <div class="content-actions title-actions">
+    </div>
+
+    <!--
+      按钮固定在两行：
+      - 第一行：左边「树状 / 平铺」紧贴筛选框（它固定不动，不会被筛选框的宽度变化挤走），
+        右边固定放"全选 / 全不选 / 关闭所选"；
+      - 第二行：左边「隐藏已冻结」，右边放其余动作（保存所选 / 移动到 / 冻结所选 / AI 分组）。
+      理由见 ListsView 的同名注释与文档「固定按钮位置」。
+    -->
+    <div class="filter-row">
+      <div class="filter-lead">
         <div class="mode-switch" role="group" aria-label="展示模式">
           <button
             type="button"
@@ -22,27 +32,19 @@
             平铺
           </button>
         </div>
+        <FilterBar
+          :model-value="filterQuery"
+          :mode="filterMode"
+          :match-count="matchCount"
+          :current-index="currentMatchPosition"
+          :has-query="Boolean(committedFilterQuery)"
+          @update:model-value="onUpdateFilterQuery"
+          @commit="onCommitFilterQuery"
+          @mode-change="onModeChange"
+          @next="goToNextMatch"
+          @prev="goToPrevMatch"
+        />
       </div>
-    </div>
-
-    <!--
-      按钮固定在两行：第一行只有展示模式切换（跟标题同行），
-      第二行左边是会被撑宽的筛选框，右边固定放"全选 / 全不选 / 关闭所选"，
-      其余动作放第三行。理由见 ListsView 的同名注释与文档「固定按钮位置」。
-    -->
-    <div class="filter-row">
-      <FilterBar
-        :model-value="filterQuery"
-        :mode="filterMode"
-        :match-count="matchCount"
-        :current-index="currentMatchPosition"
-        :has-query="Boolean(committedFilterQuery)"
-        @update:model-value="onUpdateFilterQuery"
-        @commit="onCommitFilterQuery"
-        @mode-change="onModeChange"
-        @next="goToNextMatch"
-        @prev="goToPrevMatch"
-      />
       <div class="filter-actions">
         <button class="ghost btn-icon" @click="onSelectAll">
           <span class="icon" aria-hidden="true">

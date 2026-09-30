@@ -44,7 +44,7 @@
         原因见 docs 里「固定按钮位置」：同一行里既有会被撑宽的筛选框、又有近十个按钮时，
         一旦换行按钮位置就会漂移，用户每次都要重新找。
       -->
-      <div class="content-actions title-actions">
+      <div class="content-actions">
         <button class="ghost danger btn-icon" @click="onDeleteList">
           <span class="icon" aria-hidden="true">
             <svg viewBox="0 0 24 24">
