@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Nesoi 标签管理器",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "管理海量标签页，将其保存到列表中。",
   "permissions": ["tabs", "storage", "contextMenus", "alarms"],
   "host_permissions": ["<all_urls>"],

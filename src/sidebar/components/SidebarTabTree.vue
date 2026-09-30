@@ -154,6 +154,12 @@ defineExpose({
       listRef.value.scrollToIndex(index);
     }
   },
+  // 底部 New Tab 会把新标签放在窗口末尾，创建后需要滚到底部让用户看得到。
+  scrollToBottom() {
+    if (listRef.value && listRef.value.scrollToBottom) {
+      listRef.value.scrollToBottom();
+    }
+  },
 });
 </script>
 

@@ -133,7 +133,10 @@ function onDragEnd() {
 
 <template>
   <div v-if="groups.length > 0" class="sb-pinned">
-    <template v-for="(group, groupIndex) in groups" :key="group.windowId">
+    <!-- 内层容器负责横向排列：外层为了把滚动条放到左侧用了 direction: rtl，
+         若不留这一层，图标的排列与换行顺序也会跟着反过来。 -->
+    <div class="sb-pinned-inner">
+      <template v-for="(group, groupIndex) in groups" :key="group.windowId">
       <!-- 图标横向铺开，因此组间用竖线而不是横线 -->
       <div v-if="groupIndex > 0" class="sb-pinned-sep" aria-hidden="true"></div>
       <div
@@ -163,6 +166,7 @@ function onDragEnd() {
         <TabFavicon class="sb-pin-icon" :url="tab.favIconUrl" />
         <span v-if="tab.muted" class="sb-pin-muted" title="已静音" aria-hidden="true"></span>
       </div>
-    </template>
+      </template>
+    </div>
   </div>
 </template>

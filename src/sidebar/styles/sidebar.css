@@ -173,7 +173,13 @@ body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 0 4px 8px;
+  /* 滚动条放左侧：容器 rtl + 内容 ltr；内边距也换成左内边距，让内容与滚动条之间留出空隙 */
+  direction: rtl;
+  padding: 0 0 0 4px;
+}
+
+.sb-list .virtual-content {
+  direction: ltr;
 }
 
 .sb-row {
@@ -363,13 +369,21 @@ body {
   flex: none;
   max-height: 40vh;
   overflow-y: auto;
+  padding: 0;
+  border-bottom: 1px solid var(--stroke);
+  background: #f4f4f7;
+  /* 滚动条换到左侧的标准做法：容器 rtl、内容再还原 ltr */
+  direction: rtl;
+}
+
+/* 真正的横向排列容器：必须显式 ltr，否则图标的排列与换行顺序会跟着容器一起反过来 */
+.sb-pinned-inner {
+  direction: ltr;
   display: flex;
   flex-wrap: wrap;
   align-content: flex-start;
   gap: 2px;
   padding: 4px 6px;
-  border-bottom: 1px solid var(--stroke);
-  background: #f4f4f7;
 }
 
 /* 图标横向排列，因此组与组之间用竖线分隔（一条竖线 = 换了一个窗口） */
@@ -444,4 +458,51 @@ body {
   height: 5px;
   border-radius: 999px;
   background: var(--muted);
+}
+
+/* ---- 底部固定的 New Tab ---- */
+
+/*
+  与树列表同为 .sb-app 的 flex 子项但 flex: none，因此位于滚动容器之外：
+  列表再长也不会把它顶下去（对齐 TST 的底部新建标签按钮）。
+*/
+.sb-newtab-bar {
+  flex: none;
+  padding: 4px 6px 6px;
+  border-top: 1px solid var(--stroke);
+  background: var(--panel);
+}
+
+.sb-newtab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--ink);
+  text-align: left;
+}
+
+.sb-newtab:hover:not(:disabled) {
+  background: #e3e3e9;
+}
+
+.sb-newtab:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.sb-newtab-icon {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  display: block;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }

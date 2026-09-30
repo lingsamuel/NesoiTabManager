@@ -49,6 +49,9 @@
 - `getRecentConfig` / `saveRecentConfig`：读取/保存近期标签页提醒配置。
 - `getTreeStructure`：读取指定（或缺省全部）窗口的树父子映射（仅含有父标签的条目，缺省即顶层），供管理页渲染树状视图。
 - `moveTabTree`：管理页拖拽改变父子关系，并同步 `chrome.tabs.move` 移动被拖标签及其整棵子树。
+- `createRootTab`：在窗口末尾新建一个**顶层**标签页（侧边栏底部 New Tab 使用）。
+  创建前会打一个短时效标记，使 `tabs.onCreated` 跳过"无 opener 挂到活动标签下"的默认规则；
+  并显式指定 `index = 当前标签数`，避免 Firefox 的 `insertAfterCurrent` 偏好把新标签插到当前标签之后。
 
 ## 存储模型
 - 详细存储结构与字段说明见：`docs/data/storage_model.md`。

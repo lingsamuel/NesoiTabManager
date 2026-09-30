@@ -43,6 +43,7 @@ import {
 } from "./background/lists.js";
 import { aiGroupTabs, getAiConfig, setAiConfig } from "./background/ai.js";
 import {
+  createRootTab,
   getTreeStructure,
   handleTreeAlarm,
   handleTreeSuspend,
@@ -493,6 +494,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (action === "moveTabTree") {
     moveTabTree(message)
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
+    return true;
+  }
+
+  // 侧边栏底部 New Tab：在窗口末尾新建一个顶层标签页（与工具栏＋的"挂到当前标签下"不同）。
+  if (action === "createRootTab") {
+    createRootTab({ windowId: message.windowId })
       .then((result) => sendResponse({ ok: true, ...result }))
       .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
     return true;

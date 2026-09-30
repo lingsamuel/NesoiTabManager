@@ -8,7 +8,7 @@
 // 生命周期：Firefox 每个窗口各有一份独立的侧边栏文档实例，窗口关闭或用户收起侧边栏时文档被卸载，
 // 监听器随之销毁——所以这个页面不常驻，对浏览器启动零开销。
 
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import FilterInput from "../manager/components/FilterInput.vue";
 import { useFilterQuery } from "../manager/composables/useFilterQuery.js";
 import { useMatchNavigation } from "../manager/composables/useMatchNavigation.js";
@@ -34,6 +34,8 @@ const status = reactive({ message: "", type: "" });
 
 const tree = useTree();
 const filter = useFilterQuery();
+// 树的模板引用：底部 New Tab 创建后需要把列表滚到底部。
+const treeRef = ref(null);
 
 let refreshTimer = null;
 let pendingWhileHidden = false;
@@ -420,8 +422,32 @@ async function discardTab(tab) {
 }
 
 function createTab() {
-  // 父子归属完全交给后台既有的创建规则（无 opener 的新标签挂到当前活动标签下）。
+  // 工具栏的 ＋：父子归属完全交给后台既有的创建规则（无 opener 的新标签挂到当前活动标签下）。
   chrome.tabs.create({ windowId: windowId.value, active: true });
+}
+
+/**
+ * 底部固定的 New Tab：在**窗口末尾**新建一个**顶层**标签页。
+ *
+ * 与工具栏 ＋ 的区别是有意的：＋ 走后台默认规则（挂在当前标签的子树里），
+ * 这里则要求"顶层 + 最末尾"，因此必须由后台创建（它要显式指定 index 并跳过挂载规则）。
+ * 创建完成后滚到底部——新标签在最末尾，不滚动的话用户可能看不到它。
+ */
+async function createRootTab() {
+  if (windowId.value === null) {
+    return;
+  }
+  const response = await request("createRootTab", { windowId: windowId.value });
+  if (!response.ok) {
+    setStatus(response.error || "新建标签页失败。", "error");
+    return;
+  }
+  setStatus("", "");
+  await refresh();
+  await nextTick();
+  if (treeRef.value && typeof treeRef.value.scrollToBottom === "function") {
+    treeRef.value.scrollToBottom();
+  }
 }
 
 function openManager() {
@@ -623,7 +649,7 @@ onBeforeUnmount(() => {
           <button type="button" title="下一个匹配（Enter）" @click="goToNext">↓</button>
         </span>
         <span class="sb-spacer"></span>
-        <button type="button" class="sb-tool" title="新建标签页" @click="createTab">＋</button>
+        <button type="button" class="sb-tool" title="在当前标签页下新建（工具栏入口）" @click="createTab">＋</button>
         <button type="button" class="sb-tool" title="在管理界面打开" @click="openManager">
           管理
         </button>
@@ -643,6 +669,7 @@ onBeforeUnmount(() => {
       />
       <SidebarTabTree
         v-if="items.length > 0"
+        ref="treeRef"
         :items="items"
         :highlight-matches="isJumpMode"
         :current-match-index="currentMatchIndex"
@@ -656,5 +683,21 @@ onBeforeUnmount(() => {
       />
       <div v-else class="sb-empty">{{ treeEmptyText }}</div>
     </template>
+
+    <!-- 固定在底部、不参与滚动：在窗口末尾新建一个顶层标签页 -->
+    <div class="sb-newtab-bar">
+      <button
+        type="button"
+        class="sb-newtab"
+        title="在窗口末尾新建一个顶层标签页"
+        :disabled="windowId === null"
+        @click="createRootTab"
+      >
+        <svg class="sb-newtab-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 5v14M5 12h14" />
+        </svg>
+        新建标签页
+      </button>
+    </div>
   </div>
 </template>

@@ -82,6 +82,13 @@ const internalMoveIds = new Set();
 const migratingSubtrees = new Map();
 // treeStructureWindows 索引的内存副本。
 let indexCache = null;
+// windowId -> 时间戳数组：记录"由本插件主动创建、且必须作为顶层标签"的创建请求。
+// 后台的默认规则是"无 opener 的新标签挂到创建时刻的活动标签下"（对齐 TST 的 open as child），
+// 而侧边栏底部的 New Tab 按钮要求新标签是**顶层**，因此创建前先打一个短时效标记，
+// onCreated 命中该标记时跳过挂载规则。用数组+时效而不是布尔值：一次失败不会永久污染后续创建。
+const pendingRootCreations = new Map();
+// 标记的有效期：超过这个时间还没被 onCreated 消费就丢弃。
+const PENDING_ROOT_TTL_MS = 3000;
 
 let startupActive = false;
 let startupQuietTimer = null;
@@ -134,6 +141,73 @@ function touchStartupQuiet() {
     clearTimeout(startupQuietTimer);
   }
   startupQuietTimer = setTimeout(finishStartupPhase, STARTUP_QUIET_MS);
+}
+
+/** 标记"下一个在该窗口创建的标签要作为顶层标签"（由 createRootTab 在创建前调用）。 */
+function markNextTabAsRoot(windowId) {
+  const list = pendingRootCreations.get(windowId) || [];
+  list.push(Date.now());
+  pendingRootCreations.set(windowId, list);
+}
+
+/**
+ * 消费一个"顶层标签"标记。
+ * 过期的标记会被顺带丢弃，避免创建失败后把后续某个无关的新标签误判为顶层。
+ */
+function consumePendingRootCreation(windowId) {
+  const list = pendingRootCreations.get(windowId);
+  if (!list || list.length === 0) {
+    return false;
+  }
+  const now = Date.now();
+  while (list.length > 0 && now - list[0] > PENDING_ROOT_TTL_MS) {
+    list.shift();
+  }
+  if (list.length === 0) {
+    pendingRootCreations.delete(windowId);
+    return false;
+  }
+  list.shift();
+  if (list.length === 0) {
+    pendingRootCreations.delete(windowId);
+  }
+  return true;
+}
+
+/**
+ * 在窗口末尾新建一个**顶层**标签页（侧边栏底部的 New Tab 按钮使用）。
+ *
+ * 为什么不能直接在侧边栏调 chrome.tabs.create：
+ * - 物理位置：Firefox 的 `browser.tabs.insertAfterCurrent` 偏好会让"不指定 index"的新标签插到当前标签之后，
+ *   因此这里显式传 `index = 当前标签数` 来保证追加到窗口末尾；
+ * - 树的归属：后台默认会把无 opener 的新标签挂到活动标签下，这里必须预先打标记把它排除在外。
+ *
+ * @param {{windowId: number}} options
+ * @returns {Promise<{tabId: number, windowId: number}>}
+ */
+export async function createRootTab(options = {}) {
+  const windowId = Number(options.windowId);
+  if (!Number.isFinite(windowId)) {
+    throw new Error("窗口参数无效。");
+  }
+  const tabs = await queryWindowTabs(windowId);
+  markNextTabAsRoot(windowId);
+  const created = await new Promise((resolve, reject) => {
+    chrome.tabs.create({ windowId, index: tabs.length, active: true }, (tab) => {
+      if (chrome.runtime.lastError || !tab) {
+        reject(
+          new Error(
+            chrome.runtime.lastError
+              ? chrome.runtime.lastError.message
+              : "新建标签页失败。"
+          )
+        );
+        return;
+      }
+      resolve(tab);
+    });
+  });
+  return { tabId: Number(created.id), windowId };
 }
 
 /** 记录一次结构事件，并对"冷启动时的事件风暴"做兜底判定。 */
@@ -351,10 +425,24 @@ export async function handleTreeTabCreated(tab) {
     pendingWindows.add(windowId);
     return;
   }
+  // 先消费标记：即便这一轮因为树未加载而提前返回，标记也不会泄漏到后续的创建事件上。
+  const forcedRoot = consumePendingRootCreation(windowId);
   const tree = trees.get(windowId);
   if (!tree) {
     // 树还没加载：推迟到稍后统一对齐，避免一次开很多标签时反复做 O(n) 对齐。
+    // 这种情况下"顶层"由对齐时的 opener 兜底自然满足（该标签没有 opener）。
     scheduleEnsureTrees([windowId]);
+    return;
+  }
+  if (forcedRoot) {
+    // 显式要求顶层的标签（侧边栏底部 New Tab）：不套用"挂到活动标签下"的规则。
+    tree.parentById.set(Number(tab.id), null);
+    const forcedIndex = Number(tab.index);
+    if (Number.isFinite(forcedIndex)) {
+      shiftIndexesForInsert(tree, forcedIndex);
+      tree.indexById.set(Number(tab.id), forcedIndex);
+    }
+    markDirty(windowId);
     return;
   }
   const parentId = await pickParentForNewTab(tree, tab);

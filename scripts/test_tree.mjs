@@ -24,6 +24,7 @@ let windows = [];
 let nextTabId = 1000;
 const storageData = { local: {}, session: {} };
 const alarmsCreated = [];
+const createdTabOptions = [];
 
 function makeEvent(bucket) {
   return { addListener: (fn) => bucket.push(fn) };
@@ -153,6 +154,23 @@ function setupChromeMock() {
         }
         callback({ ...tab });
       },
+      create: (options, callback) => {
+        createdTabOptions.push(clone(options));
+        const tab = addTab({
+          windowId: Number(options.windowId),
+          index: Number.isFinite(options.index) ? Number(options.index) : null,
+          active: Boolean(options.active),
+          url: options.url || "about:newtab",
+          title: "新标签页",
+        });
+        const snapshotTab = { ...tab };
+        if (callback) {
+          callback(snapshotTab);
+        }
+        // 真实浏览器在创建之后才异步派发 onCreated，这里保持同样的时序。
+        emitAsync(listeners.created, snapshotTab);
+        return snapshotTab;
+      },
       move: (tabIds, info, callback) => moveTabsMock(tabIds, info, callback),
       remove: (ids, callback) => {
         const list = (Array.isArray(ids) ? ids : [ids]).map(Number);
@@ -270,6 +288,19 @@ async function main() {
   await tree.handleTreeTabCreated(f);
   snapshot = await tree.getTreeStructure([1]);
   assertEqual(snapshot.structures[1].parents[f.id], d.id, "F 的父是活动标签 D");
+
+  // --- 场景 3b：底部 New Tab 创建的标签必须是顶层，而不是挂在活动标签下 ---
+  console.log("场景 3b：底部 New Tab（createRootTab）创建的是顶层标签");
+  // 对照：场景 3 里直接 chrome.tabs.create 的 F 挂到了活动标签 D 之下
+  assertEqual(snapshot.structures[1].parents[f.id], d.id, "对照：普通新建仍挂在活动标签下");
+  const windowOneCount = tabs.filter((tab) => tab.windowId === 1).length;
+  const rootCreated = await tree.createRootTab({ windowId: 1 });
+  await tick(20);
+  const rootTab = tabs.find((tab) => tab.id === rootCreated.tabId);
+  assertEqual(Boolean(rootTab), true, "标签已创建");
+  assertEqual(createdTabOptions[createdTabOptions.length - 1].index, windowOneCount, "显式指定 index = 原标签数（追加到窗口末尾）");
+  snapshot = await tree.getTreeStructure([1]);
+  assertEqual(snapshot.structures[1].parents[rootCreated.tabId], undefined, "新标签是顶层，未挂到活动标签 D 之下");
 
   // --- 场景 4：关闭父标签的 promote intelligently ---
   console.log("场景 4：关闭父标签（D 是 A 的非唯一子标签 → 提升第一个子标签 F 到祖父 A 之下）");
