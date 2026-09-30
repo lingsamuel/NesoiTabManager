@@ -457,44 +457,11 @@ body {
   height: 16px;
 }
 
-/* hover 时关闭按钮覆盖在图标位置：28px 的方块里放不下第二个横向元素 */
-.sb-pin:hover .sb-pin-icon {
-  visibility: hidden;
-}
-
-.sb-pin-close {
-  position: absolute;
-  inset: 0;
-  margin: auto;
-  display: none;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  border-radius: 4px;
-  color: var(--muted);
-}
-
-.sb-pin:hover .sb-pin-close {
-  display: inline-flex;
-}
-
-.sb-pin-close:hover {
-  background: #fee4e2;
-  color: #b42318;
-}
-
-.sb-pin-close svg {
-  width: 11px;
-  height: 11px;
-  display: block;
-  stroke: currentColor;
-  fill: none;
-  stroke-width: 2.2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
+/*
+  固定标签方块刻意不提供 hover 关闭按钮：
+  方块只有 28px，关闭按钮一出现就会盖住唯一的点击区域，用户想切换标签却只能关闭。
+  关闭由中键或右键菜单承担。
+*/
 
 .sb-pin-muted {
   position: absolute;

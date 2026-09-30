@@ -2,13 +2,15 @@
 // 固定标签区：跨窗口聚合所有固定标签，按窗口分组，只显示图标。
 //
 // 视觉对齐 Tree Style Tab 的 pinned 容器：图标是**横向铺开的小方块**（不是整行横条），
-// 容器自身有底色、当前窗口的活动标签是白底小方块；鼠标悬停时关闭按钮覆盖在图标上。
+// 容器自身有底色、当前窗口的活动标签是白底小方块。
 //
-// 三个关键行为：
+// 关键行为：
 // - 不参与滚动：独立容器（高度上限由 CSS 控制），不会随下方树区域滚走；
 // - 只允许同窗口内的顺序重排：跨窗口拖拽等价于"把标签移动到另一个窗口"，
 //   与"重排顺序但不影响窗口"的诉求相悖，因此直接不响应（连落点指示都不显示）；
-// - 中键关闭，同时拦截中键 mousedown，避免 Firefox 触发中键自动滚动。
+// - 中键关闭，同时拦截中键 mousedown，避免 Firefox 触发中键自动滚动；
+// - **刻意不做 hover 关闭按钮**：方块只有 28px，关闭按钮一旦出现就会盖住唯一的点击区域，
+//   导致用户想切换标签却只能关闭。关闭改由中键或右键菜单承担。
 
 import { ref } from "vue";
 import { pinnedTabTooltip } from "../pinned_data.js";
@@ -159,16 +161,6 @@ function onDragEnd() {
         @dragend="onDragEnd"
       >
         <TabFavicon class="sb-pin-icon" :url="tab.favIconUrl" />
-        <button
-          type="button"
-          class="sb-pin-close"
-          title="关闭此固定标签"
-          @click.stop="emit('close', tab)"
-        >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M6 6l12 12M18 6l-12 12" />
-          </svg>
-        </button>
         <span v-if="tab.muted" class="sb-pin-muted" title="已静音" aria-hidden="true"></span>
       </div>
     </template>
