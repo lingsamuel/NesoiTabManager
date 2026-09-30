@@ -26,6 +26,19 @@ body {
   min-height: 0;
 }
 
+/*
+  侧边栏不加载管理页的 buttons.css，因此这里给按钮一个干净的统一起点，
+  各按钮再按自己的类覆盖（否则会带上浏览器默认的边框/字体）。
+*/
+.sb-app button {
+  font-family: inherit;
+  font-size: 12px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
 /* ---- 工具栏 ---- */
 
 .sb-toolbar {
@@ -345,4 +358,168 @@ body {
   stroke-width: 2.2;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+/* ---- 固定标签区（pinned）---- */
+
+/*
+  固定标签不参与滚动：它是独立容器，高度自适应但不超过侧边栏可视高度的 40%，
+  超出后在容器内部滚动，从而不会把下方的树区域挤没。
+*/
+.sb-pinned {
+  flex: none;
+  max-height: 40vh;
+  overflow-y: auto;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--stroke);
+  background: #fbfbfd;
+}
+
+/* 组与组之间的细分隔线：一组 = 一个窗口的固定标签 */
+.sb-pinned-sep {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--stroke);
+}
+
+.sb-pin {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  border-radius: 6px;
+  cursor: default;
+}
+
+.sb-pin:hover {
+  background: #eef2f7;
+}
+
+.sb-pin.current {
+  background: #e0e7ff;
+}
+
+.sb-pin.discarded {
+  opacity: 0.55;
+}
+
+.sb-pin.dragging {
+  opacity: 0.5;
+}
+
+.sb-pin.drop-before {
+  box-shadow: inset 0 2px 0 #60a5fa;
+}
+
+.sb-pin.drop-after {
+  box-shadow: inset 0 -2px 0 #60a5fa;
+}
+
+.sb-pin-icon {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  background: #e5e7eb;
+  object-fit: cover;
+}
+
+.sb-pin-icon.hidden {
+  display: block;
+  visibility: hidden;
+}
+
+/* 关闭按钮覆盖在图标位置上：24px 的行里放不下第二个横向元素 */
+.sb-pin-close {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 4px;
+  color: var(--muted);
+}
+
+.sb-pin:hover .sb-pin-close {
+  display: inline-flex;
+}
+
+.sb-pin:hover .sb-pin-close:hover {
+  background: #fee4e2;
+  color: #b42318;
+  transform: translate(-50%, -50%);
+}
+
+.sb-pin-close svg {
+  width: 11px;
+  height: 11px;
+  display: block;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.sb-pin-muted {
+  position: absolute;
+  right: 6px;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--muted);
+}
+
+/* ---- 自建右键菜单 ---- */
+
+.sb-menu {
+  position: fixed;
+  z-index: 50;
+  min-width: 168px;
+  padding: 4px;
+  border-radius: 10px;
+  border: 1px solid var(--stroke);
+  background: var(--panel);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
+}
+
+.sb-menu-item {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: 6px;
+  text-align: left;
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.sb-menu-item:hover,
+.sb-menu-item.active {
+  background: #f3f4f6;
+}
+
+.sb-menu-item.danger {
+  color: #b42318;
+}
+
+.sb-menu-item.danger:hover,
+.sb-menu-item.danger.active {
+  background: #fef3f2;
+}
+
+.sb-menu-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+  background: transparent;
+}
+
+.sb-menu-sep {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--stroke);
 }

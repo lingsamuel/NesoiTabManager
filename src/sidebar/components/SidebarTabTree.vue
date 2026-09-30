@@ -43,7 +43,14 @@ const props = defineProps({
   },
 });
 
-const emit = defineEmits(["activate", "close", "discard", "toggle-collapse", "tree-drop"]);
+const emit = defineEmits([
+  "activate",
+  "close",
+  "discard",
+  "toggle-collapse",
+  "tree-drop",
+  "context-menu",
+]);
 
 const listRef = ref(null);
 const draggingId = ref(null);
@@ -58,6 +65,25 @@ function indentStyle(depth) {
 
 function onIconError(event) {
   event.target.classList.add("hidden");
+}
+
+function onAuxClick(tab, event) {
+  // 中键关闭，与浏览器原生标签栏一致。
+  if (event.button === 1) {
+    event.preventDefault();
+    emit("close", tab);
+  }
+}
+
+function onMouseDown(event) {
+  // 不清掉这一下，Firefox 会在中键按下时启动自动滚动。
+  if (event.button === 1) {
+    event.preventDefault();
+  }
+}
+
+function onContextMenu(tab, event) {
+  emit("context-menu", tab, event);
 }
 
 function onDragStart(item, event) {
@@ -157,6 +183,9 @@ defineExpose({
         }"
         draggable="true"
         @click="emit('activate', item.tab)"
+        @auxclick="onAuxClick(item.tab, $event)"
+        @mousedown="onMouseDown"
+        @contextmenu.prevent="onContextMenu(item.tab, $event)"
         @dragstart="onDragStart(item, $event)"
         @dragover="onDragOver(item, $event)"
         @dragleave="onDragLeave(item)"
