@@ -1,0 +1,89 @@
+name: Release
+
+# 只由标签推送触发：标签名即发布版本（v0.2.12 → 0.2.12）。
+# 这样"发布哪个版本"完全由 git 标签决定，工作流不回写仓库、也不改版本号。
+on:
+  push:
+    tags:
+      - "v*"
+
+# 创建 Release 与上传附件需要 contents: write，其余权限默认只读。
+permissions:
+  contents: write
+
+# 同一标签重复推送时排队而不是并发，避免两个任务同时创建同名 Release 而互相报错。
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: 检出标签对应提交
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          # 22 为当前 LTS；npm ci 依据 package-lock.json(lockfileVersion 3) 安装，保证与本地一致。
+          node-version: 22
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      # 版本校验放在构建之前：三处版本号不一致时立即失败，不浪费构建时间，也绝不会发出错误版本的包。
+      - name: 校验标签与 package.json / manifest.json 版本一致
+        id: version
+        run: |
+          set -euo pipefail
+
+          # GITHUB_REF_NAME 形如 v0.2.12，去掉 v 前缀得到待发布版本号。
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          MANIFEST_VERSION="$(node -p "require('./manifest.json').version")"
+
+          echo "标签版本:        ${TAG_VERSION}"
+          echo "package.json:    ${PACKAGE_VERSION}"
+          echo "manifest.json:   ${MANIFEST_VERSION}"
+
+          if [[ "${TAG_VERSION}" != "${PACKAGE_VERSION}" || "${TAG_VERSION}" != "${MANIFEST_VERSION}" ]]; then
+            echo "::error::版本号不一致：标签=${TAG_VERSION}，package.json=${PACKAGE_VERSION}，manifest.json=${MANIFEST_VERSION}。请先 bump 版本号并提交，再在该提交上重新打标签。"
+            exit 1
+          fi
+
+          # 后续打包与发布步骤统一引用该输出，避免各自重复解析版本号。
+          echo "version=${TAG_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: 运行回归测试
+        run: npm run test:tree
+
+      - name: 构建双浏览器产物与发布 zip
+        run: npm run build
+
+      - name: 生成 AMO 源码包
+        run: npm run package:source
+
+      # 不加 --warnings-as-errors：docs/publish_firefox.md 已登记两条预期 warning
+      # （Vue 压缩产物的 UNSAFE_VAR_ASSIGNMENT、Android 最低版本提示），只有 error 才应阻断发布。
+      - name: 校验 Firefox 产物清单
+        run: npx --yes web-ext lint --source-dir dist/firefox
+
+      - name: 创建 GitHub Release 并附加发布包
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          # 不使用 --clobber：同名 Release 已存在时直接失败，防止误覆盖已对外发布的内容。
+          # --generate-notes 依据上一个标签到本标签的提交自动生成变更说明。
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "Nesoi 标签管理器 ${GITHUB_REF_NAME}" \
+            --generate-notes \
+            --verify-tag \
+            "dist/nesoi-tab-manager-chrome-${VERSION}.zip" \
+            "dist/nesoi-tab-manager-firefox-${VERSION}.zip" \
+            "dist/nesoi-tab-manager-source-${VERSION}.zip"

@@ -17,6 +17,7 @@
 
 ## 构建与发布（docs）
 - `docs/build.md`：Chrome 与 Firefox 双浏览器构建与打包方案。
+- `docs/release.md`：GitHub Actions 自动发布流程（标签触发、版本号校验、Release 附件与人工商店发布）。
 - `docs/publish_firefox.md`：AMO 发布清单（清单字段、数据声明、商品页材料、审核测试说明）。
 - `docs/source_build.md`：随 AMO 源码包提交的构建说明（英文，供审核员复现构建）。
 - `docs/privacy_policy.md`：隐私政策（中文为正式版本，含英文对照），用于商店填写。
