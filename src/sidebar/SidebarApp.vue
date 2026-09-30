@@ -241,6 +241,31 @@ function onMarkerClick(marker) {
   scrollToRow(marker.index);
 }
 
+/**
+ * 工具栏「定位」：把当前活动标签所在的行滚到可视区中间。
+ *
+ * 行号直接复用 activeRow：活动标签被折叠或被筛选隐藏时，resolveActiveRow 已经退回到它最近的
+ * 可见祖先，所以这里不必再判断可见性；固定标签不在行序列里，那时 activeRow 为 null，
+ * 必须给一句提示而不是静默失败，否则按钮看起来像坏了。
+ *
+ * 处于跳转模式、且该行本身是匹配项时顺带同步"当前跳转项"，让用户接着按 ↑/↓ 从眼前这一项继续；
+ * 其余情况一律不碰搜索状态——一次定位不应该丢掉用户的搜索上下文。
+ */
+function locateActiveTab() {
+  const row = activeRow.value;
+  const index = row ? Number(row.index) : Number.NaN;
+  if (!Number.isFinite(index) || index < 0) {
+    setStatus("当前标签页不在列表中。", "error");
+    return;
+  }
+  if (isJumpMode.value && matchRowIndexes.value.includes(index)) {
+    setCurrentMatchByRowIndex(index);
+  }
+  scrollToRow(index);
+  // 清掉上一次定位失败留下的提示，否则用户切换标签后再定位，仍会看到那句旧报错。
+  setStatus("", "");
+}
+
 const emptyText = computed(() => {
   if (hasCommittedQuery.value && filter.mode.value === "filter") {
     return "未找到匹配的标签页。";
@@ -565,8 +590,106 @@ async function createRootTab() {
   await refresh();
 }
 
-function openManager() {
-  chrome.tabs.create({ url: chrome.runtime.getURL(MANAGER_PAGE) });
+/**
+ * 执行一次 chrome.tabs.query。
+ *
+ * @returns {Promise<Array|null>} 查询失败（lastError/返回非数组）时返回 null，
+ *   调用方据此走降级分支，而不是把"查不到"当成"没有"。
+ */
+function queryTabsOnce(queryInfo) {
+  return new Promise((resolve) => {
+    try {
+      chrome.tabs.query(queryInfo, (list) => {
+        // lastError 必须在回调里立刻读掉：否则控制台会留下 Unchecked runtime.lastError 警告。
+        resolve(chrome.runtime.lastError || !Array.isArray(list) ? null : list);
+      });
+    } catch (error) {
+      resolve(null);
+    }
+  });
+}
+
+/**
+ * 找到已经打开的管理页标签。
+ *
+ * 为什么用两个精确 URL 查询而不是 `query({})` 再前缀过滤：`query({})` 会把所有窗口的所有标签
+ * （10K 标签下是几 MB 的整表序列化）拉过进程边界，而这里只需要知道"管理页在不在"。
+ * 管理页只会以两种形态存在：编辑器里的 `ui/manager.html`，以及带 `?mode=overlay` 的浮层形态；
+ * chrome.tabs.query 的 url 匹配是前缀语义（`url: "x"` 能匹配 `x?query`），因此 `url` 那一次
+ * 已经覆盖了不带参数的常见情况，两次都查不到才认为没有。
+ * 网页中嵌入的浮层是 iframe 而非标签页，不会出现在查询结果里。
+ *
+ * @returns {Promise<{existing: object|null, ok: boolean}>} ok=false 表示查询本身失败（需要降级）。
+ */
+async function findManagerTab(url) {
+  const withParam = await queryTabsOnce({ url: `${url}?mode=overlay` });
+  if (withParam === null) {
+    return { existing: null, ok: false };
+  }
+  if (withParam.length > 0) {
+    return { existing: withParam[0], ok: true };
+  }
+  const plain = await queryTabsOnce({ url });
+  if (plain === null) {
+    return { existing: null, ok: false };
+  }
+  return { existing: plain.length > 0 ? plain[0] : null, ok: true };
+}
+
+/**
+ * 打开管理页：优先复用已经开着的那个标签页，没有才新建，并且新建时把它固定（pinned）在最左。
+ *
+ * 为什么要"像 pinned 一样"：管理页是常驻工具，用户会反复点进来。无条件新建会让它越堆越多，
+ * 而普通标签又会被网页标签挤到标签栏深处；pinned 化后它永远占着最左一格，点一下就回到原页面。
+ *
+ * 查询策略见 findManagerTab：两次精确 URL 查询替代一次全量查询，10K 标签下差别明显。
+ */
+async function openManager() {
+  const url = chrome.runtime.getURL(MANAGER_PAGE);
+  const { existing, ok } = await findManagerTab(url);
+  if (existing && Number.isFinite(Number(existing.id))) {
+    // 顺序与扩展图标点击一致：先聚焦窗口、再激活标签。
+    // 只 activate 不 focus 的话，切换发生在未聚焦的窗口里，用户根本看不到。
+    const targetWindowId = Number(existing.windowId);
+    if (Number.isFinite(targetWindowId)) {
+      chrome.windows.update(targetWindowId, { focused: true }, () => {
+        // 读掉 lastError：窗口可能刚好被用户关掉，此时不值得打断操作。
+        void chrome.runtime.lastError;
+      });
+    }
+    chrome.tabs.update(Number(existing.id), { active: true }, () => {
+      void chrome.runtime.lastError;
+    });
+    return;
+  }
+
+  // 注意不能直接 Number(windowId.value)：Number(null) 是 0，会被当成"合法的窗口 0"而漏掉降级分支。
+  const hostWindowId =
+    windowId.value === null || windowId.value === undefined ? Number.NaN : Number(windowId.value);
+  // 拿不到宿主窗口、或查询失败时降级成普通新建：
+  // 宁可固定位置不理想，也不能因为一次异步失败就丢功能或抛错。
+  if (!ok || !Number.isFinite(hostWindowId)) {
+    chrome.tabs.create({ url });
+    return;
+  }
+
+  // 只查宿主窗口的固定标签，而不是全量标签：同样是为了避免 10K 标签的整表序列化。
+  const pinnedTabs = await queryTabsOnce({ windowId: hostWindowId, pinned: true });
+  // 查询失败时按"没有固定标签"处理，落到 index: 0 分支；最坏情况是插到已有固定标签之后，不影响可用性。
+  const hasPinned = Array.isArray(pinnedTabs) && pinnedTabs.length > 0;
+
+  // 已有固定标签时**不能**指定 index：Chromium/Firefox 会把新 pinned 标签插到最后一个 pinned 之后，
+  // 那正是用户自己排好的固定区末尾，硬塞 index:0 会打断他已有的排列。
+  // 而一个固定标签都没有时，浏览器把新 pinned 标签追加到"最后一个 pinned 之后"，等价于当前标签之后，
+  // 看上去完全没被固定，因此必须显式 index: 0 才能落到最左侧。
+  const options = hasPinned ? { url, pinned: true } : { url, index: 0, pinned: true };
+  chrome.tabs.create(options, () => {
+    if (chrome.runtime.lastError) {
+      setStatus(chrome.runtime.lastError.message || "打开管理界面失败。", "error");
+      return;
+    }
+    setStatus("", "");
+  });
 }
 
 function toggleCollapse(item) {
@@ -765,6 +888,14 @@ onBeforeUnmount(() => {
         </span>
         <span class="sb-spacer"></span>
         <button type="button" class="sb-tool" title="在当前标签页下新建（工具栏入口）" @click="createTab">＋</button>
+        <button
+          type="button"
+          class="sb-tool"
+          title="定位到当前标签页所在的行"
+          @click="locateActiveTab"
+        >
+          定位
+        </button>
         <button type="button" class="sb-tool" title="在管理界面打开" @click="openManager">
           管理
         </button>

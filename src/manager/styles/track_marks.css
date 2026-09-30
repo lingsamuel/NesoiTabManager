@@ -46,6 +46,12 @@
   cursor: pointer;
   transform: translateY(-1px);
   box-shadow: none;
+  /*
+    下面的 ::after 命中区要伸出按钮的边框盒。表单控件的 UA 样式表在部分浏览器里会隐式裁剪
+    （<input type=button> 的 "magic clip"），显式声明 visible 可以确保伪元素不被吃掉；
+    按钮本身没有子内容，所以这个声明不会带来任何视觉变化。
+  */
+  overflow: visible;
 }
 
 .track-marks.on-left .track-mark {
@@ -54,6 +60,25 @@
 
 .track-marks.on-right .track-mark {
   right: 1px;
+}
+
+/*
+  命中区放大：刻度视觉高度只有 3px，鼠标很难精准停在上面（尤其刻度密集时）。
+  这里用透明伪元素把按钮的命中盒撑大——伪元素本身没有背景，画出来的仍是一条 3px 细条。
+
+  为什么是纵向为主：刻度横向 12px 已经占满 14px 轨道，横向几乎没有可扩空间；
+  真正的收益在高度，上下各外扩 5px 后命中高度从 3px 变成 13px。
+  左右各外扩 1px 只是把按钮补满整条轨道：再往外扩就会压到列表行的边缘点击区，
+  在管理页（轨道贴右边缘）还可能把文档顶出横向滚动条。
+  指针事件约定不变：容器 pointer-events: none、刻度 auto，伪元素跟随宿主按钮一起参与命中。
+*/
+.track-mark::after {
+  content: "";
+  position: absolute;
+  left: -1px;
+  right: -1px;
+  top: -5px;
+  bottom: -5px;
 }
 
 .track-mark:hover {

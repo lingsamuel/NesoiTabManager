@@ -60,6 +60,9 @@ body {
 .sb-toolbar-row {
   display: flex;
   align-items: center;
+  /* 允许换行：工具栏右侧现在有「＋ / 定位 / 管理」三个按钮，
+     跳转模式下左侧还会多出匹配计数，窄侧边栏里宁可整排折行也不要挤压文字。 */
+  flex-wrap: wrap;
   gap: 4px;
 }
 
