@@ -54,14 +54,23 @@
 - 树状标签页不新增任何浏览器权限，也不在非用户操作时移动标签页。
 - Firefox 侧边栏使用 `sidebar_action`（Firefox 专有清单键），Chrome 目标清单不受影响。
 - Firefox 标签右键菜单需要专有权限 `menus.overrideContext`，只加在 Firefox 目标清单；Chrome 清单的权限保持不变。
+- Firefox 目标最低版本为 140：该版本起浏览器内置「数据收集与传输同意」体验，可以只靠清单声明完成合规。
+- 数据声明为 `required: ["none"]` + `optional: ["browsingActivity", "websiteContent"]`：
+  扩展默认不传输任何数据，只有用户自行配置端点并点击「AI 分组」时才外发标签标题与基础域名，
+  且会先弹出 Firefox 的数据传输授权；被拒绝则不外发。
+- 图标源文件为 `icons/icon.svg`，PNG 已提交（两个浏览器共用同一套）。
+- 许可证为 MIT，隐私政策见 `docs/privacy_policy.md`。
 
 ## 开发与构建
 
 - 安装依赖：`npm install`
 - 一键构建：`npm run build`（同时生成 Chrome 与 Firefox 两套产物及 zip）
 - 单独构建：`npm run build:chrome` / `npm run build:firefox`
+- 重新导出图标：`npm run icons`（需要 `rsvg-convert`；PNG 已提交，普通构建无需执行）
+- AMO 源码包：`npm run package:source`（每次提交版本都必须随包上传）
+- 提交前静态检查：`npx --yes web-ext lint --source-dir dist/firefox`
 - 树算法基准：`npm run bench:tree`（10K 标签的建树 / 快照 / 对齐 / 扁平化耗时与阈值校验）
 - 树功能回归测试：`npm run test:tree`（后台事件链路与页面行构建，纯 Node 运行）
-- 产物目录：`dist/chrome/`（Chrome/Edge 加载）、`dist/firefox/`（Firefox 加载，115+）
+- 产物目录：`dist/chrome/`（Chrome/Edge 加载）、`dist/firefox/`（Firefox 加载，140+）
 - 发布包：`dist/nesoi-tab-manager-<target>-<version>.zip`
-- 详细方案见 `docs/build.md`。
+- 详细方案见 `docs/build.md`；Firefox 商店发布清单见 `docs/publish_firefox.md`。

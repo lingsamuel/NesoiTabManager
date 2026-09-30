@@ -1,5 +1,6 @@
 import { reactive, ref } from "vue";
 import { getBaseDomain } from "../utils/helpers.js";
+import { ensureAiDataConsent } from "../utils/data_collection.js";
 
 function useAiGrouping({
   request,
@@ -120,6 +121,14 @@ function useAiGrouping({
     }
     if (!aiConfig.endpoint || !aiConfig.apiKey || !aiConfig.model) {
       setAiStatus("请先在设置中配置 AI 端点、Key 和模型。", "error");
+      return;
+    }
+    // 必须在点击调用栈里同步发起：Firefox 只允许在用户输入处理器中调用 permissions.request。
+    // 这里之前的判断全是同步代码，因此仍未脱离用户手势。
+    setAiStatus("正在请求数据传输授权…", "");
+    const consented = await ensureAiDataConsent();
+    if (!consented) {
+      setAiStatus("未授权数据传输，AI 分组已取消。", "error");
       return;
     }
     const items = buildAiItems(selectedTabs);

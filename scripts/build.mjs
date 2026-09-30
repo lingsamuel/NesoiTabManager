@@ -9,6 +9,8 @@ const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const TARGETS = new Set(["chrome", "firefox"]);
 // 两个浏览器共用的静态文件；后台与清单按目标单独处理。
 const STATIC_FILES = ["content_script.js", "popup.html", "popup.css", "popup.js"];
+// 图标是清单（icons / action.default_icon）直接引用的静态资源，两个目标共用同一套 PNG。
+const STATIC_DIRS = ["icons"];
 
 function resolveTargets(rawTarget) {
   if (!rawTarget) {
@@ -56,6 +58,9 @@ async function assembleTarget(target) {
 
   for (const file of STATIC_FILES) {
     await cp(resolve(projectRoot, file), resolve(distDir, file));
+  }
+  for (const dir of STATIC_DIRS) {
+    await cp(resolve(projectRoot, dir), resolve(distDir, dir), { recursive: true });
   }
   await cp(resolve(projectRoot, "ui"), resolve(distDir, "ui"), { recursive: true });
 

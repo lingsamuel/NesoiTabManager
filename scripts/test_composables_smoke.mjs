@@ -162,6 +162,55 @@ async function main() {
     assertEqual(windowsApi.activeRows.value.length, 0, "没有窗口时没有活动刻度");
   }
 
+  console.log("场景 6：AI 分组的数据传输授权门（Firefox 140+ 内置同意 / 其它环境降级）");
+  const { ensureAiDataConsent, AI_DATA_COLLECTION } = await import(
+    "../src/manager/utils/data_collection.js"
+  );
+  const savedPermissions = globalThis.chrome.permissions;
+
+  // 非扩展页面等拿不到 permissions API 的环境不应阻断功能
+  delete globalThis.chrome.permissions;
+  assertEqual(await ensureAiDataConsent(), true, "没有 permissions API 时放行");
+
+  // Chrome 与 Firefox <140 不认识 data_collection：request 回调里带 lastError
+  globalThis.chrome.permissions = {
+    request: (payload, callback) => {
+      globalThis.chrome.runtime.lastError = { message: "Unexpected property" };
+      callback(false);
+      globalThis.chrome.runtime.lastError = null;
+    },
+  };
+  assertEqual(await ensureAiDataConsent(), true, "浏览器不支持 data_collection 时放行（交由商店披露）");
+
+  // Firefox 140+：用户同意
+  let requested = null;
+  globalThis.chrome.permissions = {
+    request: (payload, callback) => {
+      requested = payload.data_collection;
+      callback(true);
+    },
+  };
+  assertEqual(await ensureAiDataConsent(), true, "用户同意时放行");
+  assertEqual(
+    Array.isArray(requested) ? requested.join(",") : String(requested),
+    AI_DATA_COLLECTION.join(","),
+    "请求的分类与清单 optional 完全一致"
+  );
+
+  // Firefox 140+：用户拒绝，调用方必须中止
+  globalThis.chrome.permissions = { request: (payload, callback) => callback(false) };
+  assertEqual(await ensureAiDataConsent(), false, "用户拒绝时返回 false");
+
+  // 清单字段校验失败会同步抛错（Chrome 的 "Invalid value for argument 1"）
+  globalThis.chrome.permissions = {
+    request: () => {
+      throw new Error("Invalid value for argument 1");
+    },
+  };
+  assertEqual(await ensureAiDataConsent(), true, "request 同步抛错时放行");
+
+  globalThis.chrome.permissions = savedPermissions;
+
   console.log("");
   console.log(`共 ${checks} 项断言，失败 ${failures} 项`);
   if (failures > 0) {

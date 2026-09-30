@@ -3,8 +3,24 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const TARGETS = new Set(["chrome", "firefox"]);
-const GECKO_ID = "nesoi-tab-manager@example.com";
-const FIREFOX_MIN_VERSION = "115.0";
+// AMO 上架后扩展 ID 不可更改，因此这里用发布者自己的 github.io 命名空间而不是 example.com 占位域名。
+const GECKO_ID = "nesoi-tab-manager@lingsamuel.github.io";
+// 最低版本定为 140：Firefox 140 起才内置「数据收集与传输同意」体验。
+// 只要兼容 139 及更早版本，就必须自行实现「安装后立即弹出、不可忽略、单页」的同意流程
+// （见 AMO 政策 6.2.2 与 docs/publish_firefox.md），因此这里直接收窄到 140。
+const FIREFOX_MIN_VERSION = "140.0";
+
+// Firefox 内置同意系统使用的数据分类（AMO 政策 6.2.1 / MDN data_collection_permissions）。
+// required=["none"]：扩展默认不向任何地方传输数据，纯本地管理标签页。
+// optional：只有用户主动点「AI 分组」时才会把标签标题与基础域名 POST 到**用户自己配置**的 AI 端点，
+//   属于「浏览活动」（域名/URL）与「网站内容」（页面标题）。
+//   这两项必须放在 optional 而不是 required：不启用 AI 的用户的安装体验不应被数据提示打扰。
+//   UI 侧在真正发起请求前会调用 permissions.request({ data_collection }) 取同意，
+//   见 src/manager/utils/data_collection.js。
+const DATA_COLLECTION_PERMISSIONS = {
+  required: ["none"],
+  optional: ["browsingActivity", "websiteContent"]
+};
 
 function resolveTarget(rawTarget) {
   if (TARGETS.has(rawTarget)) {
@@ -45,7 +61,8 @@ function buildManifest(baseManifest, target) {
     browser_specific_settings: {
       gecko: {
         id: GECKO_ID,
-        strict_min_version: FIREFOX_MIN_VERSION
+        strict_min_version: FIREFOX_MIN_VERSION,
+        data_collection_permissions: DATA_COLLECTION_PERMISSIONS
       }
     }
   };

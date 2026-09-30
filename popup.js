@@ -24,6 +24,18 @@ function createFavicon(className, url) {
   return icon;
 }
 
+// 子侧边栏条目的内容固定是「名称 + 计数」两段，这里用 DOM API 逐节点拼出来，
+// 而不是拼 innerHTML：列表名是用户自己输入的文本，一旦含 HTML 就会被当作标记解析
+// （既可能破坏样式，也是注入面），web-ext 也会为此报 UNSAFE_VAR_ASSIGNMENT。
+function appendSubItemContent(item, label, count) {
+  const labelEl = document.createElement("span");
+  labelEl.textContent = label;
+  const countEl = document.createElement("small");
+  countEl.textContent = String(count);
+  item.appendChild(labelEl);
+  item.appendChild(countEl);
+}
+
 const tabsContainer = document.getElementById("tabs");
 const listSelect = document.getElementById("list-select");
 const newListRow = document.getElementById("new-list-row");
@@ -211,7 +223,7 @@ function renderWindowSubItems() {
   const allItem = document.createElement("button");
   allItem.className = "sub-item";
   allItem.dataset.windowId = "all";
-  allItem.innerHTML = `<span>全部窗口</span><small>${totalTabs}</small>`;
+  appendSubItemContent(allItem, "全部窗口", totalTabs);
   if (state.selectedWindowId === "all") {
     allItem.classList.add("active");
   }
@@ -223,7 +235,7 @@ function renderWindowSubItems() {
     item.className = "sub-item";
     item.dataset.windowId = String(win.id);
     const count = win.tabs ? win.tabs.length : 0;
-    item.innerHTML = `<span>窗口 ${index + 1}</span><small>${count}</small>`;
+    appendSubItemContent(item, `窗口 ${index + 1}`, count);
     if (String(state.selectedWindowId) === String(win.id)) {
       item.classList.add("active");
     }
@@ -247,7 +259,7 @@ function renderListSubItems() {
     item.className = "sub-item";
     item.dataset.listId = list.id;
     const count = list.items ? list.items.length : 0;
-    item.innerHTML = `<span>${list.name}</span><small>${count}</small>`;
+    appendSubItemContent(item, list.name, count);
     if (state.selectedListId === list.id) {
       item.classList.add("active");
     }

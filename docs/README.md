@@ -17,3 +17,6 @@
 
 ## 构建与发布（docs）
 - `docs/build.md`：Chrome 与 Firefox 双浏览器构建与打包方案。
+- `docs/publish_firefox.md`：AMO 发布清单（清单字段、数据声明、商品页材料、审核测试说明）。
+- `docs/source_build.md`：随 AMO 源码包提交的构建说明（英文，供审核员复现构建）。
+- `docs/privacy_policy.md`：隐私政策（中文为正式版本，含英文对照），用于商店填写。

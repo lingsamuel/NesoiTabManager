@@ -26,7 +26,9 @@
 | 后台代码 | ES Module 源码（多文件） | esbuild 打包后的单文件 |
 | 侧边栏 | 无（本次不做 `sidePanel`） | `sidebar_action.default_panel = ui/sidebar.html` |
 | 扩展 ID | 无要求 | `browser_specific_settings.gecko.id` |
-| 最低版本 | 无 | `strict_min_version: "115.0"` |
+| 最低版本 | 无 | `strict_min_version: "140.0"` |
+| 数据声明 | 无 | `browser_specific_settings.gecko.data_collection_permissions` |
+| 图标 | `icons/` 下的同一套 PNG | 同左（两个目标共用） |
 
 ### 2.2 关键事实与约束
 
@@ -34,6 +36,8 @@
 2. Firefox event page 支持 `type: "module"`，可直接加载 ES Module 打包产物。
 3. `chrome.storage.session` 为 Chrome 专有能力，代码中已有 `HAS_SESSION_STORAGE` 守卫，Firefox 下自动降级为空实现（近期标签、自动冻结的会话状态退化为启动时重算）。
 4. 业务代码全部使用 `chrome.*` 回调风格，Firefox 的 `chrome` 命名空间支持回调，无需改动业务代码。
+5. 最低版本取 140.0 而非 115.0：只有 Firefox 140+ 才内置「数据收集与传输同意」体验，兼容 139 及更早版本就必须自建安装后同意流程（AMO 政策 6.2.2）。理由与影响见 `docs/publish_firefox.md`。
+6. Firefox 的 `data_collection_permissions` 由本次构建新增：`required: ["none"]`，`optional: ["browsingActivity", "websiteContent"]`，对应可选的 AI 分组外发标签标题与基础域名；Chrome 清单不含该键。
 
 ## 3. 产物结构
 
@@ -47,16 +51,18 @@ dist/
 │   ├── background/                  # 后台子模块源码
 │   ├── content_script.js
 │   ├── popup.html / popup.css / popup.js
+│   ├── icons/                       # 清单引用的 PNG 图标（两目标共用）
 │   ├── ui/                          # Vite 构建的管理界面
 │   │   ├── manager.html             # 管理页
 │   │   └── sidebar.html             # 侧边栏（仅 Firefox 清单引用）
 │   └── ...
 ├── firefox/                         # Firefox 直接加载目录
-│   ├── manifest.json                # scripts + type: module + gecko.id + sidebar_action
+│   ├── manifest.json                # scripts + type: module + gecko.id + sidebar_action + data_collection_permissions
 │   ├── background.js                # esbuild 打包后的单文件
 │   └── （其余文件同 Chrome）
 ├── nesoi-tab-manager-chrome-<version>.zip
-└── nesoi-tab-manager-firefox-<version>.zip
+├── nesoi-tab-manager-firefox-<version>.zip
+└── nesoi-tab-manager-source-<version>.zip   # 仅在执行 npm run package:source 时生成（AMO 源码包）
 ```
 
 zip 内部直接包含扩展文件本身（`manifest.json`、`background.js` 等），不包含额外顶层目录。本地 `dist/` 最多保留最近 3 个版本的 zip，按版本整组删除。
@@ -69,6 +75,8 @@ zip 内部直接包含扩展文件本身（`manifest.json`、`background.js` 等
 npm run build          # 一键构建两套产物 + zip
 npm run build:chrome   # 仅构建 Chrome 目录产物
 npm run build:firefox  # 仅构建 Firefox 目录产物
+npm run icons          # 由 icons/icon.svg 重新导出各尺寸 PNG（需要 rsvg-convert）
+npm run package:source # 生成提交给 AMO 审核的源码包
 npm run test:tree      # 树状结构回归测试（后台事件链路 + 管理页行构建，纯 Node，无需浏览器）
 npm run bench:tree     # 树算法 10K 级性能基准（含阈值校验）
 ```
@@ -76,15 +84,17 @@ npm run bench:tree     # 树算法 10K 级性能基准（含阈值校验）
 ### 4.2 步骤分解
 
 1. Vite 构建界面（`src/manager`）输出到 `ui/`，包含 `manager.html` 与 `sidebar.html` 两个入口（共用同一份 JS/CSS chunk）。
-2. Chrome 产物：复制后台源码（`background.js` + `background/`）、popup、content script 与 `ui/`，写入原样 manifest。
-3. Firefox 产物：esbuild 将 `background.js` 及其子模块打包为单文件 ESM，复制其余静态文件，写入 Firefox 适配 manifest（`background.scripts` + `gecko.id` + `sidebar_action` 等）。
+2. Chrome 产物：复制后台源码（`background.js` + `background/`）、popup、content script、`icons/` 与 `ui/`，写入原样 manifest。
+3. Firefox 产物：esbuild 将 `background.js` 及其子模块打包为单文件 ESM，复制其余静态文件，写入 Firefox 适配 manifest（`background.scripts` + `gecko.id` + `sidebar_action` + `data_collection_permissions` 等）。
 4. 进入各产物目录执行 `zip` 打包，输出到 `dist/` 根目录。
 5. 清理超出保留数量的历史 zip。
 
 ### 4.3 脚本职责
 
-- `scripts/write-manifest.mjs`：读取 `manifest.json` 基础清单，按目标生成 `dist/<target>/manifest.json`。
+- `scripts/write-manifest.mjs`：读取 `manifest.json` 基础清单，按目标生成 `dist/<target>/manifest.json`（Firefox 目标额外注入 gecko 元数据、数据声明与侧边栏）。
 - `scripts/package-builds.mjs`：读取 `package.json` 版本号，打包两个 zip，并清理历史包。
+- `scripts/package-source.mjs`：把源码与 `docs/source_build.md` 打成 AMO 源码包（不含构建产物）。
+- `scripts/build_icons.mjs`：从 `icons/icon.svg` 导出 16/32/48/64/96/128 PNG；PNG 已提交，普通构建不需要它。
 - `scripts/build.mjs`：串联 UI 构建、产物组装、manifest 写入与打包。
 - `scripts/bench_tree.mjs` / `scripts/test_tree.mjs` / `scripts/test_tree_ui.mjs` / `scripts/test_sidebar_pinned.mjs`：树状与固定标签功能的基准与回归测试，不参与产物构建。
 
@@ -92,12 +102,19 @@ npm run bench:tree     # 树算法 10K 级性能基准（含阈值校验）
 
 1. `npm run build` 成功生成 `dist/chrome`、`dist/firefox` 及两个 zip。
 2. Chrome/Edge 可加载 `dist/chrome` 并保持现有功能。
-3. Firefox（115+）可在 `about:debugging` 加载 `dist/firefox`。
+3. Firefox（140+）可在 `about:debugging` 加载 `dist/firefox`。
 4. 任一 zip 解压后根层直接包含扩展文件。
 5. 历史 zip 超出 3 个版本时，下一次构建自动删除更早版本。
 6. `ui/` 同时产出 `manager.html` 与 `sidebar.html`；`dist/firefox/manifest.json` 含 `sidebar_action`，`dist/chrome/manifest.json` 不含（Chrome 无该键）。
+7. 两个产物的 `manifest.json` 都含 `icons` 与 `action.default_icon`，且 `dist/<target>/icons/` 下存在对应 PNG。
+8. `dist/firefox/manifest.json` 含 `browser_specific_settings.gecko.data_collection_permissions`（`required: ["none"]`）且 `strict_min_version` 为 `140.0`；`dist/chrome/manifest.json` 不含 `browser_specific_settings`。
+9. `npx web-ext lint --source-dir dist/firefox` 无 error，且不再出现 `MISSING_DATA_COLLECTION_PERMISSIONS`。
+10. `npm run package:source` 生成的源码包解压后根层是源码与 `README_BUILD.md`，不含 `ui/`、`dist/`、`node_modules/`；按该说明执行 `npm ci && npm run build:firefox` 可得到与提交包一致的 `dist/firefox/`。
 
 ## 6. 参考资料
 
 1. MDN `background`：https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/manifest.json/background
 2. MDN `browser_specific_settings`：https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/manifest.json/browser_specific_settings
+3. Firefox 内置数据收集同意：https://extensionworkshop.com/documentation/develop/firefox-builtin-data-consent/
+4. AMO 源码提交要求：https://extensionworkshop.com/documentation/publish/source-code-submission/
+5. AMO 附加组件政策（含数据收集与传输）：https://extensionworkshop.com/documentation/publish/add-on-policies/
