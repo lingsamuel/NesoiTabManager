@@ -41,14 +41,28 @@ const props = defineProps({
     type: Boolean,
     default: true,
   },
+  // 滚动位置记忆的作用域键（管理页里是 `windows:<窗口 id>`）。
+  // 空字符串表示不记忆——侧边栏与列表视图不需要这个能力，保持原来的单实例行为。
+  scrollKey: {
+    type: String,
+    default: "",
+  },
 });
 
 // 可见区间变化对外广播：侧边栏据此决定"当前跳转项是否该跟着可见范围走"。
 const emit = defineEmits(["range-change"]);
 
+// 每个作用域键各记一份滚动位置，**只存内存、不落盘**。
+//
+// 为什么放在模块作用域而不是组件内部：TabListPanel 在行数为 0 时会用 v-if 换掉整个虚拟列表，
+// 组件随之被卸载，写在组件里的记忆会一起丢；而"内存中保留"的语义应当跨过这次卸载。
+const scrollMemory = new Map();
+
 const container = ref(null);
 const scrollTop = ref(0);
 const viewportHeight = ref(0);
+// 当前生效的作用域键。用普通变量而非 ref：它只在事件与 watcher 里被读，不参与渲染。
+let activeScrollKey = props.scrollKey;
 let resizeObserver = null;
 
 const totalHeight = computed(() => props.items.length * props.itemHeight);
@@ -85,7 +99,7 @@ function onScroll() {
 }
 
 /**
- * 把响应式滚动位置与真实 DOM 对齐。
+ * 把响应式滚动位置与真实 DOM 对齐，并顺手记进当前作用域的滚动位置。
  * 只允许"从 DOM 读回来"，不允许"乐观地写进去"：滚动容器的内容高度变化时浏览器会自行夹取
  * scrollTop，若响应式副本仍是请求值，可见区间就会用到一个不存在的滚动位置，表现为整片空白。
  */
@@ -94,6 +108,30 @@ function syncScrollTop() {
     return;
   }
   scrollTop.value = container.value.scrollTop;
+  if (activeScrollKey) {
+    scrollMemory.set(activeScrollKey, scrollTop.value);
+  }
+}
+
+/**
+ * 恢复当前作用域上次的滚动位置。
+ *
+ * @param {number} [savedTop] 显式的目标位置。切换作用域时必须由调用方在"DOM 换成新内容之前"
+ *   取好快照传进来：新内容更矮时，post 时机的夹取会先把旧窗口的 scrollTop 截断并写进新键的记忆，
+ *   若这里再回头读 Map，读到的就是被截断后的值，用户的原始位置就丢了。
+ *   保存值也可能超过新内容的最大高度（例如原窗口标签变少了），必须按当前高度夹取，
+ *   否则浏览器会自行夹取，而响应式副本会停留在请求值上，可见区间随即失效（整片空白）。
+ */
+function restoreScroll(savedTop) {
+  if (!container.value) {
+    return;
+  }
+  const saved = Number.isFinite(savedTop)
+    ? savedTop
+    : (activeScrollKey && scrollMemory.has(activeScrollKey) ? scrollMemory.get(activeScrollKey) : 0);
+  const maxScroll = Math.max(0, totalHeight.value - viewportHeight.value);
+  container.value.scrollTop = Math.max(0, Math.min(saved, maxScroll));
+  syncScrollTop();
 }
 
 function updateViewportHeight() {
@@ -165,6 +203,30 @@ watch(
   { flush: "post" }
 );
 
+/**
+ * 切换作用域（管理页切窗口）时恢复该作用域上次的滚动位置。
+ *
+ * 时机必须用 pre：post 时机的 items.length 夹取一定发生在本 watcher 之后，
+ * 那时"当前键"已经是新键，夹取触发的 scroll 事件只会写进新键的记录，
+ * 不会把旧键（用户刚离开的那个窗口）的位置覆盖成被压缩后的值。
+ * 恢复动作再延到 nextTick 之后：必须等新内容高度真正落到 DOM 上，夹取才算数。
+ */
+watch(
+  () => props.scrollKey,
+  async (key) => {
+    // pre 时机下 DOM 还是旧内容：先把"离开时的真实位置"落一笔，
+    // 再去读新作用域的快照（此刻读到的还是用户当初离开新作用域时的原始位置）。
+    if (container.value && activeScrollKey) {
+      scrollMemory.set(activeScrollKey, container.value.scrollTop);
+    }
+    const saved = scrollMemory.has(key) ? scrollMemory.get(key) : 0;
+    activeScrollKey = key;
+    await nextTick();
+    restoreScroll(saved);
+  },
+  { flush: "pre" }
+);
+
 watch(
   () => props.currentMatchIndex,
   async (index) => {
@@ -190,6 +252,11 @@ onMounted(() => {
   resizeObserver = new ResizeObserver(updateViewportHeight);
   if (container.value) {
     resizeObserver.observe(container.value);
+  }
+  // 组件可能因为"上一个作用域行数为 0"被卸载过（TabListPanel 的 v-if），
+  // 重新挂载时要把该作用域的位置再贴回来；模块级 Map 正是为了跨过这次卸载。
+  if (activeScrollKey) {
+    restoreScroll();
   }
 });
 

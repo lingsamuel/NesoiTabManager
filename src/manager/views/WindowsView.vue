@@ -124,6 +124,7 @@
       :active-rows="activeRows"
       :auto-scroll-to-match="false"
       :item-height="44"
+      :scroll-key="scrollKey"
       :selected-map="selectedTabIds"
       :ai-tags="aiTags"
       :enable-drag="true"
@@ -159,6 +160,11 @@ const props = defineProps({
   windowSubtitle: {
     type: String,
     default: "",
+  },
+  // 当前选中的窗口（"all" 或窗口 id 的字符串形式）：用于给虚拟列表一个"滚动位置记忆"的作用域键。
+  selectedWindowId: {
+    type: [String, Number],
+    default: "all",
   },
   windowRows: {
     type: Array,
@@ -290,6 +296,10 @@ const props = defineProps({
 const emptyText = computed(() =>
   props.filterQuery ? "未找到匹配的标签页。" : "未找到打开的标签页。"
 );
+
+// 滚动位置记忆的作用域键：按"窗口"（含"全部窗口"）分别记忆，切回来时位置不丢。
+// 前缀用于和将来其它视图（例如列表视图）的作用域隔离——`window id` 与 `list id` 可能撞号。
+const scrollKey = computed(() => `windows:${props.selectedWindowId}`);
 
 const isJumpMode = computed(
   () => props.filterMode === "jump" && Boolean(props.committedFilterQuery)

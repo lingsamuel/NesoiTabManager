@@ -9,6 +9,7 @@
         :item-height="itemHeight"
         :current-match-index="currentMatchIndex"
         :auto-scroll-to-match="autoScrollToMatch"
+        :scroll-key="scrollKey"
         @range-change="emit('visible-range', $event)"
       >
       <template #default="{ item, index }">
@@ -226,6 +227,11 @@ const props = defineProps({
   autoScrollToMatch: {
     type: Boolean,
     default: true,
+  },
+  // 滚动位置记忆的作用域键（透传给 VirtualList）：管理页切窗口时按窗口分别记住滚动位置。
+  scrollKey: {
+    type: String,
+    default: "",
   },
   emptyText: {
     type: String,

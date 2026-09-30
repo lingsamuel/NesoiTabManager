@@ -85,6 +85,7 @@
         :filter-query="windowsFilter.query.value"
         :committed-filter-query="windowsFilter.committed.value"
         :filter-mode="windowsFilter.mode.value"
+        :selected-window-id="selectedWindowId"
         :selected-tab-ids="selectedTabIds"
         :ai-tags="aiTags"
         :hide-discarded="hideDiscarded"
