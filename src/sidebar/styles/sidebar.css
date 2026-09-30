@@ -213,6 +213,14 @@ body {
   color: var(--muted);
 }
 
+/* 已冻结的标签：favicon 也去色 + 半透明。
+   只把标题变灰在长列表里太不显眼；favicon 是 <img>/<svg>，用 CSS filter 去色不需要额外资源，
+   也不会因为站点图标本身是灰度图而失效（透明度仍然在变化）。 */
+.sb-row.discarded .sb-favicon {
+  filter: grayscale(1);
+  opacity: 0.5;
+}
+
 .sb-row.pinned .sb-title {
   font-style: italic;
 }
@@ -428,6 +436,11 @@ body {
 
 .sb-pin.discarded {
   opacity: 0.5;
+}
+
+/* 与树区域一致：固定标签区的已冻结图标也去色，跨窗口聚合时更容易一眼分辨 */
+.sb-pin.discarded .sb-pin-icon {
+  filter: grayscale(1);
 }
 
 .sb-pin.dragging {
