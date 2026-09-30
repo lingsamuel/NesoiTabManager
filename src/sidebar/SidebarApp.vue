@@ -121,6 +121,18 @@ const activeRow = computed(() => {
 const hasCommittedQuery = computed(() => Boolean(String(filter.committed.value || "").trim()));
 const isJumpMode = computed(() => filter.mode.value === "jump" && hasCommittedQuery.value);
 
+/**
+ * 匹配行高亮只在"列表里混有非匹配行"时才需要（与管理页同一条规则）：
+ * 树状模式的祖先行、跳转模式下的完整列表都会让这个条件成立；
+ * 而过滤模式下的树如果只渲染匹配项本身，就不会有多余的高亮噪声。
+ */
+const highlightMatches = computed(() => {
+  if (!hasCommittedQuery.value) {
+    return false;
+  }
+  return items.value.some((item) => !item.matched);
+});
+
 const {
   matchCount,
   currentMatchIndex,
@@ -686,7 +698,7 @@ onBeforeUnmount(() => {
         v-if="items.length > 0"
         :items="items"
         :active-row="activeRow"
-        :highlight-matches="isJumpMode"
+        :highlight-matches="highlightMatches"
         :current-match-index="currentMatchIndex"
         :is-tree-descendant="isTreeDescendant"
         @activate="activateTab"

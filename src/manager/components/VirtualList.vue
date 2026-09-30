@@ -14,7 +14,8 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computeVisibleRange } from "../utils/virtual_range.js";
 
 const props = defineProps({
   items: {
@@ -42,17 +43,18 @@ let resizeObserver = null;
 
 const totalHeight = computed(() => props.items.length * props.itemHeight);
 
-const startIndex = computed(() => {
-  const raw = Math.floor(scrollTop.value / props.itemHeight) - props.overscan;
-  return Math.max(0, raw);
-});
-
-const endIndex = computed(() => {
-  const raw =
-    Math.ceil((scrollTop.value + viewportHeight.value) / props.itemHeight) +
-    props.overscan;
-  return Math.min(props.items.length, raw);
-});
+// 可见区间交给纯函数：它会夹取滚动位置并保证区间非空（详见 virtual_range.js 的说明）。
+const range = computed(() =>
+  computeVisibleRange({
+    itemCount: props.items.length,
+    itemHeight: props.itemHeight,
+    scrollTop: scrollTop.value,
+    viewportHeight: viewportHeight.value,
+    overscan: props.overscan,
+  })
+);
+const startIndex = computed(() => range.value.startIndex);
+const endIndex = computed(() => range.value.endIndex);
 
 const visibleEntries = computed(() => {
   const entries = [];
@@ -69,6 +71,15 @@ const visibleEntries = computed(() => {
 });
 
 function onScroll() {
+  syncScrollTop();
+}
+
+/**
+ * 把响应式滚动位置与真实 DOM 对齐。
+ * 只允许"从 DOM 读回来"，不允许"乐观地写进去"：滚动容器的内容高度变化时浏览器会自行夹取
+ * scrollTop，若响应式副本仍是请求值，可见区间就会用到一个不存在的滚动位置，表现为整片空白。
+ */
+function syncScrollTop() {
   if (!container.value) {
     return;
   }
@@ -87,7 +98,7 @@ function scrollToTop() {
     return;
   }
   container.value.scrollTop = 0;
-  scrollTop.value = 0;
+  syncScrollTop();
 }
 
 function scrollToBottom() {
@@ -96,7 +107,7 @@ function scrollToBottom() {
   }
   const maxScroll = Math.max(0, totalHeight.value - viewportHeight.value);
   container.value.scrollTop = maxScroll;
-  scrollTop.value = maxScroll;
+  syncScrollTop();
 }
 
 // 滚动到指定行并尽量居中显示，用于“跳转模式”下在匹配项之间导航。
@@ -114,7 +125,9 @@ function scrollToIndex(index) {
     )
   );
   container.value.scrollTop = top;
-  scrollTop.value = top;
+  // 必须读回真实值：目标行可能在内容尚未铺开时被浏览器夹住，
+  // 此时若把 scrollTop 记成请求值，可见区间就会失效（列表空白）。
+  syncScrollTop();
 }
 
 watch(
@@ -126,18 +139,25 @@ watch(
     const maxScroll = Math.max(0, totalHeight.value - viewportHeight.value);
     if (container.value.scrollTop > maxScroll) {
       container.value.scrollTop = maxScroll;
-      scrollTop.value = maxScroll;
     }
-  }
+    syncScrollTop();
+  },
+  // 等 DOM 高度更新完再夹取，否则读到的是旧内容高度下的滚动位置。
+  { flush: "post" }
 );
 
 watch(
   () => props.currentMatchIndex,
-  (index) => {
-    if (index >= 0) {
-      scrollToIndex(index);
+  async (index) => {
+    if (index < 0) {
+      return;
     }
-  }
+    // post + nextTick：行数变化与匹配变化往往在同一轮里发生，
+    // 必须等内容高度真正更新后再滚，否则会被按旧高度夹住，表现为"没有跳到第一个匹配项"。
+    await nextTick();
+    scrollToIndex(index);
+  },
+  { flush: "post" }
 );
 
 defineExpose({

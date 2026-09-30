@@ -110,7 +110,7 @@
       :tree-mode="treeMode"
       :empty-text="emptyText"
       empty-row-text="此窗口没有标签页。"
-      :highlight-matches="isJumpMode"
+      :highlight-matches="highlightMatches"
       :current-match-index="currentMatchIndex"
       :on-toggle-selection="onToggleSelection"
       :on-toggle-tab="onToggleTab"
@@ -266,6 +266,23 @@ const emptyText = computed(() =>
 const isJumpMode = computed(
   () => props.filterMode === "jump" && Boolean(props.committedFilterQuery)
 );
+
+/**
+ * 匹配行高亮只在"列表里混有非匹配行"时才需要。
+ *
+ * 高亮的作用是把匹配项从非匹配项里区分出来：
+ * - 树状 + 过滤：为了保住树的形状，祖先行也会被渲染，但它们是**非匹配项** → 必须高亮；
+ * - 跳转模式（平铺/树状）：保留完整列表 → 必须高亮；
+ * - 平铺 + 过滤：渲染出来的每一行都是匹配项，整表铺黄只是噪声 → 此时不高亮。
+ */
+const highlightMatches = computed(() => {
+  if (!props.committedFilterQuery) {
+    return false;
+  }
+  return props.windowRows.some(
+    (row) => row.type === "tab" && row.tab && !row.tab.matched
+  );
+});
 
 const {
   matchCount,

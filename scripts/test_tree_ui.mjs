@@ -124,6 +124,15 @@ function main() {
     .filter((row) => row.type === "tab" && row.tab.matched)
     .map((row) => row.tab.id);
   assertDeepEqual(matchedIds, [3], "只有真正匹配的标签被标记为 matched");
+  // 高亮规则的依据：树状+过滤会把非匹配的祖先行一并渲染出来，
+  // 所以必须把"匹配项"和"只是路径的祖先"在视觉上区分开。
+  assertDeepEqual(
+    api.windowRows.value
+      .filter((row) => row.type === "tab" && !row.tab.matched)
+      .map((row) => row.tab.id),
+    [1, 2],
+    "树状+过滤确实会渲染非匹配的祖先行（需要高亮匹配项）"
+  );
 
   console.log("场景 4：跳转模式保持完整树，同时仍然标记匹配项");
   filterMode.value = "jump";
@@ -176,6 +185,15 @@ function main() {
   api.setVisibleSelection(true);
   const selectedInJump = Object.keys(api.selectedTabIds).map(Number).sort((a, b) => a - b);
   assertDeepEqual(selectedInJump, [1, 2, 3, 4, 5], "跳转模式全选作用于完整列表");
+
+  // 平铺+过滤：渲染出来的每一行都是匹配项，此时整表高亮只是噪声（因此不高亮）。
+  treeMode.value = false;
+  filterMode.value = "filter";
+  assertDeepEqual(
+    api.windowRows.value.filter((row) => row.type === "tab").map((row) => row.tab.matched),
+    [true],
+    "平铺+过滤：列表里没有非匹配行"
+  );
 
   // 场景 8 直接测共享核心：Firefox 侧边栏不走 useWindows，但用的是同一对函数，
   // 因此这里覆盖到的行为同样适用于侧边栏。
