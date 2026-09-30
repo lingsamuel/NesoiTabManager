@@ -111,6 +111,11 @@ export function buildTrackMarkers(options = {}) {
   if (total === 0) {
     return [];
   }
+  // 轨道高度还没测出来时比例无从谈起：此时若照常返回，所有刻度都会落在 0 并被合并成一条，
+  // 看起来像"刻度全挤在一起"。宁可不画。
+  if (!Number.isFinite(trackHeight) || trackHeight <= 0) {
+    return [];
+  }
 
   const markers = [];
   if (highlightMatches) {

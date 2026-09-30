@@ -251,6 +251,20 @@ function main() {
     "阈值为 0 时不合并"
   );
 
+  console.log("场景 10b：轨道高度尚未测出时不画刻度");
+  // 曾经的 bug：管理页的滚动容器在数据到达后才出现，高度一直没被测到（0），
+  // 所有刻度的比例位置都算成 0，于是全部叠在顶端并被合并成一条。
+  assertDeepEqual(
+    buildTrackMarkers({ rows: dense, highlightMatches: true, currentMatchIndex: 5, trackHeight: 0 }),
+    [],
+    "轨道高度为 0 时不返回任何刻度"
+  );
+  assertDeepEqual(
+    buildTrackMarkers({ rows: dense, activeRow: { index: 7 }, trackHeight: -1 }),
+    [],
+    "非法的轨道高度同样不画"
+  );
+
   console.log("场景 11：管理页多窗口的活动行批量解析");
   const multiRows = [row(11), row(12), row(13), row(21), row(22)];
   const multiIndex = new Map(multiRows.map((item, index) => [item.id, index]));

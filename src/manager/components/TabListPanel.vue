@@ -169,7 +169,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import VirtualList from "./VirtualList.vue";
 import TabFavicon from "./TabFavicon.vue";
 import { getTreeDropZone } from "../utils/helpers.js";
@@ -549,13 +549,33 @@ function updateTrackHeight() {
   trackHeight.value = wrapperRef.value ? wrapperRef.value.clientHeight || 0 : 0;
 }
 
-onMounted(() => {
+/** 把观察器挂到当前存在的滚动容器上（不存在就只清空，等它出现时再挂）。 */
+function attachTrackObserver() {
+  if (!trackResizeObserver) {
+    return;
+  }
+  trackResizeObserver.disconnect();
   updateTrackHeight();
-  // 面板尺寸随窗口与布局变化，轨道高度必须重新测量，否则刻度位置会偏。
-  trackResizeObserver = new ResizeObserver(updateTrackHeight);
   if (wrapperRef.value) {
     trackResizeObserver.observe(wrapperRef.value);
   }
+}
+
+onMounted(() => {
+  // 面板尺寸随窗口与布局变化，轨道高度必须重新测量，否则刻度位置会偏。
+  trackResizeObserver = new ResizeObserver(updateTrackHeight);
+  attachTrackObserver();
+});
+
+/*
+  必须监听 wrapperRef 本身，而不能只在 onMounted 里挂一次：
+  本组件是常驻的，数据到达前渲染的是"空状态"分支（没有 .track-host），
+  那时 wrapperRef 还是 null、观察器无处可挂；等数据到达滚动容器才出现，
+  此时如果不重新挂，trackHeight 会一直是 0——所有刻度的比例位置都算成 0，
+  表现为全部叠在轨道顶端并被合并成一条。
+*/
+watch(wrapperRef, () => {
+  attachTrackObserver();
 });
 
 onBeforeUnmount(() => {
