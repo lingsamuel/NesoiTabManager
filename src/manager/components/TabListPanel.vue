@@ -63,11 +63,12 @@
             </button>
             <span v-else class="tree-toggle placeholder" aria-hidden="true"></span>
           </template>
+          <!-- 复选框也参与「Shift 连续选择」：Shift+点击复选框与 Shift+点击整行行为一致 -->
           <input
             type="checkbox"
             :checked="Boolean(selectedMap[item.tab.id])"
             @click.stop
-            @change="handleToggleTab(item.tab.id, $event.target.checked)"
+            @change="handleToggleTab(item.tab.id, $event.target.checked, $event)"
           />
           <TabFavicon class="tab-icon" :url="item.tab.favIconUrl" />
           <div class="tab-body">
@@ -296,18 +297,19 @@ const wrapperRef = ref(null);
 const trackHeight = ref(0);
 let trackResizeObserver = null;
 
-function handleToggleSelection(tabId) {
+function handleToggleSelection(tabId, event) {
   if (dragInProgress.value) {
     return;
   }
   if (props.onToggleSelection) {
-    props.onToggleSelection(tabId);
+    // 只透传 Shift：管理页的连续选择是"并集"，不需要 Ctrl/Cmd 参与。
+    props.onToggleSelection(tabId, { shiftKey: Boolean(event && event.shiftKey) });
   }
 }
 
-function handleToggleTab(tabId, checked) {
+function handleToggleTab(tabId, checked, event) {
   if (props.onToggleTab) {
-    props.onToggleTab(tabId, checked);
+    props.onToggleTab(tabId, checked, { shiftKey: Boolean(event && event.shiftKey) });
   }
 }
 

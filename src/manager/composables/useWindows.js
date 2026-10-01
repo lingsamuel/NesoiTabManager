@@ -4,6 +4,13 @@ import { computed, reactive, ref } from "vue";
 import { buildTreeRows } from "../../../background/tree_core.js";
 import { getSelectedTabsFrom, matchesTabQuery } from "../utils/helpers.js";
 import { resolveActiveRows } from "../utils/scroll_markers.js";
+import {
+  applySelectionClick,
+  clearSelection,
+  pruneSelection,
+  setManySelected,
+  setSelectionChecked,
+} from "../utils/selection.js";
 
 function useWindows(options = {}) {
   const hideDiscarded = options.hideDiscarded;
@@ -14,6 +21,8 @@ function useWindows(options = {}) {
   const windows = ref([]);
   const selectedWindowId = ref("all");
   const selectedTabIds = reactive({});
+  // 「连续选择」的锚点：最近一次被置为选中的标签 id（见 utils/selection.js 的规则说明）。
+  const selectedAnchorId = ref(null);
 
   function shouldHideDiscarded() {
     return Boolean(hideDiscarded && hideDiscarded.value);
@@ -218,7 +227,9 @@ function useWindows(options = {}) {
 
   function setSelectedWindow(windowId) {
     selectedWindowId.value = windowId;
-    Object.keys(selectedTabIds).forEach((key) => delete selectedTabIds[key]);
+    clearSelection(selectedTabIds);
+    // 换了窗口，旧锚点可能根本不在当前渲染结果里，直接清掉比"下次 Shift 才失效"更干净。
+    selectedAnchorId.value = null;
   }
 
   /**
@@ -239,35 +250,43 @@ function useWindows(options = {}) {
 
   function setVisibleSelection(checked) {
     windowsToRender.value.forEach((win) => {
-      getSelectableTabs(win).forEach((tab) => {
-        if (checked) {
-          selectedTabIds[tab.id] = true;
-        } else {
-          delete selectedTabIds[tab.id];
-        }
-      });
+      setManySelected(
+        selectedTabIds,
+        getSelectableTabs(win).map((tab) => tab.id),
+        checked
+      );
+    });
+    // 全选/全不选不对应"某一行被选中"，锚点随之作废。
+    selectedAnchorId.value = null;
+  }
+
+  /** 当前渲染出来的标签行 id（树状模式即 DFS 顺序，含仅作路径的祖先行）。 */
+  function visibleTabKeys() {
+    return windowRows.value
+      .filter((row) => row.type === "tab" && row.tab && row.tab.id !== undefined)
+      .map((row) => String(row.tab.id));
+  }
+
+  function toggleTab(tabId, checked, options = {}) {
+    selectedAnchorId.value = setSelectionChecked(selectedTabIds, tabId, checked, {
+      shiftKey: Boolean(options && options.shiftKey),
+      orderedKeys: visibleTabKeys(),
+      anchor: selectedAnchorId.value,
     });
   }
 
-  function toggleTab(tabId, checked) {
-    if (checked) {
-      selectedTabIds[tabId] = true;
-    } else {
-      delete selectedTabIds[tabId];
-    }
-  }
-
-  function toggleTabSelection(tabId) {
-    const key = String(tabId);
-    if (selectedTabIds[key]) {
-      delete selectedTabIds[key];
-    } else {
-      selectedTabIds[key] = true;
-    }
+  function toggleTabSelection(tabId, options = {}) {
+    selectedAnchorId.value = applySelectionClick(selectedTabIds, {
+      key: tabId,
+      shiftKey: Boolean(options && options.shiftKey),
+      orderedKeys: visibleTabKeys(),
+      anchor: selectedAnchorId.value,
+    });
   }
 
   function clearWindowSelection() {
-    Object.keys(selectedTabIds).forEach((key) => delete selectedTabIds[key]);
+    clearSelection(selectedTabIds);
+    selectedAnchorId.value = null;
   }
 
   function getWindowTabsFlat() {
@@ -301,11 +320,8 @@ function useWindows(options = {}) {
         }
       });
     });
-    Object.keys(selectedTabIds).forEach((tabId) => {
-      if (!existing.has(String(tabId))) {
-        delete selectedTabIds[tabId];
-      }
-    });
+    // 标签被关闭后选中项与锚点都可能已不存在：一起剪掉，避免下次 Shift 圈到错误区间。
+    selectedAnchorId.value = pruneSelection(selectedTabIds, existing, selectedAnchorId.value);
     if (
       selectedWindowId.value !== "all" &&
       !windows.value.some((win) => String(win.id) === String(selectedWindowId.value))

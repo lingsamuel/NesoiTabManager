@@ -1,9 +1,18 @@
 import { computed, reactive, ref } from "vue";
 import { getSelectedTabsFrom, matchesTabQuery } from "../utils/helpers.js";
+import {
+  applySelectionClick,
+  clearSelection,
+  pruneSelection,
+  setManySelected,
+  setSelectionChecked,
+} from "../utils/selection.js";
 
 function useRecent({ request, filterQuery, filterMode }) {
   const recentTabs = ref([]);
   const selectedRecentTabIds = reactive({});
+  // 「连续选择」的锚点：最近一次被置为选中的标签 id（规则见 utils/selection.js）。
+  const selectedAnchorId = ref(null);
   const lastReviewedAt = ref(0);
   const durationText = ref("");
   const startupActive = ref(false);
@@ -54,40 +63,40 @@ function useRecent({ request, filterQuery, filterMode }) {
   });
 
   function setRecentSelection(checked) {
-    const keyword = getKeyword();
-    recentTabs.value
-      .filter((tab) => (shouldFilterRows() ? matchesTabQuery(tab, keyword) : true))
-      .forEach((tab) => {
-        if (!tab || !tab.id) {
-          return;
-        }
-        if (checked) {
-          selectedRecentTabIds[tab.id] = true;
-        } else {
-          delete selectedRecentTabIds[tab.id];
-        }
-      });
+    setManySelected(
+      selectedRecentTabIds,
+      recentRows.value.map((row) => row.tab.id),
+      checked
+    );
+    // 全选/全不选不对应"某一行被选中"，锚点随之作废。
+    selectedAnchorId.value = null;
   }
 
-  function toggleRecentTab(tabId, checked) {
-    if (checked) {
-      selectedRecentTabIds[tabId] = true;
-    } else {
-      delete selectedRecentTabIds[tabId];
-    }
+  /** 当前渲染出来的标签行 id（近期标签页是平铺列表，顺序即渲染顺序）。 */
+  function visibleTabKeys() {
+    return recentRows.value.map((row) => String(row.tab.id));
   }
 
-  function toggleRecentTabSelection(tabId) {
-    const key = String(tabId);
-    if (selectedRecentTabIds[key]) {
-      delete selectedRecentTabIds[key];
-    } else {
-      selectedRecentTabIds[key] = true;
-    }
+  function toggleRecentTab(tabId, checked, options = {}) {
+    selectedAnchorId.value = setSelectionChecked(selectedRecentTabIds, tabId, checked, {
+      shiftKey: Boolean(options && options.shiftKey),
+      orderedKeys: visibleTabKeys(),
+      anchor: selectedAnchorId.value,
+    });
+  }
+
+  function toggleRecentTabSelection(tabId, options = {}) {
+    selectedAnchorId.value = applySelectionClick(selectedRecentTabIds, {
+      key: tabId,
+      shiftKey: Boolean(options && options.shiftKey),
+      orderedKeys: visibleTabKeys(),
+      anchor: selectedAnchorId.value,
+    });
   }
 
   function clearRecentSelection() {
-    Object.keys(selectedRecentTabIds).forEach((key) => delete selectedRecentTabIds[key]);
+    clearSelection(selectedRecentTabIds);
+    selectedAnchorId.value = null;
   }
 
   function getSelectedRecentTabs() {
@@ -109,11 +118,8 @@ function useRecent({ request, filterQuery, filterMode }) {
     durationText.value = String(response.durationText || "");
     startupActive.value = Boolean(response.startupActive);
     const existing = new Set(recentTabs.value.map((tab) => String(tab.id)));
-    Object.keys(selectedRecentTabIds).forEach((tabId) => {
-      if (!existing.has(String(tabId))) {
-        delete selectedRecentTabIds[tabId];
-      }
-    });
+    // 标签关闭后选中项与锚点都可能已不存在：一起剪掉，避免下次 Shift 圈到错误区间。
+    selectedAnchorId.value = pruneSelection(selectedRecentTabIds, existing, selectedAnchorId.value);
   }
 
   async function markReviewed() {

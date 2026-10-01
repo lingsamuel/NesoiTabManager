@@ -5,6 +5,13 @@ import {
   matchesTabQuery,
   normalizeWhitelistInput,
 } from "../utils/helpers.js";
+import {
+  applySelectionClick,
+  clearSelection,
+  pruneSelection,
+  setManySelected,
+  setSelectionChecked,
+} from "../utils/selection.js";
 
 function useDiscard({ request, view, filterQuery, filterMode }) {
   const discardConfig = reactive({
@@ -26,6 +33,8 @@ function useDiscard({ request, view, filterQuery, filterMode }) {
   const discardHistoryBatches = ref([]);
   const discardHistorySummary = reactive({ total: 0, batches: 0, limit: 0 });
   const historySelectedTabIds = reactive({});
+  // 「连续选择」的锚点：最近一次被置为选中的记录 id（规则见 utils/selection.js）。
+  const historySelectedAnchorId = ref(null);
 
   function getKeyword() {
     return filterQuery ? filterQuery.value : "";
@@ -130,37 +139,42 @@ function useDiscard({ request, view, filterQuery, filterMode }) {
   }
 
   function setHistorySelection(checked) {
-    const keyword = getKeyword();
-    historyTabsFlat.value
-      .filter((tab) => (shouldFilterRows() ? matchesTabQuery(tab, keyword) : true))
-      .forEach((tab) => {
-        if (checked) {
-          historySelectedTabIds[tab.id] = true;
-        } else {
-          delete historySelectedTabIds[tab.id];
-        }
-      });
+    setManySelected(
+      historySelectedTabIds,
+      historyRows.value.filter((row) => row.type === "tab").map((row) => row.tab.id),
+      checked
+    );
+    // 全选/全不选不对应"某一行被选中"，锚点随之作废。
+    historySelectedAnchorId.value = null;
   }
 
-  function toggleHistoryTab(tabId, checked) {
-    if (checked) {
-      historySelectedTabIds[tabId] = true;
-    } else {
-      delete historySelectedTabIds[tabId];
-    }
+  /** 当前渲染出来的记录行 id（批次标题行只是路径，不参与选择）。 */
+  function visibleHistoryKeys() {
+    return historyRows.value
+      .filter((row) => row.type === "tab" && row.tab && row.tab.id !== undefined)
+      .map((row) => String(row.tab.id));
   }
 
-  function toggleHistoryTabSelection(tabId) {
-    const key = String(tabId);
-    if (historySelectedTabIds[key]) {
-      delete historySelectedTabIds[key];
-    } else {
-      historySelectedTabIds[key] = true;
-    }
+  function toggleHistoryTab(tabId, checked, options = {}) {
+    historySelectedAnchorId.value = setSelectionChecked(historySelectedTabIds, tabId, checked, {
+      shiftKey: Boolean(options && options.shiftKey),
+      orderedKeys: visibleHistoryKeys(),
+      anchor: historySelectedAnchorId.value,
+    });
+  }
+
+  function toggleHistoryTabSelection(tabId, options = {}) {
+    historySelectedAnchorId.value = applySelectionClick(historySelectedTabIds, {
+      key: tabId,
+      shiftKey: Boolean(options && options.shiftKey),
+      orderedKeys: visibleHistoryKeys(),
+      anchor: historySelectedAnchorId.value,
+    });
   }
 
   function clearHistorySelection() {
-    Object.keys(historySelectedTabIds).forEach((key) => delete historySelectedTabIds[key]);
+    clearSelection(historySelectedTabIds);
+    historySelectedAnchorId.value = null;
   }
 
   function applyDiscardConfig(config) {
@@ -237,11 +251,12 @@ function useDiscard({ request, view, filterQuery, filterMode }) {
     discardHistorySummary.batches = Number(response.historyBatchesCount) || 0;
     discardHistorySummary.limit = Number(response.historyLimit) || 0;
     const existing = new Set(historyTabsFlat.value.map((tab) => String(tab.id)));
-    Object.keys(historySelectedTabIds).forEach((tabId) => {
-      if (!existing.has(String(tabId))) {
-        delete historySelectedTabIds[tabId];
-      }
-    });
+    // 记录被淘汰后选中项与锚点都可能已不存在：一起剪掉，避免下次 Shift 圈到错误区间。
+    historySelectedAnchorId.value = pruneSelection(
+      historySelectedTabIds,
+      existing,
+      historySelectedAnchorId.value
+    );
     if (!response.enabled) {
       setStatus(discardDebugStatus, "自动冻结未开启，请先在设置中启用。", "error");
       return;

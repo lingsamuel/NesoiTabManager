@@ -12,7 +12,7 @@
     "icons": "node scripts/build_icons.mjs",
     "package:source": "node scripts/package-source.mjs",
     "bench:tree": "node scripts/bench_tree.mjs",
-    "test:tree": "node scripts/test_tree.mjs && node scripts/test_tree_ui.mjs && node scripts/test_sidebar_pinned.mjs && node scripts/test_sidebar_manager.mjs && node scripts/test_sidebar_scroll_flow.mjs && node scripts/test_context_menu.mjs && node scripts/test_discard.mjs && node scripts/test_dropped_data.mjs && node scripts/test_dropped_item.mjs && node scripts/test_scroll_markers.mjs && node scripts/test_virtual_range.mjs && node scripts/test_filter_mode.mjs && node scripts/test_composables_smoke.mjs && node scripts/test_list_target_memory.mjs && node scripts/test_manager_sync.mjs",
+    "test:tree": "node scripts/test_tree.mjs && node scripts/test_tree_ui.mjs && node scripts/test_sidebar_pinned.mjs && node scripts/test_sidebar_manager.mjs && node scripts/test_sidebar_scroll_flow.mjs && node scripts/test_context_menu.mjs && node scripts/test_discard.mjs && node scripts/test_dropped_data.mjs && node scripts/test_dropped_item.mjs && node scripts/test_scroll_markers.mjs && node scripts/test_virtual_range.mjs && node scripts/test_filter_mode.mjs && node scripts/test_selection_range.mjs && node scripts/test_composables_smoke.mjs && node scripts/test_list_target_memory.mjs && node scripts/test_manager_sync.mjs",
     "preview": "vite preview --config vite.config.js"
   },
   "dependencies": {
