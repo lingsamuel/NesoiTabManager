@@ -613,37 +613,54 @@ export async function restoreClosedGroup(windowId = null) {
     byWindow.get(effective).push(member);
   }
 
-  for (const [memberWindowId, windowMembers] of [...byWindow.entries()].sort((a, b) => a[0] - b[0])) {
-    windowIds.push(memberWindowId);
-    const reopened = await reopenMembers(windowMembers, memberWindowId, group);
-    for (const [member, tabId] of reopened) {
-      idByMember.set(member, tabId);
+  // 先出栈再重开：恢复过程中 MV3 的 Service Worker 随时可能被回收，
+  // 若等到最后才出栈，用户再点一次「撤销关闭」就会把同一批标签重复打开一遍。
+  // 一个都没打开（重开阶段直接失败）时再放回去，让用户可以重试。
+  closedGroups = closedGroups.filter((item) => item !== group);
+  persist();
+  try {
+    for (const [memberWindowId, windowMembers] of [...byWindow.entries()].sort((a, b) => a[0] - b[0])) {
+      windowIds.push(memberWindowId);
+      const reopened = await reopenMembers(windowMembers, memberWindowId, group);
+      for (const [member, tabId] of reopened) {
+        idByMember.set(member, tabId);
+      }
+      const reopenedIds = windowMembers.map((member) => idByMember.get(member)).filter(isFiniteId);
+      restoredIds.push(...reopenedIds);
+
+      // 等 onCreated 全部被树的创建流程登记，否则随后写入的父子关系会被它覆盖。
+      await ensureTreeFor(memberWindowId);
+      await waitUntilTabsTracked(memberWindowId, reopenedIds);
+
+      // 先按实时下标重建一次：`indexById` 是"删除不重编号"的近似表，
+      // 而下面判断"父是否排在子之前"必须依据物理事实。
+      // 注意：parentIndex 是**组内全局下标**，因此查找父时始终传完整的 members。
+      let indexMap = await refreshTreeIndexes(memberWindowId);
+      applyGroupStructure(members, windowMembers, idByMember, memberWindowId, indexMap);
+      await placeGroupMembers(windowMembers, idByMember, memberWindowId);
+      // 物理位置变化后重新校验一次不变量（父必须在子之前）。落位算法本身保证了这一点，
+      // 这一步是防御性的：不变量优先于"尽量还原"，违反者降级为顶层。
+      indexMap = await refreshTreeIndexes(memberWindowId);
+      applyGroupStructure(members, windowMembers, idByMember, memberWindowId, indexMap);
+
+      await restoreCollapsedState(windowMembers, idByMember, memberWindowId);
     }
-    const reopenedIds = windowMembers.map((member) => idByMember.get(member)).filter(isFiniteId);
-    restoredIds.push(...reopenedIds);
+  } catch (error) {
+    if (restoredIds.length === 0) {
+      closedGroups = [group, ...closedGroups].slice(0, CLOSED_GROUP_MAX);
+      persist();
+    }
+    throw error;
+  }
 
-    // 等 onCreated 全部被树的创建流程登记，否则随后写入的父子关系会被它覆盖。
-    await ensureTreeFor(memberWindowId);
-    await waitUntilTabsTracked(memberWindowId, reopenedIds);
-
-    // 先按实时下标重建一次：`indexById` 是"删除不重编号"的近似表，
-    // 而下面判断"父是否排在子之前"必须依据物理事实。
-    // 注意：parentIndex 是**组内全局下标**，因此查找父时始终传完整的 members。
-    let indexMap = await refreshTreeIndexes(memberWindowId);
-    applyGroupStructure(members, windowMembers, idByMember, memberWindowId, indexMap);
-    await placeGroupMembers(windowMembers, idByMember, memberWindowId);
-    // 物理位置变化后重新校验一次不变量（父必须在子之前）。落位算法本身保证了这一点，
-    // 这一步是防御性的：不变量优先于"尽量还原"，违反者降级为顶层。
-    indexMap = await refreshTreeIndexes(memberWindowId);
-    applyGroupStructure(members, windowMembers, idByMember, memberWindowId, indexMap);
-
-    await restoreCollapsedState(windowMembers, idByMember, memberWindowId);
+  // 一个都没打开：把关闭组放回去并如实报错，不要让用户"点了一次撤销却什么都没发生"。
+  if (restoredIds.length === 0) {
+    closedGroups = [group, ...closedGroups].slice(0, CLOSED_GROUP_MAX);
+    persist();
+    return { ok: false, error: "标签页未能重新打开，关闭记录已保留，可稍后重试。" };
   }
 
   await activateTab(idByMember.get(members[0]));
-
-  closedGroups = closedGroups.filter((item) => item !== group);
-  persist();
 
   const skipped = members.length - restoredIds.length;
   logDebug("restoreClosedGroup", group.groupId, { restored: restoredIds.length, skipped });

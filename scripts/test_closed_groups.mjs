@@ -641,6 +641,28 @@ async function main() {
   assertEqual(parentsOf(structure, 1)[restoredW1Child.id], w1root.id, "窗口 1 的成员回到原父");
   assertEqual(parentsOf(structure, 2)[restoredW2Child.id], w2root.id, "窗口 2 的成员回到原父");
 
+  // --- 场景 10：重开阶段整体失败 → 关闭组保留，可重试 ---
+  console.log("场景 10：重开失败时保留关闭组");
+  const failA = await openTab({ url: "https://fail-a.example/", title: "FA" });
+  const failB = await openTab({ url: "https://fail-b.example/", title: "FB" });
+  await closed.closeTabsAsGroup(1, [failA.id, failB.id], "失败组");
+  assertEqual(closed.hasRestorableGroup(), true, "关闭后存在可撤销的组");
+  const realCreate = chrome.tabs.create;
+  chrome.tabs.create = (options, callback) => {
+    chrome.runtime.lastError = { message: "模拟创建失败" };
+    callback && callback(undefined);
+    chrome.runtime.lastError = null;
+  };
+  const failedRestore = await closed.restoreClosedGroup(1);
+  chrome.tabs.create = realCreate;
+  assertEqual(failedRestore.ok, false, "一个都没打开时如实返回失败");
+  await tick(20);
+  assertEqual(closed.hasRestorableGroup(), true, "关闭组被放回，仍可重试");
+  const retryRestore = await closed.restoreClosedGroup(1);
+  await tick(40);
+  assertEqual(retryRestore.ok, true, "重试后恢复成功");
+  assertEqual(retryRestore.restored, 2, "两个标签都回来了");
+
   console.log("");
   console.log(`共 ${checks} 项断言，失败 ${failures} 项`);
   if (failures > 0) {
