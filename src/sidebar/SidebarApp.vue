@@ -470,17 +470,32 @@ async function refreshPinned() {
 /**
  * 切换标签时只需改动高亮，不必重新查询整窗标签。
  * 10K 标签下这一优化把"切标签"从一次 IPC + 整窗序列化降成一次 O(n) 内存遍历。
+ *
+ * 但"目标标签不在列表里"时必须退化去刷新：那说明本地数据已经过时，最常见的是**刚新建的
+ * 标签**——`onCreated` 的防抖刷新还没跑，新标签尚未进列表，而切换事件已经到了；也可能是
+ * 刚从别的窗口移入本窗口的标签。
+ *
+ * 这种情况下**绝不能**把其它标签的活动标记清掉，原因有两条：
+ *   1. 界面会先进入一段"没有任何活动标签"的错误状态，直到刷新回来才恢复；
+ *   2. 自动跟随活动标签要靠"变化前的活动行还在不在视野里"判断用户有没有滚走，
+ *      清掉标记等于把这条信息一起丢掉——新建标签后就永远不跟随（表现为跟随功能没生效）。
+ * 因此这里保持原样，只补排一次整窗刷新（onCreated / onAttached 通常已经排过，防抖会合并）。
  */
 function applyActiveTab(tabId) {
   const list = tabs.value;
+  const targetIndex = list.findIndex((tab) => Number(tab.id) === Number(tabId));
+  if (targetIndex < 0) {
+    scheduleRefresh("full");
+    return;
+  }
   let changed = false;
-  for (const tab of list) {
-    const shouldBeActive = Number(tab.id) === Number(tabId);
+  list.forEach((tab, index) => {
+    const shouldBeActive = index === targetIndex;
     if (Boolean(tab.active) !== shouldBeActive) {
       tab.active = shouldBeActive;
       changed = true;
     }
-  }
+  });
   if (changed) {
     tabs.value = list.slice();
   }

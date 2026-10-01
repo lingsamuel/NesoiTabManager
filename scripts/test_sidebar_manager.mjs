@@ -11,6 +11,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { resolveActiveRow, shouldFollowActiveRow } from "../src/manager/utils/scroll_markers.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(join(here, "..", "src", "sidebar", "SidebarApp.vue"), "utf8");
@@ -261,6 +262,103 @@ console.log("场景 5：create 报错时给出中文提示，而不是静默失�
   await api.openManager();
   assertEqual(calls.created.length, 1, "尝试了新建");
   assert(status.state.type === "error" && status.state.message.includes("无法创建标签页"), "状态栏显示后台返回的错误信息");
+}
+
+console.log("场景 6：切换到一个还没进列表的标签（新建标签）");
+{
+  // 这段是真实源码里的 applyActiveTab：本地改高亮是性能优化，但目标标签未知时必须退化，
+  // 否则会先清掉所有活动标记 —— 界面短期显示成"没有活动标签"，同时把自动跟随活动标签
+  // 赖以判断的"变化前那条活动行"一起丢掉（表现为"新建标签后跟随不生效"）。
+  const applyActiveTab = new Function(
+    "tabs",
+    "scheduleRefresh",
+    `"use strict";
+     ${extractFunction("applyActiveTab")}
+     return applyActiveTab;`
+  );
+
+  const list = [
+    { id: 1, active: true, pinned: false, title: "A" },
+    { id: 2, active: false, pinned: false, title: "B" },
+  ];
+  const tabs = { value: list };
+  const refreshes = [];
+  const apply = applyActiveTab(tabs, (scope) => refreshes.push(scope));
+
+  apply(99);
+  assertEqual(refreshes.length, 1, "未知标签 → 补一次整窗刷新（新标签必须进列表）");
+  assertEqual(refreshes[0], "full", "补的是整窗刷新而不是固定标签刷新");
+  assertEqual(tabs.value[0].active, true, "旧活动标签仍保持活动（信息不能丢）");
+  assertEqual(tabs.value[1].active, false, "其它标签不受影响");
+  assertEqual(tabs.value, list, "没有替换数组，不触发无意义的渲染");
+
+  const beforeKnown = tabs.value;
+  apply(2);
+  assertEqual(refreshes.length, 1, "已知标签仍然走本地更新，不触发刷新");
+  assertEqual(tabs.value[0].active, false, "旧活动标签被取消");
+  assertEqual(tabs.value[1].active, true, "目标标签变为活动");
+  assert(tabs.value !== beforeKnown, "替换数组以触发渲染");
+
+  const sameAgain = tabs.value;
+  apply(2);
+  assertEqual(tabs.value, sameAgain, "活动标签没变化时不产生新数组");
+}
+
+console.log("场景 7：新建标签后的跟随判定（端到端串一遍事件顺序）");
+{
+  // 复刻真实顺序：活动标签在列表里 → onActivated 先到（新标签还没进列表）→ 整窗刷新落地。
+  // 用真实模块的 resolveActiveRow / shouldFollowActiveRow，避免"测的是一套、线上跑的是另一套"。
+  // 列表要足够长，否则新标签本来就在视野里、按规则不该滚动，测不出区别。
+  const tabs = {
+    value: Array.from({ length: 40 }, (_, index) => ({
+      id: index + 1,
+      active: index === 0,
+      pinned: false,
+    })),
+  };
+  const applyActiveTab = new Function(
+    "tabs",
+    "scheduleRefresh",
+    `"use strict";
+     ${extractFunction("applyActiveTab")}
+     return applyActiveTab;`
+  )(tabs, () => {});
+
+  const activeEntryOf = (list) => {
+    const tab = list.find((item) => item.active && !item.pinned);
+    if (!tab) {
+      return null;
+    }
+    const row = resolveActiveRow(tab.id, list, {});
+    return row ? { tabId: Number(tab.id), index: Number(row.index) } : null;
+  };
+
+  const entryBefore = activeEntryOf(tabs.value);
+  assertEqual(entryBefore.tabId, 1, "切换前的活动标签可解析");
+  assertEqual(entryBefore.index, 0, "它在第 0 行");
+
+  applyActiveTab(99);
+  const entryDuring = activeEntryOf(tabs.value);
+  assert(entryDuring !== null, "切换事件到达时活动标签没有变成 null（跟随依据保住了）");
+  assertEqual(entryDuring ? entryDuring.index : -1, entryBefore.index, "行号也保持不变");
+
+  // 整窗刷新落地：新标签追加在窗口末尾并成为活动标签（查询结果里同时只有一个活动标签）
+  tabs.value = tabs.value
+    .map((tab) => ({ ...tab, active: false }))
+    .concat([{ id: 99, active: true, pinned: false }]);
+  const entryAfter = activeEntryOf(tabs.value);
+  assertEqual(entryAfter.index, 40, "新活动标签在列表末尾（远在视野之外）");
+  assertEqual(
+    shouldFollowActiveRow({
+      activeIndex: entryAfter.index,
+      previousActiveIndex: entryDuring ? entryDuring.index : -1,
+      itemHeight: 30,
+      scrollTop: 0,
+      viewportHeight: 300,
+    }),
+    true,
+    "旧活动行仍在视野里 → 跟随到新建的标签"
+  );
 }
 
 console.log("");
