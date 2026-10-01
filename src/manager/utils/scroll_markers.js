@@ -311,18 +311,23 @@ export function isRowFullyVisible(options = {}) {
  * 两个条件同时成立才返回 true：
  * 1. 目标行还没有**完整**可见——已经看得见就不动，否则每次切换标签、点击侧边栏里
  *    紧邻的行都会让列表轻微抖动；
- * 2. 允许移动滚动位置，二者其一：
+ * 2. 允许移动滚动位置，三者其一：
  *    - listRecreated：列表刚建立/重建（例如筛选把树清空后又恢复）。此时滚动位置必然是
  *      初始值 0，它不代表用户的任何意图，用活动标签的位置取代它正合适；
+ *    - previousPinned：旧活动标签是**固定标签**。固定标签常驻顶部固定区、始终可见，
+ *      因此它作为"用户当前所在位置"与"旧活动行仍在视口内"等价——最典型的场景是停在
+ *      固定标签上按 Ctrl+T：新标签立刻成为活动标签，此时应当跟过去；
  *    - 旧活动行仍在视口内：说明列表本来就停在用户关心的位置上，他并没有滚去别处看，
- *      此时跟随新活动标签才是符合预期的。反之（旧活动行已滚出视野）一律不动，
- *      避免把用户正在浏览的位置拉走。
+ *      此时跟随新活动标签才是符合预期的。
  *
- * @param {{activeIndex?: number, previousActiveIndex?: number, listRecreated?: boolean,
- *          itemHeight?: number, scrollTop?: number, viewportHeight?: number,
- *          tolerance?: number}} options
+ * 反之（旧活动行已滚出视野、且不是固定标签）一律不动，避免把用户正在浏览的位置拉走。
+ *
+ * @param {{activeIndex?: number, previousActiveIndex?: number, previousPinned?: boolean,
+ *          listRecreated?: boolean, itemHeight?: number, scrollTop?: number,
+ *          viewportHeight?: number, tolerance?: number}} options
  *   activeIndex 是新活动标签在行序列里的行号；previousActiveIndex 是变化前那条活动行的行号
- *   （没有旧活动行时传 -1，例如页面刚打开、或旧活动标签是固定标签）。
+ *   （没有旧活动行时传 -1，例如页面刚打开、或旧活动标签在行序列里定位不到）。
+ *   previousPinned 表示变化前的活动标签是固定标签。
  * @returns {boolean}
  */
 export function shouldFollowActiveRow(options = {}) {
@@ -339,7 +344,7 @@ export function shouldFollowActiveRow(options = {}) {
   if (isRowFullyVisible({ index: activeIndex, ...geometry })) {
     return false;
   }
-  if (options.listRecreated) {
+  if (options.listRecreated || options.previousPinned) {
     return true;
   }
   return isRowInView({ index: options.previousActiveIndex, ...geometry });

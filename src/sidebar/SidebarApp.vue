@@ -184,7 +184,11 @@ const items = computed(() => {
 /**
  * 活动标签在行序列里的位置 + 它的标签 id，供滚动条轨道标记与"跟随活动标签"共用。
  *
- * 固定标签常驻可见（在固定标签区里，不随列表滚动），因此不参与行序列。
+ * 固定标签常驻在顶部固定区、不随列表滚动，因此行号记为 -1 并带上 pinned 标记——
+ * 但它**必须**出现在这里：自动跟随活动标签要知道"上一个活动标签是不是固定标签"。
+ * 固定标签始终可见，从它切走等同于"用户没有滚走"，可以直接跟随
+ * （典型场景：停在固定标签上按 Ctrl+T，新标签立刻成为活动标签，应当跟过去）。
+ *
  * 之所以要带上 tabId：行号会因为折叠子树、前后增删标签而变化，行号变了并不等于
  * "换了活动标签"。只有 tabId 真的变了才值得滚动跟随，否则用户折叠一棵子树、
  * 或关掉上面一个标签，列表都会毫无理由地跳位置。
@@ -194,21 +198,28 @@ const activeEntry = computed(() => {
   if (id === null) {
     return null;
   }
-  const activeTab = tabs.value.find((tab) => tab.active && !tab.pinned);
+  const activeTab = tabs.value.find((tab) => tab.active);
   if (!activeTab) {
     return null;
   }
-  const row = resolveActiveRow(activeTab.id, items.value, tree.parentsFor(id));
+  const tabId = Number(activeTab.id);
+  if (activeTab.pinned) {
+    return { tabId, index: -1, isAncestor: false, pinned: true };
+  }
+  const row = resolveActiveRow(tabId, items.value, tree.parentsFor(id));
   if (!row) {
     return null;
   }
-  return { tabId: Number(activeTab.id), index: Number(row.index), isAncestor: Boolean(row.isAncestor) };
+  return { tabId, index: Number(row.index), isAncestor: Boolean(row.isAncestor), pinned: false };
 });
 
-/** 活动标签所在行（对外形状与 resolveActiveRow 的结果一致），供轨道刻度使用。 */
+/**
+ * 活动标签所在行（对外形状与 resolveActiveRow 的结果一致），供轨道刻度使用。
+ * 固定标签不在行序列里，也不必在轨道上标出——它的活动态由固定标签区的方块表示。
+ */
 const activeRow = computed(() => {
   const entry = activeEntry.value;
-  if (!entry) {
+  if (!entry || entry.pinned || entry.index < 0) {
     return null;
   }
   return { index: entry.index, isAncestor: entry.isAncestor };
@@ -365,14 +376,15 @@ function locateActiveTab() {
  *
  * 与上面的「定位」按钮（用户显式要求，无论如何都要滚）分开：自动跟随必须先确认
  * "可以动滚动位置"，规则全部交给纯函数 shouldFollowActiveRow——
- * 目标行已经完整可见就不动；只有"列表刚重建"或"旧活动行仍在视野里"时才动。
+ * 目标行已经完整可见就不动；只有"列表刚重建"、"旧活动标签是固定标签"或"旧活动行仍在视野里"时才动。
  *
- * @param {{previousIndex?: number, listRecreated?: boolean}} options
+ * @param {{previousIndex?: number, previousPinned?: boolean, listRecreated?: boolean}} options
  *   previousIndex：变化之前那条活动行的行号（没有就传 -1）。
+ *   previousPinned：变化之前的活动标签是固定标签（它始终可见，等同于"用户没滚走"）。
  *   listRecreated：列表是不是刚建立/重建（此时滚动位置必然是初始值，不代表用户意图）。
  */
 async function followActiveTab(options = {}) {
-  const { previousIndex = -1, listRecreated = false } = options;
+  const { previousIndex = -1, previousPinned = false, listRecreated = false } = options;
   // 等本轮渲染落地再判断和滚动：行序列、行高、视口高度都要用渲染后的真实值。
   await nextTick();
   const entry = activeEntry.value;
@@ -388,6 +400,7 @@ async function followActiveTab(options = {}) {
     shouldFollowActiveRow({
       activeIndex: entry.index,
       previousActiveIndex: previousIndex,
+      previousPinned,
       listRecreated,
       ...geometry,
     })
@@ -412,19 +425,26 @@ watch(treeRef, (instance) => {
 /**
  * 切换标签（以及任何导致活动标签变化的事件）时跟随定位。
  *
- * 只在"旧活动行还在视野里"时才允许滚动：那种情况说明列表本来就停在用户关心的位置上，
- * 他并没有滚去别处看，于是跟随新活动标签符合预期；旧活动行已经滚出视野就一律不动。
+ * 只在"允许移动滚动位置"时才滚：旧活动标签是固定标签（始终可见），或者旧活动行还在视野里
+ * （说明列表本来就停在用户关心的位置上，他并没有滚去别处看）；其余情况一律不动。
+ * 新活动标签是固定标签时也不动——它本来就在固定区里看得见。
+ *
  * 行号变化但 tabId 没变（折叠子树、前后增删标签）不算活动标签变化，直接跳过，
  * 否则这些操作会让列表莫名其妙地跳位置。
  */
 watch(activeEntry, (next, previous) => {
-  if (!next) {
+  if (!next || next.pinned || next.index < 0) {
     return;
   }
   if (previous && previous.tabId === next.tabId) {
     return;
   }
-  followActiveTab({ previousIndex: previous ? previous.index : -1 });
+  followActiveTab({
+    previousIndex: previous ? previous.index : -1,
+    // 固定标签作为"上一个活动标签"时视作在视野里：停在固定标签上按 Ctrl+T
+    // 就是这条分支——新标签成为活动标签，列表应当跟过去。
+    previousPinned: Boolean(previous && previous.pinned),
+  });
 });
 
 const emptyText = computed(() => {

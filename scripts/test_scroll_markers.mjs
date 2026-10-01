@@ -355,7 +355,19 @@ function main() {
   assertEqual(
     shouldFollowActiveRow({ activeIndex: 40, previousActiveIndex: -1, ...viewport }),
     false,
-    "没有旧活动行（页面刚打开/旧活动是固定标签）且不是重建 → 不跟随"
+    "没有旧活动行（页面刚打开/旧活动定位不到）且不是重建 → 不跟随"
+  );
+  // 旧活动标签是固定标签：它常驻固定区、始终可见，等同于"用户没有滚走" → 跟随。
+  // 对应"停在固定标签上按 Ctrl+T"：新标签成为活动标签，列表应当跟过去。
+  assertEqual(
+    shouldFollowActiveRow({ activeIndex: 40, previousActiveIndex: -1, previousPinned: true, ...viewport }),
+    true,
+    "旧活动标签是固定标签 → 跟随"
+  );
+  assertEqual(
+    shouldFollowActiveRow({ activeIndex: 3, previousActiveIndex: -1, previousPinned: true, ...viewport }),
+    false,
+    "目标行已完整可见 → 即便旧活动标签是固定标签也不滚"
   );
   assertEqual(
     shouldFollowActiveRow({ activeIndex: -1, listRecreated: true, ...viewport }),

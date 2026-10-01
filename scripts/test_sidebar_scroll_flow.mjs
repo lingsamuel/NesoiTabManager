@@ -388,6 +388,58 @@ console.log("场景 4：旧活动标签已滚出视野时切换标签 → 不动
   check(scrollContainer.scrollTop === before, "列表没有被拉走", `${before} → ${scrollContainer.scrollTop}`);
 }
 
+console.log("场景 5：停在固定标签上按 Ctrl+T → 跟随到新标签");
+{
+  // 固定标签追加到窗口里：先广播 onCreated，再由防抖整窗刷新带进列表（真实顺序）
+  const pinned = {
+    id: 777,
+    windowId: WINDOW_ID,
+    index: browserTabs.length,
+    active: true,
+    pinned: true,
+    title: "固定标签",
+    url: "https://pinned.example",
+  };
+  browserTabs = browserTabs.map((tab) => ({ ...tab, active: false })).concat([pinned]);
+  for (const listener of listeners.created) {
+    listener({ id: pinned.id, windowId: WINDOW_ID });
+  }
+  for (const listener of listeners.activated) {
+    listener({ tabId: pinned.id, windowId: WINDOW_ID });
+  }
+  await sleep(400); // 等防抖刷新把固定标签带进列表
+  const before = scrollContainer.scrollTop;
+  check(before === 0, "停在固定标签上时列表没有被动过", `scrollTop=${before}`);
+
+  // Ctrl+T：浏览器自己新建并激活标签，侧边栏只收到事件（没有我们的后台消息）
+  const ctrlT = {
+    id: 1000,
+    windowId: WINDOW_ID,
+    index: browserTabs.length,
+    active: true,
+    pinned: false,
+    title: "Ctrl+T 新标签",
+    url: "about:newtab",
+  };
+  browserTabs = browserTabs.map((tab) => ({ ...tab, active: false })).concat([ctrlT]);
+  for (const listener of listeners.created) {
+    listener({ id: ctrlT.id, windowId: WINDOW_ID });
+  }
+  for (const listener of listeners.activated) {
+    listener({ tabId: ctrlT.id, windowId: WINDOW_ID });
+  }
+  await sleep(400);
+
+  // 固定标签不占行，所以新标签是非固定标签里的最后一行
+  const lastRow = browserTabs.filter((tab) => !tab.pinned).length - 1;
+  check(scrollContainer.scrollTop > before, "列表跟着滚了下去", `${before} → ${scrollContainer.scrollTop}`);
+  check(
+    isRowVisible(lastRow),
+    "新标签落在可见区间里",
+    `可见 ${visibleRange().start}..${visibleRange().end}，新标签行 ${lastRow}`
+  );
+}
+
 console.log("");
 console.log(failures === 0 ? "✓ 集成验证全部通过" : `✗ 集成验证失败 ${failures} 项`);
 process.exitCode = failures === 0 ? 0 : 1;
