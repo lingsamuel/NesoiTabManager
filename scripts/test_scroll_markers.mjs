@@ -5,9 +5,12 @@
 
 import {
   buildTrackMarkers,
+  isRowFullyVisible,
+  isRowInView,
   resolveActiveRows,
   pickCurrentMatchFromVisibleRange,
   resolveActiveRow,
+  shouldFollowActiveRow,
   toTrackTop,
 } from "../src/manager/utils/scroll_markers.js";
 
@@ -291,6 +294,86 @@ function main() {
   );
   assertDeepEqual(resolveActiveRows([{ tabId: 99, parents: {} }], multiIndex), [], "定位不到就整条丢弃");
   assertDeepEqual(resolveActiveRows([], multiIndex), [], "没有活动标签时返回空数组");
+
+  console.log("场景 12：某一行在不在视口里（跟随活动标签的判定基础）");
+  // 行高 30、视口高 300、停在顶部：正好显示 0..9 行
+  const viewport = { itemHeight: 30, scrollTop: 0, viewportHeight: 300 };
+  assertEqual(isRowFullyVisible({ index: 0, ...viewport }), true, "首行完整可见");
+  assertEqual(isRowFullyVisible({ index: 9, ...viewport }), true, "视口最后一行完整可见");
+  assertEqual(isRowFullyVisible({ index: 10, ...viewport }), false, "视口之外的一行不完整可见");
+  assertEqual(isRowInView({ index: 10, ...viewport }), true, "紧贴视口下边界（容差内）算在视野里");
+  assertEqual(isRowInView({ index: 12, ...viewport }), false, "再往下两行就不在视野里了");
+
+  // 滚到行中间：第 5 行（150..180）被视口上边界切掉一截
+  const midRow = { itemHeight: 30, scrollTop: 165, viewportHeight: 300 };
+  assertEqual(isRowInView({ index: 5, ...midRow }), true, "被切掉一截的行仍在视野里");
+  assertEqual(isRowFullyVisible({ index: 5, ...midRow }), false, "被切掉一截的行不算完整可见");
+
+  // 容差：滚动位置是小数时，贴边的行不能因为零点几像素被判成不可见，
+  // 否则每次切换标签都会重复居中一次。
+  const fractional = { index: 9, itemHeight: 30, scrollTop: 1, viewportHeight: 298.5 };
+  assertEqual(isRowFullyVisible(fractional), true, "容差内贴边视为完整可见（不会重复居中）");
+  assertEqual(isRowFullyVisible({ ...fractional, tolerance: 0 }), false, "不带容差时同一行判成不可见");
+
+  // 视口高度还没测出来（组件刚挂载）时无从判断，一律按"不可见"处理
+  assertEqual(
+    isRowFullyVisible({ index: 0, itemHeight: 30, scrollTop: 0, viewportHeight: 0 }),
+    false,
+    "视口高度为 0 时不认为可见"
+  );
+  assertEqual(
+    isRowInView({ index: 0, itemHeight: 30, scrollTop: 0, viewportHeight: 0 }),
+    false,
+    "视口高度为 0 时不算在视野里"
+  );
+
+  console.log("场景 13：要不要跟随新的活动标签");
+  // 目标行已经看得见 → 一律不动（否则每次切标签、点紧邻的行都会让列表抖一下）
+  assertEqual(
+    shouldFollowActiveRow({ activeIndex: 3, previousActiveIndex: 4, listRecreated: true, ...viewport }),
+    false,
+    "目标行已完整可见 → 不滚"
+  );
+  // 目标行看不到，且列表刚重建（滚动位置是默认值，不代表用户意图）→ 跟随
+  assertEqual(
+    shouldFollowActiveRow({ activeIndex: 40, listRecreated: true, ...viewport }),
+    true,
+    "列表刚重建 → 跟随（把初始滚动位置换成活动标签的位置）"
+  );
+  // 目标行看不到，但旧活动行还在视野里 → 说明用户没滚走，可以跟随
+  assertEqual(
+    shouldFollowActiveRow({ activeIndex: 40, previousActiveIndex: 5, ...viewport }),
+    true,
+    "旧活动行在视野里 → 跟随"
+  );
+  // 目标行看不到，旧活动行也已经滚出视野 → 用户正看着别处，绝不拉走
+  assertEqual(
+    shouldFollowActiveRow({ activeIndex: 40, previousActiveIndex: 12, ...viewport }),
+    false,
+    "旧活动行已滚出视野 → 不跟随"
+  );
+  assertEqual(
+    shouldFollowActiveRow({ activeIndex: 40, previousActiveIndex: -1, ...viewport }),
+    false,
+    "没有旧活动行（页面刚打开/旧活动是固定标签）且不是重建 → 不跟随"
+  );
+  assertEqual(
+    shouldFollowActiveRow({ activeIndex: -1, listRecreated: true, ...viewport }),
+    false,
+    "活动标签不在行序列里（固定标签/被筛掉）→ 不滚"
+  );
+  // 视口高度还没测出来时：重建仍要滚（否则初次打开时列表停在顶部），
+  // 但"旧活动行在视野里"无从判断，只能不滚。
+  assertEqual(
+    shouldFollowActiveRow({ activeIndex: 40, listRecreated: true, itemHeight: 30, scrollTop: 0, viewportHeight: 0 }),
+    true,
+    "视口高度未知 + 列表刚重建 → 仍然定位"
+  );
+  assertEqual(
+    shouldFollowActiveRow({ activeIndex: 40, previousActiveIndex: 5, itemHeight: 30, scrollTop: 0, viewportHeight: 0 }),
+    false,
+    "视口高度未知 → 不拿旧的可见性结论去滚动"
+  );
 
   console.log("");
   console.log(`共 ${checks} 项断言，失败 ${failures} 项`);

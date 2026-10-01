@@ -238,6 +238,113 @@ function clusterKind(members) {
   return "match";
 }
 
+// ---------------------------------------------------------------------------
+// 跟随活动标签：判断"该不该把活动行滚到视口中间"
+// ---------------------------------------------------------------------------
+
+// 判断可见性时允许的像素容差。
+// 行的上下边界是行高的整数倍，而滚动位置常常是小数（按行高居中后尤其如此），
+// 不留容差的话"刚好贴边"的行会被判成不可见，于是每次切换标签都重复居中一次。
+export const ROW_VISIBILITY_TOLERANCE_PX = 1;
+
+/**
+ * 把"行号 + 行高 + 滚动位置 + 视口高度"折算成两段像素区间：
+ * 行自身的 [rowTop, rowBottom) 与视口（按容差放宽后的）[viewTop, viewBottom)。
+ *
+ * @returns {{rowTop: number, rowBottom: number, viewTop: number, viewBottom: number}|null}
+ *   null 表示参数不足以判断：行号非法、行高未知、或视口高度还没测出来（组件刚挂载）。
+ */
+function resolveRowBounds(options = {}) {
+  const index = Number(options.index);
+  const itemHeight = Number(options.itemHeight);
+  const scrollTop = Number(options.scrollTop);
+  const viewportHeight = Number(options.viewportHeight);
+  const rawTolerance = Number(options.tolerance);
+  const tolerance = Number.isFinite(rawTolerance) ? Math.max(0, rawTolerance) : ROW_VISIBILITY_TOLERANCE_PX;
+  if (!Number.isFinite(index) || index < 0) {
+    return null;
+  }
+  if (!Number.isFinite(itemHeight) || itemHeight <= 0) {
+    return null;
+  }
+  if (!Number.isFinite(scrollTop) || scrollTop < 0) {
+    return null;
+  }
+  if (!Number.isFinite(viewportHeight) || viewportHeight <= 0) {
+    return null;
+  }
+  return {
+    rowTop: index * itemHeight,
+    rowBottom: (index + 1) * itemHeight,
+    viewTop: scrollTop - tolerance,
+    viewBottom: scrollTop + viewportHeight + tolerance,
+  };
+}
+
+/**
+ * 某一行是否**至少有一部分**落在视口里（即"在视野里"）。
+ * 用于判断"用户是不是还停在旧活动标签附近"。
+ */
+export function isRowInView(options = {}) {
+  const bounds = resolveRowBounds(options);
+  if (!bounds) {
+    return false;
+  }
+  return bounds.rowBottom > bounds.viewTop && bounds.rowTop < bounds.viewBottom;
+}
+
+/**
+ * 某一行是否**完整**落在视口里（上下边界都可见）。
+ * 用于判断"目标行已经看得见了、没有必要再动滚动位置"。
+ */
+export function isRowFullyVisible(options = {}) {
+  const bounds = resolveRowBounds(options);
+  if (!bounds) {
+    return false;
+  }
+  return bounds.rowTop >= bounds.viewTop && bounds.rowBottom <= bounds.viewBottom;
+}
+
+/**
+ * 活动标签变化（或列表刚重建）时，是否需要把新的活动行滚到视口中间。
+ *
+ * 两个条件同时成立才返回 true：
+ * 1. 目标行还没有**完整**可见——已经看得见就不动，否则每次切换标签、点击侧边栏里
+ *    紧邻的行都会让列表轻微抖动；
+ * 2. 允许移动滚动位置，二者其一：
+ *    - listRecreated：列表刚建立/重建（例如筛选把树清空后又恢复）。此时滚动位置必然是
+ *      初始值 0，它不代表用户的任何意图，用活动标签的位置取代它正合适；
+ *    - 旧活动行仍在视口内：说明列表本来就停在用户关心的位置上，他并没有滚去别处看，
+ *      此时跟随新活动标签才是符合预期的。反之（旧活动行已滚出视野）一律不动，
+ *      避免把用户正在浏览的位置拉走。
+ *
+ * @param {{activeIndex?: number, previousActiveIndex?: number, listRecreated?: boolean,
+ *          itemHeight?: number, scrollTop?: number, viewportHeight?: number,
+ *          tolerance?: number}} options
+ *   activeIndex 是新活动标签在行序列里的行号；previousActiveIndex 是变化前那条活动行的行号
+ *   （没有旧活动行时传 -1，例如页面刚打开、或旧活动标签是固定标签）。
+ * @returns {boolean}
+ */
+export function shouldFollowActiveRow(options = {}) {
+  const activeIndex = Number(options.activeIndex);
+  if (!Number.isFinite(activeIndex) || activeIndex < 0) {
+    return false;
+  }
+  const geometry = {
+    itemHeight: options.itemHeight,
+    scrollTop: options.scrollTop,
+    viewportHeight: options.viewportHeight,
+    tolerance: options.tolerance,
+  };
+  if (isRowFullyVisible({ index: activeIndex, ...geometry })) {
+    return false;
+  }
+  if (options.listRecreated) {
+    return true;
+  }
+  return isRowInView({ index: options.previousActiveIndex, ...geometry });
+}
+
 /**
  * 滚动时同步"当前跳转项"的规则。
  *

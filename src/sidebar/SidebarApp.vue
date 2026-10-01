@@ -8,7 +8,7 @@
 // 生命周期：Firefox 每个窗口各有一份独立的侧边栏文档实例，窗口关闭或用户收起侧边栏时文档被卸载，
 // 监听器随之销毁——所以这个页面不常驻，对浏览器启动零开销。
 
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import FilterInput from "../manager/components/FilterInput.vue";
 import { useFilterQuery } from "../manager/composables/useFilterQuery.js";
 import { useMatchNavigation } from "../manager/composables/useMatchNavigation.js";
@@ -25,7 +25,11 @@ import {
   isExternalDropData,
   parseDroppedItem,
 } from "./dropped_data.js";
-import { pickCurrentMatchFromVisibleRange, resolveActiveRow } from "../manager/utils/scroll_markers.js";
+import {
+  pickCurrentMatchFromVisibleRange,
+  resolveActiveRow,
+  shouldFollowActiveRow,
+} from "../manager/utils/scroll_markers.js";
 import SidebarPinnedTabs from "./components/SidebarPinnedTabs.vue";
 import SidebarTabTree from "./components/SidebarTabTree.vue";
 
@@ -112,10 +116,14 @@ const items = computed(() => {
 });
 
 /**
- * 活动标签在行序列里的位置，供滚动条轨道标记使用。
- * 固定标签常驻可见（在固定标签区里，不随列表滚动），因此不参与轨道标记。
+ * 活动标签在行序列里的位置 + 它的标签 id，供滚动条轨道标记与"跟随活动标签"共用。
+ *
+ * 固定标签常驻可见（在固定标签区里，不随列表滚动），因此不参与行序列。
+ * 之所以要带上 tabId：行号会因为折叠子树、前后增删标签而变化，行号变了并不等于
+ * "换了活动标签"。只有 tabId 真的变了才值得滚动跟随，否则用户折叠一棵子树、
+ * 或关掉上面一个标签，列表都会毫无理由地跳位置。
  */
-const activeRow = computed(() => {
+const activeEntry = computed(() => {
   const id = windowId.value;
   if (id === null) {
     return null;
@@ -124,7 +132,20 @@ const activeRow = computed(() => {
   if (!activeTab) {
     return null;
   }
-  return resolveActiveRow(activeTab.id, items.value, tree.parentsFor(id));
+  const row = resolveActiveRow(activeTab.id, items.value, tree.parentsFor(id));
+  if (!row) {
+    return null;
+  }
+  return { tabId: Number(activeTab.id), index: Number(row.index), isAncestor: Boolean(row.isAncestor) };
+});
+
+/** 活动标签所在行（对外形状与 resolveActiveRow 的结果一致），供轨道刻度使用。 */
+const activeRow = computed(() => {
+  const entry = activeEntry.value;
+  if (!entry) {
+    return null;
+  }
+  return { index: entry.index, isAncestor: entry.isAncestor };
 });
 
 /**
@@ -272,6 +293,73 @@ function locateActiveTab() {
   // 清掉上一次定位失败留下的提示，否则用户切换标签后再定位，仍会看到那句旧报错。
   setStatus("", "");
 }
+
+/**
+ * 自动跟随活动标签：把当前活动行滚到视口中间。
+ *
+ * 与上面的「定位」按钮（用户显式要求，无论如何都要滚）分开：自动跟随必须先确认
+ * "可以动滚动位置"，规则全部交给纯函数 shouldFollowActiveRow——
+ * 目标行已经完整可见就不动；只有"列表刚重建"或"旧活动行仍在视野里"时才动。
+ *
+ * @param {{previousIndex?: number, listRecreated?: boolean}} options
+ *   previousIndex：变化之前那条活动行的行号（没有就传 -1）。
+ *   listRecreated：列表是不是刚建立/重建（此时滚动位置必然是初始值，不代表用户意图）。
+ */
+async function followActiveTab(options = {}) {
+  const { previousIndex = -1, listRecreated = false } = options;
+  // 等本轮渲染落地再判断和滚动：行序列、行高、视口高度都要用渲染后的真实值。
+  await nextTick();
+  const entry = activeEntry.value;
+  const list = treeRef.value;
+  if (!entry || !list || typeof list.getScrollState !== "function") {
+    return;
+  }
+  const geometry = list.getScrollState();
+  if (!geometry) {
+    return;
+  }
+  if (
+    shouldFollowActiveRow({
+      activeIndex: entry.index,
+      previousActiveIndex: previousIndex,
+      listRecreated,
+      ...geometry,
+    })
+  ) {
+    scrollToRow(entry.index);
+  }
+}
+
+/**
+ * 初始化（以及列表被重建）时的定位。
+ *
+ * 树组件的实例出现，就说明列表刚刚（重新）挂载：此刻滚动位置必然是默认值 0。
+ * 这个值不代表用户的任何意图——可能只是页面刚打开，也可能是筛选把树清空后又恢复——
+ * 所以直接换成活动标签的位置，而不是让用户对着列表顶部找当前标签。
+ */
+watch(treeRef, (instance) => {
+  if (instance) {
+    followActiveTab({ listRecreated: true });
+  }
+});
+
+/**
+ * 切换标签（以及任何导致活动标签变化的事件）时跟随定位。
+ *
+ * 只在"旧活动行还在视野里"时才允许滚动：那种情况说明列表本来就停在用户关心的位置上，
+ * 他并没有滚去别处看，于是跟随新活动标签符合预期；旧活动行已经滚出视野就一律不动。
+ * 行号变化但 tabId 没变（折叠子树、前后增删标签）不算活动标签变化，直接跳过，
+ * 否则这些操作会让列表莫名其妙地跳位置。
+ */
+watch(activeEntry, (next, previous) => {
+  if (!next) {
+    return;
+  }
+  if (previous && previous.tabId === next.tabId) {
+    return;
+  }
+  followActiveTab({ previousIndex: previous ? previous.index : -1 });
+});
 
 const emptyText = computed(() => {
   if (hasCommittedQuery.value && filter.mode.value === "filter") {

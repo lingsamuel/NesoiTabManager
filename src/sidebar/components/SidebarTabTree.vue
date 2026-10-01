@@ -150,6 +150,14 @@ defineExpose({
       listRef.value.scrollToIndex(index);
     }
   },
+  // 透传列表的真实滚动几何：父级据此判断"活动标签是否（完整）在视野里"。
+  // 不能用 range-change 上报的渲染区间代替——那里面含 overscan，口径比真正的视口宽。
+  getScrollState() {
+    if (listRef.value && typeof listRef.value.getScrollState === "function") {
+      return listRef.value.getScrollState();
+    }
+    return null;
+  },
 });
 
 function updateTrackHeight() {

@@ -158,10 +158,35 @@ function scrollToBottom() {
   syncScrollTop();
 }
 
+/**
+ * 读取滚动容器当前的真实几何状态，供调用方判断"某一行在不在视野里"。
+ *
+ * 为什么不复用 range-change：那里上报的是**渲染区间**（含 overscan，比真正的视口上下各多
+ * 6 行），用它判可见性会把"其实已经滚出视野"误判成"还在视野里"。这里直接读 DOM，
+ * 口径就是用户真正看到的那个窗口。
+ *
+ * @returns {{scrollTop: number, viewportHeight: number, itemHeight: number, itemCount: number}}
+ *   viewportHeight 为 0 表示容器高度还没测出来（刚挂载），此时调用方应视作"无从判断"。
+ */
+function getScrollState() {
+  return {
+    scrollTop: container.value ? container.value.scrollTop : 0,
+    viewportHeight: container.value ? container.value.clientHeight || 0 : 0,
+    itemHeight: props.itemHeight,
+    itemCount: props.items.length,
+  };
+}
+
 // 滚动到指定行并尽量居中显示，用于“跳转模式”下在匹配项之间导航。
 function scrollToIndex(index) {
   if (!container.value || !Number.isFinite(index) || props.items.length === 0) {
     return;
+  }
+  // 视口高度可能还没测出来（组件刚挂载的那一帧）：先按容器的真实高度补测一次。
+  // 否则 maxScroll 会被算成"内容总高"，居中位置随即被浏览器夹到列表底部，
+  // 目标行虽然可见却是贴边的（"定位到活动标签"刚挂载就会踩到这种情况）。
+  if (viewportHeight.value <= 0 && (container.value.clientHeight || 0) > 0) {
+    updateViewportHeight();
   }
   const target = Math.max(0, Math.min(index, props.items.length - 1));
   const maxScroll = Math.max(0, totalHeight.value - viewportHeight.value);
@@ -245,6 +270,7 @@ defineExpose({
   scrollToTop,
   scrollToBottom,
   scrollToIndex,
+  getScrollState,
 });
 
 onMounted(() => {
