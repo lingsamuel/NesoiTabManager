@@ -444,6 +444,68 @@ async function main() {
   assertEqual(parentUrlOf("https://f.example.com/"), "https://b.example.com/", "重启后 F 仍挂在 B 下");
   assertEqual(parentUrlOf("https://b.example.com/"), undefined, "重启后 B 仍是顶层");
 
+  // --- 场景 10：后台被回收时父标签被关闭，之后只能靠快照重建 ---
+  // 触发条件：MV3 的 SW 空闲被回收后，tabs.onRemoved 到达时 trees 里没有该窗口的树，
+  // handleTreeTabRemoved 会直接返回（不做提升）；用户随后打开管理页/侧边栏才首次对齐，
+  // 此时快照里仍有已被关闭的父标签。回归点：子标签必须"就近提升"到祖父，而不是被抬成顶层。
+  console.log("场景 10：后台被回收后父标签被关闭（快照重建路径）");
+  const seedOrphanSnapshot = (windowId, items) => {
+    storageData.local[`treeStructure:${windowId}`] = {
+      v: 1,
+      at: Date.now(),
+      n: items.length,
+      items,
+    };
+  };
+
+  // 10a：CDE 与被关闭的 B 的 URL 各不相同（唯一 URL 能靠位置修正配对）
+  windows.push({ id: 5 });
+  seedOrphanSnapshot(5, [
+    { u: "https://a.example.com/", t: "A", p: -1 },
+    { u: "https://b.example.com/", t: "B", p: 0 },
+    { u: "https://c.example.com/", t: "C", p: 1 },
+    { u: "https://d.example.com/", t: "D", p: 1 },
+    { u: "https://e.example.com/", t: "E", p: 1 },
+  ]);
+  const a10 = addTab({ windowId: 5, url: "https://a.example.com/", title: "A" });
+  const c10 = addTab({ windowId: 5, url: "https://c.example.com/", title: "C" });
+  const d10 = addTab({ windowId: 5, url: "https://d.example.com/", title: "D" });
+  const e10 = addTab({ windowId: 5, url: "https://e.example.com/", title: "E" });
+  let rebuilt10 = await tree.getTreeStructure([5]);
+  assertEqual(rebuilt10.structures[5].parents[c10.id], a10.id, "10a：C 就近提升到祖父 A 之下");
+  assertEqual(rebuilt10.structures[5].parents[d10.id], a10.id, "10a：D 就近提升到祖父 A 之下");
+  assertEqual(rebuilt10.structures[5].parents[e10.id], a10.id, "10a：E 就近提升到祖父 A 之下");
+
+  // 10b：CDE 都是新标签页（URL 完全相同）——同名 URL 最容易让配对整体错位，
+  // 错位后真正的子标签会被当成"新增标签"或父下标落空，最终全部变顶层。
+  windows.push({ id: 6 });
+  seedOrphanSnapshot(6, [
+    { u: "https://f.example.com/", t: "F", p: -1 },
+    { u: "https://g.example.com/", t: "G", p: 0 },
+    { u: "chrome://newtab/", t: "H", p: 1 },
+    { u: "chrome://newtab/", t: "I", p: 1 },
+    { u: "chrome://newtab/", t: "J", p: 1 },
+  ]);
+  const f10 = addTab({ windowId: 6, url: "https://f.example.com/", title: "F" });
+  const h10 = addTab({ windowId: 6, url: "chrome://newtab/", title: "H" });
+  const i10 = addTab({ windowId: 6, url: "chrome://newtab/", title: "I" });
+  const j10 = addTab({ windowId: 6, url: "chrome://newtab/", title: "J" });
+  rebuilt10 = await tree.getTreeStructure([6]);
+  assertEqual(rebuilt10.structures[6].parents[h10.id], f10.id, "10b：新标签页 H 就近提升到祖父 F 之下");
+  assertEqual(rebuilt10.structures[6].parents[i10.id], f10.id, "10b：新标签页 I 就近提升到祖父 F 之下");
+  assertEqual(rebuilt10.structures[6].parents[j10.id], f10.id, "10b：新标签页 J 就近提升到祖父 F 之下");
+
+  // 10c：整条祖先链都已关闭 → 只能落顶层（不变量要求父标签必须真实存在）
+  windows.push({ id: 7 });
+  seedOrphanSnapshot(7, [
+    { u: "https://m.example.com/", t: "M", p: -1 },
+    { u: "https://n.example.com/", t: "N", p: 0 },
+    { u: "https://o.example.com/", t: "O", p: 1 },
+  ]);
+  const o10 = addTab({ windowId: 7, url: "https://o.example.com/", title: "O" });
+  rebuilt10 = await tree.getTreeStructure([7]);
+  assertEqual(rebuilt10.structures[7].parents[o10.id], undefined, "10c：祖先全部关闭时 O 落回顶层");
+
   console.log("");
   console.log(`共 ${checks} 项断言，失败 ${failures} 项`);
   if (failures > 0) {

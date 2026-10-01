@@ -268,13 +268,16 @@ function pickInitialParent(tab, index, indexById, pinnedIds, activeTabId) {
  * 为什么不用 TST 的 findStructureOffset：它用 indexOf 找起点再逐项比较，在大量重复 URL
  * （例如几百个 about:blank）下会退化成 O(n²)。
  *
- * 本实现分两步，目标是既容忍头部/中部成批增删，也容忍局部乱序：
+ * 本实现分四步，目标是既容忍头部/中部成批增删，也容忍局部乱序：
  *   1. 偏移估计：用快照开头若干项在 URL 索引里定位，得到整体偏移量，
  *      解决"恢复时头部被插入了一批新标签"这类整体位移；
  *   2. 逐项局部配对：以「期望下标 = j + 偏移」为中心在很小的邻域内找同 URL 的未使用项，
  *      命中后就地修正偏移。邻域搜索保证一次错位（例如两个标签被互换）不会连带冲掉后面所有项
  *      ——这正是朴素的"单调游标贪心"会雪崩的地方。
  *   3. 邻域搜不到时，再用 URL 索引做一次跳距受限的前向搜索，兜住"中间被插入一大段新标签"。
+ *   4. 父关系恢复：快照里记录的父标签可能已在插件不知情时被关闭（例如 MV3 的 SW 被回收后
+ *      才收到 tabs.onRemoved，内存里没有树可改），此时沿快照的父链向上找最近的存活祖先，
+ *      与关闭标签时的 promote intelligently 一致，避免整棵子树被凭空抬成顶层。
  *
  * @returns {{state: object, exact: boolean, matched: number, added: number, removed: number}}
  *   exact 为 true 表示快照与实际完全一一对应且未使用任何兜底推断——此时无需回写磁盘。
@@ -318,6 +321,11 @@ export function alignSnapshotToTabs(orderedTabs, snapshot, options = {}) {
   for (let j = 0; j < items.length; j += 1) {
     const url = items[j].u || "";
     const expected = j + offset;
+    // 该 URL 在实际序列里只出现一次时不存在"配错位置"的可能：邻域里命中的候选必然就是它本人。
+    // 此时必须跳过"下一项确认"，否则紧跟在它后面的标签刚被关闭时确认会失败，
+    // 这个唯一项就会被判成未配对（进而被当成"新增标签"，丢掉它在快照里的父子关系）。
+    const urlPositions = url ? positionsByUrl.get(url) : undefined;
+    const uniqueUrl = Boolean(urlPositions && urlPositions.length === 1);
     let found = -1;
 
     // 以期望下标为中心就近匹配：PROBE_OFFSETS 由近及远，优先选择"位置最合理"的同 URL 项。
@@ -331,7 +339,7 @@ export function alignSnapshotToTabs(orderedTabs, snapshot, options = {}) {
       if (url && (orderedTabs[index].url || "") !== url) {
         continue;
       }
-      if (PROBE_OFFSETS[k] === 0 || confirmForwardMatch(items, j, index, orderedTabs, used, total)) {
+      if (PROBE_OFFSETS[k] === 0 || uniqueUrl || confirmForwardMatch(items, j, index, orderedTabs, used, total)) {
         found = index;
         break;
       }
@@ -368,6 +376,11 @@ export function alignSnapshotToTabs(orderedTabs, snapshot, options = {}) {
 
     if (found < 0) {
       // 快照里有、实际没有 → 该标签已被关闭，跳过。
+      // 关键：它后面的快照项在实际序列里整体左移了一位，必须同步把偏移 -1，
+      // 否则「以期望下标为中心就近优先」的探测会把同名 URL 的相邻项（连续多个
+      // 新标签页 / about:blank）全部配到前一个槽位上，最后一项被挤成"新增标签"，
+      // 于是真正的子标签反而变成顶层，父子关系整体断裂。
+      offset -= 1;
       continue;
     }
     used[found] = 1;
@@ -380,6 +393,34 @@ export function alignSnapshotToTabs(orderedTabs, snapshot, options = {}) {
   // 依据快照里的父下标建立父子关系。父下标必须也已配对，且位置在子之前。
   const parentById = new Map();
   let usedFallback = false;
+  // 记忆「某个快照下标向上找到的最近存活祖先下标」，-2 = 未计算，-1 = 没有存活祖先。
+  // 没有它时，父链很长且连续被关闭会让每个子标签重复走一遍父链，退化成 O(n²)。
+  const nearestAliveCache = new Int32Array(items.length).fill(-2);
+  const findNearestAliveAncestor = (startIndex) => {
+    const path = [];
+    let cursor = startIndex;
+    let guard = 0;
+    while (cursor >= 0 && cursor < items.length && guard <= items.length) {
+      if (matchOfSnapshotIndex[cursor] >= 0) {
+        break;
+      }
+      if (nearestAliveCache[cursor] !== -2) {
+        cursor = nearestAliveCache[cursor];
+        break;
+      }
+      path.push(cursor);
+      cursor = Number.isInteger(items[cursor].p) ? items[cursor].p : SNAPSHOT_ROOT_PARENT;
+      guard += 1;
+    }
+    const resolved = cursor >= 0 && cursor < items.length && matchOfSnapshotIndex[cursor] >= 0
+      ? cursor
+      : -1;
+    for (const node of path) {
+      nearestAliveCache[node] = resolved;
+    }
+    return resolved;
+  };
+
   for (let j = 0; j < items.length; j += 1) {
     const actualIndex = matchOfSnapshotIndex[j];
     if (actualIndex < 0) {
@@ -393,7 +434,18 @@ export function alignSnapshotToTabs(orderedTabs, snapshot, options = {}) {
       if (parentActualIndex >= 0 && parentActualIndex < actualIndex) {
         parentId = orderedTabs[parentActualIndex].id;
       } else {
+        // 直接父标签在本次对齐里没配上（通常就是父标签已被关闭，而关闭发生在
+        // 后台被回收、内存里没有这棵树的时候）。不能就此把它当顶层——那会把整棵
+        // 子树凭空抬到根上；应沿快照的父链继续向上找最近的存活祖先，
+        // 语义与关闭标签时的 promote intelligently（子树接到祖父）保持一致。
         usedFallback = true;
+        const ancestorIndex = findNearestAliveAncestor(parentIndex);
+        if (ancestorIndex >= 0) {
+          const ancestorActualIndex = matchOfSnapshotIndex[ancestorIndex];
+          if (ancestorActualIndex >= 0 && ancestorActualIndex < actualIndex) {
+            parentId = orderedTabs[ancestorActualIndex].id;
+          }
+        }
       }
     }
     parentById.set(tab.id, parentId);
