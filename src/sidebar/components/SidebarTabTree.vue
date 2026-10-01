@@ -51,10 +51,22 @@ const props = defineProps({
     type: Function,
     default: null,
   },
+  // 多选模式：开启后点击行不再激活标签，而是切换选中（见 SidebarApp 的「多选模式」）。
+  multiSelect: {
+    type: Boolean,
+    default: false,
+  },
+  // 选中集合（键为标签 id 的字符串形式）；只在多选模式下参与样式与交互。
+  selectedMap: {
+    type: Object,
+    default: () => ({}),
+  },
 });
 
 const emit = defineEmits([
   "activate",
+  // 多选模式下的选择动作：带 shiftKey，由父级按"锚点 + 区间"规则统一处理
+  "select",
   "close",
   "discard",
   "toggle-collapse",
@@ -92,6 +104,20 @@ function onAuxClick(tab, event) {
     event.preventDefault();
     emit("close", tab);
   }
+}
+
+/**
+ * 行点击：
+ * - 普通模式 = 激活该标签（原有行为）；
+ * - 多选模式 = 切换选中，并把 shiftKey 一并上报，由父级按"锚点 + 区间"规则处理
+ *   （区间必须按父级持有的完整行顺序算，组件里只有单个 item，算不了）。
+ */
+function onRowClick(item, event) {
+  if (props.multiSelect) {
+    emit("select", { id: item.id, tab: item.tab, shiftKey: Boolean(event && event.shiftKey) });
+    return;
+  }
+  emit("activate", item.tab);
 }
 
 function onMouseDown(event) {
@@ -305,13 +331,14 @@ onBeforeUnmount(() => {
           matched: highlightMatches && item.matched,
           'active-ancestor': Boolean(activeRow && activeRow.isAncestor && activeRow.index === index),
           dragging: draggingId === item.id,
+          selected: Boolean(props.selectedMap[item.id]),
           'drop-before': dropTargetId === item.id && dropZone === 'before',
           'drop-after': dropTargetId === item.id && dropZone === 'after',
           'drop-child': dropTargetId === item.id && dropZone === 'child' && !externalDrag,
           'drop-onto': dropTargetId === item.id && dropZone === 'child' && externalDrag,
         }"
         draggable="true"
-        @click="emit('activate', item.tab)"
+        @click="onRowClick(item, $event)"
         @auxclick="onAuxClick(item.tab, $event)"
         @mousedown="onMouseDown"
         @contextmenu="onContextMenu(item.tab, $event)"

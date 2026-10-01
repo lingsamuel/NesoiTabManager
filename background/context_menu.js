@@ -21,6 +21,12 @@ const TAB_ITEM = {
   mute: "nesoi-tab:mute",
   discard: "nesoi-tab:discard",
   copyUrl: "nesoi-tab:copyUrl",
+  // 保存到列表的两个子菜单（与网页右键同构）。contextMenus 的 id 全局唯一，
+  // 因此即使 contexts 不同，也不能和网页右键的 `saveTo` / `save:xxx` 重名。
+  saveToList: "nesoi-tab:saveTo",
+  saveCloseToList: "nesoi-tab:saveCloseTo",
+  savePrefix: "nesoi-tab-save:",
+  saveClosePrefix: "nesoi-tab-saveClose:",
   moveTo: "nesoi-tab:moveTo",
   moveToNew: "nesoi-tab:moveTo:new",
   moveToWindowPrefix: "nesoi-tab:moveTo:win:",
@@ -74,34 +80,41 @@ function getAllWindows() {
 }
 
 // ---------------------------------------------------------------------------
-// 网页右键：保存到列表
+// 「保存到列表 / 关闭并保存到列表」子菜单（网页右键与标签右键共用）
 // ---------------------------------------------------------------------------
 
-function createPageItems(lists) {
-  chrome.contextMenus.create({
-    id: "saveTo",
-    title: "保存到列表",
-    contexts: ["page"],
-  });
-  chrome.contextMenus.create({
-    id: "saveCloseTo",
-    title: "关闭并保存到列表",
-    contexts: ["page"],
-  });
+/**
+ * 创建一对「保存到列表 / 关闭并保存到列表」子菜单。
+ *
+ * 网页右键与标签右键（Firefox 侧边栏右键、浏览器标签栏右键共用同一份 `contexts: ["tab"]` 注册）
+ * 的菜单结构、子项来源、执行路径完全相同，因此抽成一个函数统一生成；
+ * 两处必须传不同的 id 前缀：`contextMenus` 的 id 是全局唯一的，跨 contexts 也不能重名。
+ *
+ * @param {Array<{id:string,name:string}>} lists 现有列表
+ * @param {{parentId:string, parentIdClose:string, itemPrefix:string, itemPrefixClose:string,
+ *          emptyId:string, emptyIdClose:string, contexts:string[]}} options
+ */
+function createSaveToListItems(lists, options) {
+  const { parentId, parentIdClose, itemPrefix, itemPrefixClose, emptyId, emptyIdClose, contexts } =
+    options;
+
+  chrome.contextMenus.create({ id: parentId, title: "保存到列表", contexts });
+  chrome.contextMenus.create({ id: parentIdClose, title: "关闭并保存到列表", contexts });
 
   if (lists.length === 0) {
+    // 无列表时给出明确的禁用项，而不是让子菜单空着——空子菜单在原生菜单里几乎点不开也看不懂。
     chrome.contextMenus.create({
-      id: "saveTo-empty",
+      id: emptyId,
       title: "暂无列表",
-      parentId: "saveTo",
-      contexts: ["page"],
+      parentId,
+      contexts,
       enabled: false,
     });
     chrome.contextMenus.create({
-      id: "saveCloseTo-empty",
+      id: emptyIdClose,
       title: "暂无列表",
-      parentId: "saveCloseTo",
-      contexts: ["page"],
+      parentId: parentIdClose,
+      contexts,
       enabled: false,
     });
     return;
@@ -109,17 +122,33 @@ function createPageItems(lists) {
 
   lists.forEach((list) => {
     chrome.contextMenus.create({
-      id: `save:${list.id}`,
+      id: `${itemPrefix}${list.id}`,
       title: list.name,
-      parentId: "saveTo",
-      contexts: ["page"],
+      parentId,
+      contexts,
     });
     chrome.contextMenus.create({
-      id: `saveClose:${list.id}`,
+      id: `${itemPrefixClose}${list.id}`,
       title: list.name,
-      parentId: "saveCloseTo",
-      contexts: ["page"],
+      parentId: parentIdClose,
+      contexts,
     });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 网页右键：保存到列表
+// ---------------------------------------------------------------------------
+
+function createPageItems(lists) {
+  createSaveToListItems(lists, {
+    parentId: "saveTo",
+    parentIdClose: "saveCloseTo",
+    itemPrefix: "save:",
+    itemPrefixClose: "saveClose:",
+    emptyId: "saveTo-empty",
+    emptyIdClose: "saveCloseTo-empty",
+    contexts: ["page"],
   });
 }
 
@@ -127,13 +156,24 @@ function createPageItems(lists) {
 // 标签右键（Firefox）
 // ---------------------------------------------------------------------------
 
-async function createTabItems() {
+async function createTabItems(lists) {
   // 顺序即显示顺序。
   await menuCreate({ id: TAB_ITEM.reload, title: "刷新标签页", contexts: ["tab"] });
   await menuCreate({ id: TAB_ITEM.pin, title: "固定标签页", contexts: ["tab"] });
   await menuCreate({ id: TAB_ITEM.mute, title: "静音标签页", contexts: ["tab"] });
   await menuCreate({ id: TAB_ITEM.discard, title: "冻结标签页", contexts: ["tab"] });
   await menuCreate({ id: TAB_ITEM.copyUrl, title: "复制链接", contexts: ["tab"] });
+  // 「保存到列表 / 关闭并保存到列表」：网页右键早已有这两个能力，标签右键此前缺失，
+  // 侧边栏右键又只能弹出这份注册，因此补在这里即同时覆盖"侧边栏右键"与"Firefox 标签栏右键"。
+  createSaveToListItems(lists, {
+    parentId: TAB_ITEM.saveToList,
+    parentIdClose: TAB_ITEM.saveCloseToList,
+    itemPrefix: TAB_ITEM.savePrefix,
+    itemPrefixClose: TAB_ITEM.saveClosePrefix,
+    emptyId: `${TAB_ITEM.saveToList}-empty`,
+    emptyIdClose: `${TAB_ITEM.saveCloseToList}-empty`,
+    contexts: ["tab"],
+  });
   await menuCreate({ id: TAB_ITEM.moveTo, title: "移动到窗口", contexts: ["tab"] });
 }
 
@@ -271,7 +311,7 @@ async function rebuildContextMenus() {
 
   if (IS_FIREFOX) {
     lastTabMenuSignature = "";
-    await createTabItems();
+    await createTabItems(lists);
     await rebuildMoveToWindowItems();
   }
 }
@@ -289,6 +329,23 @@ async function handleContextMenuClick(info, tab) {
     return;
   }
   const menuId = String(info.menuItemId);
+
+  // 标签右键的「保存到列表 / 关闭并保存到列表」：与网页右键同一套 saveTabs 路径，
+  // 只是 id 前缀不同（见 TAB_ITEM.savePrefix 注释）。tab 参数就是被右键的那个标签。
+  if (menuId.startsWith(TAB_ITEM.savePrefix) || menuId.startsWith(TAB_ITEM.saveClosePrefix)) {
+    const closeTab = menuId.startsWith(TAB_ITEM.saveClosePrefix);
+    const prefix = closeTab ? TAB_ITEM.saveClosePrefix : TAB_ITEM.savePrefix;
+    const listId = menuId.slice(prefix.length);
+    if (!tab || !tab.id || !listId) {
+      return;
+    }
+    try {
+      await saveCurrentTab({ tab, listId, closeTab });
+    } catch (error) {
+      console.warn("标签右键保存失败：", error);
+    }
+    return;
+  }
 
   if (menuId.startsWith(TAB_ITEM.moveToWindowPrefix)) {
     const targetWindowId = Number(menuId.slice(TAB_ITEM.moveToWindowPrefix.length));

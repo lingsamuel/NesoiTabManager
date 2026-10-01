@@ -23,9 +23,19 @@ const props = defineProps({
     type: Array,
     default: () => [],
   },
+  // 多选模式：开启后点击固定标签方块不再激活标签，而是切换选中（见 SidebarApp 的「多选模式」）。
+  multiSelect: {
+    type: Boolean,
+    default: false,
+  },
+  // 选中集合（键为标签 id 的字符串形式）；与树区域共用同一份。
+  selectedMap: {
+    type: Object,
+    default: () => ({}),
+  },
 });
 
-const emit = defineEmits(["activate", "close", "context-menu", "reorder", "external-drop"]);
+const emit = defineEmits(["activate", "select", "close", "context-menu", "reorder", "external-drop"]);
 
 const draggingId = ref(null);
 const draggingWindowId = ref(null);
@@ -44,6 +54,18 @@ function onAuxClick(tab, event) {
     event.preventDefault();
     emit("close", tab);
   }
+}
+
+/**
+ * 方块点击：普通模式 = 激活该标签；多选模式 = 切换选中（shiftKey 上报给父级算区间）。
+ * 固定标签区是跨窗口聚合的独立序列，区间只能在同一区域内计算，因此这里只上报"被点项"。
+ */
+function onPinClick(tab, event) {
+  if (props.multiSelect) {
+    emit("select", { id: Number(tab.id), tab, shiftKey: Boolean(event && event.shiftKey) });
+    return;
+  }
+  emit("activate", tab);
 }
 
 function onMouseDown(event) {
@@ -199,13 +221,14 @@ function onContainerDragLeave(event) {
           'active-other': Boolean(tab.active) && !group.isCurrent,
           discarded: Boolean(tab.discarded),
           dragging: draggingId === tab.id,
+          selected: Boolean(props.selectedMap[tab.id]),
           'drop-before': dropTargetId === tab.id && (dropPosition === 'before' || externalPosition === 'before'),
           'drop-after': dropTargetId === tab.id && (dropPosition === 'after' || externalPosition === 'after'),
           'drop-onto': dropTargetId === tab.id && externalPosition === 'overwrite',
         }"
         draggable="true"
         :title="tooltipFor(tab, group)"
-        @click="emit('activate', tab)"
+        @click="onPinClick(tab, $event)"
         @auxclick="onAuxClick(tab, $event)"
         @mousedown="onMouseDown"
         @contextmenu="onContextMenu(tab, $event)"

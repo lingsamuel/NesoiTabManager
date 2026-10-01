@@ -60,7 +60,7 @@ body {
 .sb-toolbar-row {
   display: flex;
   align-items: center;
-  /* 允许换行：工具栏右侧现在有「＋ / 定位 / 管理」三个按钮，
+  /* 允许换行：工具栏右侧现在有「＋ / 定位 / 多选 / 管理」四个按钮，
      跳转模式下左侧还会多出匹配计数，窄侧边栏里宁可整排折行也不要挤压文字。 */
   flex-wrap: wrap;
   gap: 4px;
@@ -149,6 +149,12 @@ body {
   transform: none;
 }
 
+/* 多选模式开关的开启态：与工具栏其它按钮区分开，否则用户看不出"点击行为已经变了" */
+.sb-tool.active {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
 .sb-status {
   font-size: 11px;
   padding: 2px 4px;
@@ -227,6 +233,16 @@ body {
 
 .sb-row.matched {
   background: #fffbe6;
+}
+
+/*
+  多选模式的选中态。
+  刻意写在 .matched 之后：同优先级下后者生效，从而保证"选中底色 > 匹配底色"。
+  左侧 3px 竖条是为了在浅蓝底与活动标签的 #eef2ff 之间拉开区分度（两者都是很浅的蓝）。
+*/
+.sb-row.selected {
+  background: #dbeafe;
+  box-shadow: inset 3px 0 0 #2563eb;
 }
 
 .sb-row.dragging {
@@ -441,6 +457,12 @@ body {
   box-shadow: inset 0 0 0 1.5px #c7d2fe;
 }
 
+/* 多选模式下的选中方块：浅蓝底 + 蓝边，压过 .current 的白底，让"选中"一眼可见 */
+.sb-pin.selected {
+  background: #dbeafe;
+  box-shadow: inset 0 0 0 2px #2563eb;
+}
+
 .sb-pin.discarded {
   opacity: 0.5;
 }
@@ -487,6 +509,163 @@ body {
   height: 5px;
   border-radius: 999px;
   background: var(--muted);
+}
+
+/* ---- 多选模式的批量操作条 ---- */
+
+/*
+  与底部新建按钮同样是 .sb-app 的 flex 子项 + flex: none，因此位于滚动容器之外、固定不滚动。
+  position: relative 是给"保存清单"做定位宿主：清单用 bottom: 100% 贴在操作条上方弹出。
+*/
+.sb-bulk {
+  position: relative;
+  flex: none;
+  padding: 5px 6px;
+  border-top: 1px solid var(--stroke);
+  background: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sb-bulk-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sb-bulk-row.actions {
+  flex-wrap: wrap;
+}
+
+.sb-bulk-count {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.sb-bulk-link {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #2563eb;
+  font-size: 11px;
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.sb-bulk-link:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+.sb-bulk-btn {
+  padding: 3px 7px;
+  border: 1px solid var(--stroke);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.sb-bulk-btn:hover:not(:disabled) {
+  background: #eef2f7;
+  transform: none;
+}
+
+.sb-bulk-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.sb-bulk-btn.danger {
+  color: #b42318;
+}
+
+/* 透明遮罩承接"点击别处关闭清单"：侧边栏很窄，再放一个关闭按钮会挤掉操作项 */
+.sb-save-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+}
+
+.sb-save-menu {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 100%;
+  z-index: 11;
+  max-height: 40vh;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--stroke);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+}
+
+.sb-save-title {
+  padding: 2px 4px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.sb-save-empty {
+  padding: 4px 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.sb-save-item {
+  display: block;
+  width: 100%;
+  padding: 5px 6px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sb-save-item:hover {
+  background: #eef2f7;
+  transform: none;
+}
+
+.sb-save-item.new {
+  color: #2563eb;
+}
+
+.sb-save-new {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+}
+
+.sb-save-new input {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 6px;
+  border: 1px solid var(--stroke);
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.sb-save-new .sb-save-item {
+  width: auto;
+  flex: none;
+  padding: 3px 7px;
 }
 
 /* ---- 底部固定的 New Tab ---- */

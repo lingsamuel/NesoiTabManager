@@ -12,7 +12,7 @@ const createdItems = [];
 const removedIds = [];
 const updatedItems = [];
 let refreshCount = 0;
-const calls = { reload: [], updateTab: [], discard: [], move: [], createWindow: [], clipboard: [] };
+const calls = { reload: [], updateTab: [], discard: [], move: [], createWindow: [], clipboard: [], remove: [] };
 // 每次 tabs.discard 的实参个数（必须恒为 1：只传 tabId，不传 callback）。
 const discardArgs = [];
 
@@ -99,6 +99,12 @@ function setupChromeMock() {
         }
       },
       reload: (id) => calls.reload.push(id),
+      remove: (ids, callback) => {
+        calls.remove.push(clone(ids));
+        if (callback) {
+          callback();
+        }
+      },
       discard: (...args) => {
         // 记录完整实参表：Firefox 的 tabs.discard 没有 callback 形参，
         // 多传一个函数会被 schema 校验拒绝（见 scripts/test_discard.mjs）。
@@ -226,16 +232,27 @@ async function main() {
   await menu.rebuildContextMenus();
   assertEqual(Boolean(findCreated("saveTo")), true, "注册了网页右键的「保存到列表」");
   assertEqual(Boolean(findCreated("save:list1")), true, "列表子项按现有列表生成");
-  const tabItemIds = ["nesoi-tab:reload", "nesoi-tab:pin", "nesoi-tab:mute", "nesoi-tab:discard", "nesoi-tab:copyUrl", "nesoi-tab:moveTo"];
+  const tabItemIds = ["nesoi-tab:reload", "nesoi-tab:pin", "nesoi-tab:mute", "nesoi-tab:discard", "nesoi-tab:copyUrl", "nesoi-tab:saveTo", "nesoi-tab:saveCloseTo", "nesoi-tab:moveTo"];
   assertDeepEqual(
     tabItemIds.map((id) => Boolean(findCreated(id))),
-    [true, true, true, true, true, true],
-    "六个标签菜单项都已注册"
+    tabItemIds.map(() => true),
+    "八个标签菜单项都已注册"
   );
   assertDeepEqual(
     tabItemIds.map((id) => findCreated(id).contexts),
     tabItemIds.map(() => ["tab"]),
     "标签菜单项的上下文是 tab（否则不会出现在标签菜单里）"
+  );
+  // 标签右键的「保存到列表」子项：与网页右键同构，但 id 前缀必须不同（contextMenus 的 id 全局唯一）。
+  assertDeepEqual(
+    createdItems.filter((item) => item.parentId === "nesoi-tab:saveTo").map((item) => item.id),
+    ["nesoi-tab-save:list1"],
+    "标签右键「保存到列表」按现有列表生成子项"
+  );
+  assertDeepEqual(
+    createdItems.filter((item) => item.parentId === "nesoi-tab:saveCloseTo").map((item) => item.id),
+    ["nesoi-tab-saveClose:list1"],
+    "标签右键「关闭并保存到列表」按现有列表生成子项"
   );
 
   console.log("场景 2：「移动到窗口」子菜单按 windows.getAll 的顺序生成，新窗口排最后");
@@ -329,6 +346,16 @@ async function main() {
     "重建后只剩当前存在的窗口"
   );
   assertEqual(removedIds.includes("nesoi-tab:moveTo:win:20"), true, "旧窗口子项被移除");
+
+  console.log("场景 9：标签右键的保存项走同一条 saveTabs 路径");
+  calls.remove.length = 0;
+  await menu.handleContextMenuClick({ menuItemId: "nesoi-tab-save:list1" }, tab);
+  assertEqual(storageData.local.lists[0].items.length, 2, "「保存到列表」写入一条记录");
+  assertDeepEqual(calls.remove, [], "「保存到列表」不关闭标签");
+
+  await menu.handleContextMenuClick({ menuItemId: "nesoi-tab-saveClose:list1" }, tab);
+  assertEqual(storageData.local.lists[0].items.length, 3, "「关闭并保存到列表」也写入记录");
+  assertDeepEqual(calls.remove, [[5]], "「关闭并保存到列表」保存后关闭该标签");
 
   console.log("");
   console.log(`共 ${checks} 项断言，失败 ${failures} 项`);

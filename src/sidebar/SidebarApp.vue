@@ -13,8 +13,13 @@ import FilterInput from "../manager/components/FilterInput.vue";
 import { useFilterQuery } from "../manager/composables/useFilterQuery.js";
 import { useMatchNavigation } from "../manager/composables/useMatchNavigation.js";
 import { useTree } from "../manager/composables/useTree.js";
-import { matchesTabQuery } from "../manager/utils/helpers.js";
+import { matchesTabQuery, removeTabsInBatches } from "../manager/utils/helpers.js";
 import { request } from "../manager/utils/request.js";
+import {
+  applySelectionClick,
+  clearSelection,
+  pruneSelection,
+} from "../manager/utils/selection.js";
 // 与管理页树状视图、后台、基准测试共用同一份行模型（筛选补祖先 + DFS + 折叠）
 import { buildTreeRows } from "../../background/tree_core.js";
 import { computePinnedReorderIndex, groupPinnedTabs } from "./pinned_data.js";
@@ -48,6 +53,67 @@ const tree = useTree();
 const filter = useFilterQuery();
 // 列表的模板引用：侧边栏关闭了列表的自动滚动，导航动作需要显式滚过去。
 const treeRef = ref(null);
+
+// ---------------------------------------------------------------------------
+// 多选模式
+// ---------------------------------------------------------------------------
+
+// 是否处于多选模式：**仅本次会话有效**（不写 storage，侧边栏文档卸载后重开即回到普通模式）。
+const multiSelect = ref(false);
+// 选中集合：固定标签区与树区域**共用同一份**，键为标签 id 的字符串形式。
+const selectedTabIds = reactive({});
+// 连续选择的锚点：最近一次被置为选中的那一项（规则与"锚点失效退化"见 manager/utils/selection.js）。
+const selectionAnchor = ref(null);
+// 保存到列表的弹出清单状态。
+const saveMenu = reactive({
+  mode: "",
+  lists: [],
+  loading: false,
+  creating: false,
+  newListName: "",
+});
+
+const selectedCount = computed(() => Object.keys(selectedTabIds).length);
+
+/** 树区域的渲染顺序（区间选择与界面顺序必须完全一致）。 */
+const treeOrderedIds = computed(() => items.value.map((item) => String(item.id)));
+
+/** 固定标签区的渲染顺序：按分组、组内按 index，与 groupPinnedTabs 的显示顺序一致。 */
+const pinnedOrderedIds = computed(() =>
+  pinnedGroups.value.flatMap((group) => group.tabs.map((tab) => String(tab.id)))
+);
+
+/** 当前仍存在的全部标签 id（本窗口标签 + 跨窗口聚合的固定标签），用于剪枝选中集合。 */
+const knownTabIds = computed(() => {
+  const ids = new Set(tabs.value.map((tab) => String(tab.id)));
+  pinnedGroups.value.forEach((group) => {
+    group.tabs.forEach((tab) => ids.add(String(tab.id)));
+  });
+  return ids;
+});
+
+/**
+ * 选中项对应的标签对象（批量动作的数据源）。
+ * 顺序上以本窗口标签在前、其它窗口的固定标签在后；固定标签同时出现在两处时去重。
+ */
+const selectedTabs = computed(() => {
+  const result = [];
+  const seen = new Set();
+  const push = (tab) => {
+    if (!tab || tab.id === undefined || tab.id === null) {
+      return;
+    }
+    const key = String(tab.id);
+    if (!selectedTabIds[key] || seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    result.push(tab);
+  };
+  tabs.value.forEach(push);
+  pinnedGroups.value.forEach((group) => group.tabs.forEach(push));
+  return result;
+});
 
 let refreshTimer = null;
 let pendingWhileHidden = false;
@@ -447,6 +513,9 @@ async function refresh() {
     setStatus(tree.status.message || "树状结构加载失败。", "error");
   }
   await refreshPinned();
+  // 标签被关闭/移出后选中项与锚点都可能已不存在：一起剪掉，避免留下幽灵选中项，
+  // 也避免下一次 Shift 区间从一个已经消失的锚点算起。
+  selectionAnchor.value = pruneSelection(selectedTabIds, knownTabIds.value, selectionAnchor.value);
   ready.value = true;
 }
 
@@ -465,6 +534,9 @@ async function refreshPinned() {
     // 窗口编号与组顺序都按 windows.getAll() 的位次，与管理页的「窗口 N」口径一致。
     windowOrder: windows.map((win) => Number(win.id)),
   });
+  // 「只刷新固定区」这条路径不会走整窗刷新，因此其它窗口的固定标签被关掉时
+  // 也要在这里剪一次，否则选中集合会留下一个点不动的幽灵项（批量动作会把它算成"跳过"）。
+  selectionAnchor.value = pruneSelection(selectedTabIds, knownTabIds.value, selectionAnchor.value);
 }
 
 /**
@@ -671,6 +743,187 @@ async function discardTab(tab) {
   } else {
     scheduleRefresh("pinned");
   }
+}
+
+// ---------------------------------------------------------------------------
+// 多选模式：选择与批量动作
+// ---------------------------------------------------------------------------
+
+/** 开关多选模式。关闭时一并清空选择与弹出清单，避免下次开启看到上次的残留。 */
+function toggleMultiSelect() {
+  multiSelect.value = !multiSelect.value;
+  if (!multiSelect.value) {
+    clearSidebarSelection();
+  }
+}
+
+/** 清空选择（「取消选择」按钮、退出多选模式都用它）：锚点与弹出清单一起复位。 */
+function clearSidebarSelection() {
+  clearSelection(selectedTabIds);
+  selectionAnchor.value = null;
+  closeSaveMenu();
+}
+
+/**
+ * 树区域的选择动作。
+ * 区间必须用**树区域自己的**渲染顺序计算：固定标签区是另一个（跨窗口聚合的）序列，
+ * 锚点落在另一个区域时 orderedKeys 里找不到它，区间会自动退化为普通点击。
+ */
+function onTreeSelect(payload) {
+  if (!payload) {
+    return;
+  }
+  selectionAnchor.value = applySelectionClick(selectedTabIds, {
+    key: payload.id,
+    shiftKey: Boolean(payload.shiftKey),
+    orderedKeys: treeOrderedIds.value,
+    anchor: selectionAnchor.value,
+  });
+}
+
+/** 固定标签区的选择动作：区间按固定区的显示顺序（分组 + 组内 index）计算。 */
+function onPinnedSelect(payload) {
+  if (!payload) {
+    return;
+  }
+  selectionAnchor.value = applySelectionClick(selectedTabIds, {
+    key: payload.id,
+    shiftKey: Boolean(payload.shiftKey),
+    orderedKeys: pinnedOrderedIds.value,
+    anchor: selectionAnchor.value,
+  });
+}
+
+/**
+ * 关闭所选。
+ * 批量关闭复用 helpers.removeTabsInBatches：它会分批下发、对整批失败的情况逐条重试，
+ * 避免 10K 标签下一次 remove 全量失败后一个都关不掉。
+ */
+async function closeSelectedTabs() {
+  const list = selectedTabs.value;
+  if (list.length === 0) {
+    return;
+  }
+  const { removed, skipped } = await removeTabsInBatches(list.map((tab) => tab.id));
+  const skippedText = skipped > 0 ? `，跳过 ${skipped} 个` : "";
+  setStatus(`已关闭 ${removed} 个标签页${skippedText}。`, skipped > 0 ? "error" : "ok");
+  // 不主动刷新：onRemoved 会带本窗口信息回来触发刷新，选中项随之被剪枝。
+}
+
+/**
+ * 冻结所选：复用后台 manualDiscardTabs（与管理页「冻结所选」同一条路径），
+ * 因此冻结次数统计、冻结历史批次都与其它入口完全一致。
+ */
+async function discardSelectedTabs() {
+  const list = selectedTabs.value;
+  if (list.length === 0) {
+    return;
+  }
+  const response = await request("manualDiscardTabs", {
+    tabIds: list.map((tab) => tab.id),
+  });
+  if (!response.ok) {
+    setStatus(response.error || "冻结失败。", "error");
+    return;
+  }
+  const discarded = Number(response.discarded) || 0;
+  const skipped = Number(response.skipped) || 0;
+  setStatus(`已冻结 ${discarded} 个标签页${skipped > 0 ? `，跳过 ${skipped} 个` : ""}。`, "ok");
+  scheduleRefresh();
+}
+
+// ---------------------------------------------------------------------------
+// 保存所选到列表（弹出清单 = 与右键菜单同构的交互）
+// ---------------------------------------------------------------------------
+
+function closeSaveMenu() {
+  saveMenu.mode = "";
+  saveMenu.lists = [];
+  saveMenu.loading = false;
+  saveMenu.creating = false;
+  saveMenu.newListName = "";
+}
+
+/** Escape 关闭弹出清单：菜单盖在列表上，没有键盘出口会很难受。 */
+function onSaveMenuKeydown(event) {
+  if (event && event.key === "Escape" && saveMenu.mode) {
+    closeSaveMenu();
+  }
+}
+
+/**
+ * 打开「保存到列表 / 关闭并保存到列表」的清单。
+ * 每次打开都重新取一次列表：侧边栏与其它入口（管理页 / 右键菜单）共用同一份存储，
+ * 缓存一份列表很容易让用户看到已经删掉的列表。
+ *
+ * @param {"save"|"saveClose"} mode 两个按钮的唯一差别是保存后是否关闭标签
+ */
+async function openSaveMenu(mode) {
+  if (selectedTabs.value.length === 0) {
+    return;
+  }
+  saveMenu.mode = mode;
+  saveMenu.lists = [];
+  saveMenu.loading = true;
+  saveMenu.creating = false;
+  saveMenu.newListName = "";
+  const response = await request("getLists");
+  // 等待期间用户可能已经关掉清单或点了另一个按钮，过期的结果直接丢弃。
+  if (saveMenu.mode !== mode) {
+    return;
+  }
+  saveMenu.loading = false;
+  saveMenu.lists = response.ok && Array.isArray(response.lists) ? response.lists : [];
+}
+
+function startNewList() {
+  saveMenu.creating = true;
+  saveMenu.newListName = "";
+}
+
+/**
+ * 执行保存：复用后台 saveTabs（与右键菜单、管理页同一条路径）。
+ *
+ * @param {{listId?: string, newListName?: string}} target 二选一
+ */
+async function runSaveSelected(target) {
+  const list = selectedTabs.value;
+  if (list.length === 0 || !saveMenu.mode) {
+    closeSaveMenu();
+    return;
+  }
+  const closeTabs = saveMenu.mode === "saveClose";
+  const response = await request("saveTabs", {
+    tabIds: list.map((tab) => tab.id),
+    listId: target.listId || "",
+    newListName: target.newListName || "",
+    closeTabs,
+  });
+  if (!response.ok) {
+    setStatus(response.error || "保存失败。", "error");
+    return;
+  }
+  const savedCount = response.result ? Number(response.result.savedCount) || 0 : list.length;
+  setStatus(
+    closeTabs ? `已保存并关闭 ${savedCount} 个标签页。` : `已保存 ${savedCount} 个标签页。`,
+    "ok"
+  );
+  closeSaveMenu();
+  // 保存并关闭的情况下标签会消失，靠防抖刷新把列表与选中集合一起对齐。
+  scheduleRefresh();
+}
+
+async function saveSelectedToList(listId) {
+  await runSaveSelected({ listId });
+}
+
+async function confirmNewList() {
+  const name = String(saveMenu.newListName || "").trim();
+  if (!name) {
+    setStatus("请输入列表名称。", "error");
+    return;
+  }
+  await runSaveSelected({ newListName: name });
 }
 
 function createTab() {
@@ -1077,6 +1330,9 @@ onMounted(async () => {
   bindTabEvents();
   document.addEventListener("visibilitychange", onVisibilityChange);
   cleanups.push(() => document.removeEventListener("visibilitychange", onVisibilityChange));
+  // 保存清单打开时用 Escape 关闭（清单盖住整个列表，必须给一个键盘出口）。
+  document.addEventListener("keydown", onSaveMenuKeydown);
+  cleanups.push(() => document.removeEventListener("keydown", onSaveMenuKeydown));
 });
 
 onBeforeUnmount(() => {
@@ -1139,6 +1395,15 @@ onBeforeUnmount(() => {
         >
           定位
         </button>
+        <button
+          type="button"
+          class="sb-tool"
+          :class="{ active: multiSelect }"
+          :title="multiSelect ? '退出多选模式（点击行不再跳转）' : '多选模式：点击标签页为选中，便于批量管理'"
+          @click="toggleMultiSelect"
+        >
+          多选
+        </button>
         <button type="button" class="sb-tool" title="在管理界面打开" @click="openManager">
           管理
         </button>
@@ -1151,7 +1416,10 @@ onBeforeUnmount(() => {
       <!-- 固定标签区：跨窗口聚合，固定不滚动 -->
       <SidebarPinnedTabs
         :groups="pinnedGroups"
+        :multi-select="multiSelect"
+        :selected-map="selectedTabIds"
         @activate="activateTab"
+        @select="onPinnedSelect"
         @close="closeTab"
         @context-menu="openTabContextMenu"
         @reorder="onPinnedReorder"
@@ -1162,10 +1430,13 @@ onBeforeUnmount(() => {
         ref="treeRef"
         :items="items"
         :active-row="activeRow"
+        :multi-select="multiSelect"
+        :selected-map="selectedTabIds"
         :highlight-matches="highlightMatches"
         :current-match-index="currentMatchIndex"
         :is-tree-descendant="isTreeDescendant"
         @activate="activateTab"
+        @select="onTreeSelect"
         @close="closeTab"
         @discard="discardTab"
         @toggle-collapse="toggleCollapse"
@@ -1177,6 +1448,98 @@ onBeforeUnmount(() => {
       />
       <div v-else class="sb-empty">{{ treeEmptyText }}</div>
     </template>
+
+    <!--
+      多选模式的批量操作条：位于底部「新建标签页」之上、滚动容器之外，
+      因此列表再长也不会把它顶出视野（与底部新建按钮同一套布局约束）。
+    -->
+    <div v-if="multiSelect" class="sb-bulk">
+      <div class="sb-bulk-row">
+        <span class="sb-bulk-count">已选 {{ selectedCount }} 项</span>
+        <span class="sb-spacer"></span>
+        <button
+          type="button"
+          class="sb-bulk-link"
+          :disabled="selectedCount === 0"
+          @click="clearSidebarSelection"
+        >
+          取消选择
+        </button>
+      </div>
+      <div class="sb-bulk-row actions">
+        <button
+          type="button"
+          class="sb-bulk-btn danger"
+          :disabled="selectedCount === 0"
+          @click="closeSelectedTabs"
+        >
+          关闭所选
+        </button>
+        <button
+          type="button"
+          class="sb-bulk-btn"
+          :disabled="selectedCount === 0"
+          @click="discardSelectedTabs"
+        >
+          冻结所选
+        </button>
+        <button
+          type="button"
+          class="sb-bulk-btn"
+          :disabled="selectedCount === 0"
+          @click="openSaveMenu('save')"
+        >
+          保存到列表
+        </button>
+        <button
+          type="button"
+          class="sb-bulk-btn"
+          :disabled="selectedCount === 0"
+          @click="openSaveMenu('saveClose')"
+        >
+          关闭并保存
+        </button>
+      </div>
+
+      <!--
+        保存清单：与右键菜单同构（列出全部列表，点某一项即执行），末尾多一项「新建列表…」。
+        用透明遮罩承接"点击别处关闭"，避免在窄侧边栏里还要找关闭按钮。
+      -->
+      <template v-if="saveMenu.mode">
+        <div class="sb-save-backdrop" @click="closeSaveMenu"></div>
+        <div class="sb-save-menu">
+          <div class="sb-save-title">
+            {{ saveMenu.mode === "saveClose" ? "关闭并保存到列表" : "保存到列表" }}
+          </div>
+          <div v-if="saveMenu.loading" class="sb-save-empty">正在载入列表…</div>
+          <template v-else>
+            <div v-if="saveMenu.lists.length === 0" class="sb-save-empty">暂无列表</div>
+            <button
+              v-for="list in saveMenu.lists"
+              :key="list.id"
+              type="button"
+              class="sb-save-item"
+              @click="saveSelectedToList(list.id)"
+            >
+              {{ list.name }}（{{ list.items ? list.items.length : 0 }}）
+            </button>
+            <div v-if="saveMenu.creating" class="sb-save-new">
+              <input
+                v-model="saveMenu.newListName"
+                type="text"
+                placeholder="列表名称"
+                @keydown.enter="confirmNewList"
+              />
+              <button type="button" class="sb-save-item confirm" @click="confirmNewList">确定</button>
+              <button type="button" class="sb-save-item" @click="saveMenu.creating = false">取消</button>
+            </div>
+            <button v-else type="button" class="sb-save-item new" @click="startNewList">
+              新建列表…
+            </button>
+          </template>
+        </div>
+      </template>
+    </div>
 
     <!-- 固定在底部、不参与滚动：在窗口末尾新建一个顶层标签页 -->
     <div class="sb-newtab-bar">
