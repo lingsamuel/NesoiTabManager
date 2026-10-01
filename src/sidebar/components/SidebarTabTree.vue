@@ -383,20 +383,16 @@ onBeforeUnmount(() => {
         </button>
         <span v-else class="sb-twisty placeholder" aria-hidden="true"></span>
         <TabFavicon class="sb-favicon" :url="item.tab.favIconUrl" />
-        <span class="sb-title" :title="item.tab.title || item.tab.url || ''">
-          {{ item.tab.title || item.tab.url || "未命名" }}
-        </span>
         <!--
-          展示态标记：刻意放在 .sb-actions 之外，因此不随 hover 出现/消失——
-          原生标签栏的音频图标同样是常显的，用户需要在扫视时就知道"哪个标签在响 / 被静音了"。
+          展示态标记（喇叭按钮 + 关注圆点）：放在 favicon 与标题**之间**的左侧固定区。
+
+          位置的理由：右侧被 hover 才出现的「冻结 / 关闭」按钮占着，标记若待在标题右边，
+          鼠标一进一出就会被那两个按钮挤得左右跳——这些标记本身又是常显的，
+          位置跳动比"少了几个像素的标题宽度"更刺眼。放左侧后位置完全固定。
+          它们同样不随 hover 出现/消失：原生标签栏的音频图标也是常显的，
+          用户扫视时就要知道"哪个标签在响、哪个被自己静音了"。
           item.audio / item.attention 由 SidebarApp 的行模型预先算好（见那里的 items 计算属性）。
         -->
-        <span
-          v-if="item.attention"
-          class="sb-attention"
-          title="该标签页需要关注"
-          aria-hidden="true"
-        ></span>
         <button
           v-if="item.audio.visible"
           type="button"
@@ -419,6 +415,15 @@ onBeforeUnmount(() => {
             <path d="M15.5 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11" />
           </svg>
         </button>
+        <span
+          v-if="item.attention"
+          class="sb-attention"
+          title="该标签页需要关注"
+          aria-hidden="true"
+        ></span>
+        <span class="sb-title" :title="item.tab.title || item.tab.url || ''">
+          {{ item.tab.title || item.tab.url || "未命名" }}
+        </span>
         <span class="sb-actions">
           <button
             type="button"

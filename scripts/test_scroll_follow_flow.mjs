@@ -599,7 +599,7 @@ console.log("场景 8：行内展示态（发声/静音/关注）走本地增量
     listener(target.id, { attention: true }, { ...target, attention: true });
   }
   await sleep(60);
-  check(Boolean(find("sb-attention")), "attention=true 时行尾出现关注圆点");
+  check(Boolean(find("sb-attention")), "attention=true 时标题左侧出现关注圆点");
   for (const listener of listeners.updated) {
     listener(target.id, { attention: false }, { ...target, attention: false });
   }
