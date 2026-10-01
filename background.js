@@ -42,6 +42,15 @@ import {
   updateListDescription,
 } from "./background/lists.js";
 import { aiGroupTabs, getAiConfig, setAiConfig } from "./background/ai.js";
+import {
+  closeTabsAsGroup,
+  handleClosedTabRecorded,
+  handlePromotionAfterClose,
+  handleTabStructureChanged,
+  hasRestorableGroup,
+  initializeClosedGroups,
+  restoreClosedGroup,
+} from "./background/closed_groups.js";
 import { openDroppedItem } from "./background/dropped_item.js";
 import {
   createRootTab,
@@ -207,9 +216,19 @@ chrome.tabs.onCreated.addListener((tab) => {
   handleTabCreated(tab);
   handleRecentTabCreated(tab);
   handleTreeTabCreated(tab);
+  // Firefox 的每标签会话值：新标签先登记一份父标签引用，之后被撤销关闭时才认得出来。
+  if (tab && Number.isFinite(Number(tab.windowId)) && Number.isFinite(Number(tab.id))) {
+    handleTabStructureChanged(Number(tab.windowId), [Number(tab.id)]);
+  }
 });
 
 chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
+  // 顺序很重要：
+  // 1. 撤销关闭必须在树执行"关闭提升"**之前**抓取父标签/前后邻居/物理下标，
+  //    且 url 与标题来自 recent_tabs 的标签缓存（它在下面这一步就被删掉了）；
+  // 2. 被关闭标签的子标签会被提升，它们的父标签引用要在树改写前把 id 取出来。
+  handleClosedTabRecorded(tabId, removeInfo);
+  handlePromotionAfterClose(tabId, removeInfo.windowId);
   handleTabRemoved(tabId);
   handleRecentTabRemoved(tabId);
   handleTreeTabRemoved(tabId, removeInfo);
@@ -217,14 +236,18 @@ chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
 
 chrome.tabs.onMoved.addListener((tabId, moveInfo) => {
   handleTreeTabMoved(tabId, moveInfo);
+  // 原生拖动会按新位置重新推断父标签，因此这里要刷新该标签的持久引用。
+  handleTabStructureChanged(moveInfo.windowId, [Number(tabId)]);
 });
 
 chrome.tabs.onDetached.addListener((tabId, detachInfo) => {
   handleTreeTabDetached(tabId, detachInfo);
+  handleTabStructureChanged(detachInfo.oldWindowId, [Number(tabId)]);
 });
 
 chrome.tabs.onAttached.addListener((tabId, attachInfo) => {
   handleTreeTabAttached(tabId, attachInfo);
+  handleTabStructureChanged(attachInfo.newWindowId, [Number(tabId)]);
 });
 
 chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
@@ -516,9 +539,38 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // 撤销关闭：把一批标签关掉并记为一个「关闭组」（关闭整棵子树 / 多选批量关闭 / 保存后关闭）。
+  if (action === "closeTabsAsGroup") {
+    closeTabsAsGroup(message.windowId, message.tabIds, message.label, {
+      subtreeOf: message.subtreeOf,
+    })
+      .then((result) => sendResponse({ ok: result.ok !== false, ...result }))
+      .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
+    return true;
+  }
+
+  // 撤销关闭：恢复最近一个关闭组（含父子层级、兄弟顺序与物理位置）。
+  if (action === "restoreClosedGroup") {
+    restoreClosedGroup(message.windowId)
+      .then((result) => sendResponse({ ok: result.ok !== false, ...result }))
+      .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
+    return true;
+  }
+
+  // 供 UI 判断「撤销关闭」是否可用（无记录时按钮/菜单项置灰）。
+  if (action === "getClosedGroupState") {
+    hasRestorableGroup()
+      ? sendResponse({ ok: true, restorable: true })
+      : sendResponse({ ok: true, restorable: false });
+    return false;
+  }
+
   return false;
 });
 
 initializeDiscardSystem();
 initializeRecentSystem();
 initializeTreeSystem();
+// 撤销关闭的记录存在 storage.session：SW 每次冷启动内存都是空的，必须重新读回来。
+// 这里刻意放在顶层（而不是 onStartup）——onStartup 只在浏览器启动时触发一次。
+initializeClosedGroups();

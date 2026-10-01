@@ -28,6 +28,7 @@ import {
   dropTab,
   encodeSnapshot,
   inferParentFromNewPosition,
+  isDescendantOf,
   setParent,
   sanitizeTreeState,
   toParentsPayload,
@@ -91,6 +92,27 @@ let indexCache = null;
 const pendingPlacements = new Map();
 // 标记的有效期：超过这个时间还没被 onCreated 消费就丢弃。
 const PENDING_PLACEMENT_TTL_MS = 3000;
+
+// 「撤销关闭恢复」的判定钩子：由 closed_groups.js 在初始化时注册。
+//
+// 为什么必须是钩子而不是在本文件里 import：
+// 撤销关闭需要读会话记录、调 sessions API、并在恢复后写回父子关系，属于另一层职责；
+// 而**判定必须发生在 tabs.onCreated 的同步阶段**——否则默认规则（挂到 opener / 活动标签下）
+// 会先把层级定下来，之后再由恢复逻辑改写，会出现可见的层级跳动。
+// 因此这里只暴露一个同步的"认领"入口，真正的判定与套用都在 closed_groups.js 里。
+let restoreCandidateProvider = null;
+
+/**
+ * 注册「撤销关闭恢复」的判定钩子（只能由 closed_groups.js 调用）。
+ *
+ * @param {null|((tab: chrome.tabs.Tab) => null|{record: object|null, apply: () => Promise<boolean>})} provider
+ *   provider 返回非空对象表示"这个新建标签是撤销恢复产生的"，其中：
+ *   - `apply()` 返回 true 表示已自行处理完父子关系，`onCreated` 不再套用默认规则；
+ *   - 返回 false 表示判定失败（其实不是撤销恢复），此时回退到默认规则。
+ */
+export function setRestoreCandidateProvider(provider) {
+  restoreCandidateProvider = typeof provider === "function" ? provider : null;
+}
 
 let startupActive = false;
 let startupQuietTimer = null;
@@ -555,6 +577,32 @@ export async function handleTreeTabCreated(tab) {
     }
     markDirty(windowId);
     return;
+  }
+  // 撤销关闭恢复：必须**在套用默认规则之前同步认领**，否则新标签会先被挂到 opener / 活动标签下，
+  // 之后再被恢复逻辑改写，用户会看到层级跳动。
+  const restoreClaim = restoreCandidateProvider ? restoreCandidateProvider(tab) : null;
+  if (restoreClaim) {
+    const createdId = Number(tab.id);
+    // 先落在顶层并登记物理下标：apply() 是异步的（Firefox 还要读每标签会话值），
+    // 这段时间不能让默认规则插手；真正的父标签由 closed_groups.js 套用。
+    tree.parentById.set(createdId, null);
+    const restoredIndex = Number(tab.index);
+    if (Number.isFinite(restoredIndex)) {
+      shiftIndexesForInsert(tree, restoredIndex);
+      tree.indexById.set(createdId, restoredIndex);
+    }
+    markDirty(windowId);
+    let handled = false;
+    try {
+      handled = await restoreClaim.apply();
+    } catch (error) {
+      handled = false;
+    }
+    if (handled) {
+      markDirty(windowId);
+      return;
+    }
+    // 判定失败（例如用户只是手动打开了同一个 URL）：退回默认规则。
   }
   const parentId = await pickParentForNewTab(tree, tab);
   if (parentId != null) {
@@ -1235,4 +1283,195 @@ function markInternalMove(tabIds) {
       internalMoveIds.delete(tabId);
     }
   }, INTERNAL_MOVE_TTL_MS);
+}
+
+// ---------------------------------------------------------------------------
+// 供撤销关闭（closed_groups.js）使用的接口
+//
+// 这一组接口的存在意义：撤销关闭需要"读当前树的父子关系"和"把恢复出来的标签挂回去"，
+// 但这些动作必须经由本文件的内存树与下标表，否则会与事件链路维护的状态脱节。
+// 判定与策略留在 closed_groups.js，这里只提供受约束的读写。
+// ---------------------------------------------------------------------------
+
+/** 确保某窗口的树已加载（撤销恢复前必须先有树，否则写不进父子关系）。 */
+export async function ensureTreeFor(windowId) {
+  const winId = Number(windowId);
+  if (!Number.isFinite(winId)) {
+    return null;
+  }
+  return ensureTree(winId);
+}
+
+/**
+ * 取一个标签的结构快照，用于"关闭前"记录现场。
+ *
+ * **必须在 handleTreeTabRemoved 之前调用**：提交流程一旦执行，父标签信息就被改写了。
+ * 树未加载时返回 null（此时本来也没有可信的父子关系可用）。
+ *
+ * 前后邻居是**物理下标**上的邻居，而不是同一父下的兄弟：恢复时按它们定位可以容忍
+ * 「这期间又开了别的标签」带来的下标漂移。
+ */
+export function getTabStructureInfo(tabId, windowId) {
+  const tree = trees.get(Number(windowId));
+  const id = Number(tabId);
+  if (!tree || !Number.isFinite(id) || !tree.indexById.has(id)) {
+    return null;
+  }
+  const index = tree.indexById.get(id);
+  let prevId = null;
+  let nextId = null;
+  for (const [otherId, otherIndex] of tree.indexById) {
+    if (otherIndex === index - 1) {
+      prevId = otherId;
+    } else if (otherIndex === index + 1) {
+      nextId = otherId;
+    }
+  }
+  return {
+    windowId: tree.windowId,
+    index,
+    parentId: tree.parentById.has(id) ? tree.parentById.get(id) : null,
+    prevId,
+    nextId,
+  };
+}
+
+/** 取某标签的直接子标签（关闭它之后这些子标签会被提升，需要刷新它们的持久引用）。 */
+export function getChildTabIds(tabId, windowId) {
+  const tree = trees.get(Number(windowId));
+  const id = Number(tabId);
+  if (!tree || !Number.isFinite(id)) {
+    return [];
+  }
+  return (tree.childIdsById.get(id) || []).slice();
+}
+
+/**
+ * 把父子关系套用到内存树上（带不变量校验）。
+ *
+ * 校验口径与建树时一致：父必须存在于同一窗口、不能是自身或自身后代、且物理下标必须小于子标签。
+ * 不满足就降级为顶层——**不报错**，因为撤销恢复本身就是尽力而为：原父可能已被关闭，
+ * 或者标签栏顺序在这期间变化过大。
+ *
+ * @param {{childPinned?: boolean, indexMap?: Map<number, number>}} options
+ *   - `childPinned` 为 true 时强制顶层（固定标签不参与父子）；
+ *   - `indexMap` 是**实时**的 `tabId -> 物理下标`（由 `refreshTreeIndexes()` 提供）。
+ *     必须传它的原因：内存里的 `indexById` 是"删除不重编号"的近似表，用它判断
+ *     "父是否真的排在子之前"会得出错误结论（关闭过标签之后下标就会偏），
+ *     结果是本该挂上的层级被误判为非法而丢成顶层。
+ * @returns {boolean} 树已加载并写入成功时为 true。
+ */
+export function applyRestoredParent(windowId, tabId, parentId, options = {}) {
+  const tree = trees.get(Number(windowId));
+  const id = Number(tabId);
+  if (!tree || !Number.isFinite(id) || !tree.parentById.has(id)) {
+    return false;
+  }
+  const indexOf = (targetId) => {
+    const map = options.indexMap;
+    if (map && map.has(targetId)) {
+      return map.get(targetId);
+    }
+    return tree.indexById.get(targetId) ?? -1;
+  };
+  let target = parentId === null || parentId === undefined ? null : Number(parentId);
+  if (target !== null &&
+      (!Number.isFinite(target) ||
+        options.childPinned ||
+        target === id ||
+        !tree.parentById.has(target) ||
+        isDescendantOf(tree, id, target) ||
+        indexOf(target) >= indexOf(id))) {
+    target = null;
+  }
+  setParent(tree, id, target);
+  markDirty(windowId);
+  return true;
+}
+
+/**
+ * 用一次真实查询重建某窗口的下标表，并返回实时的 `tabId -> 物理下标` 映射。
+ *
+ * 为什么需要它：`indexById` 在删除标签时**不重编号**（O(1) 删除是刻意的设计），
+ * 因此它只是"近似下标"，够用于"第一个子标签"这类相对判断；而撤销关闭要判断
+ * "父标签是否真的排在子标签之前"，必须依据物理事实。
+ */
+export async function refreshTreeIndexes(windowId) {
+  const winId = Number(windowId);
+  if (!Number.isFinite(winId)) {
+    return new Map();
+  }
+  const tabs = await queryWindowTabs(winId);
+  const tree = trees.get(winId);
+  if (tree) {
+    rebuildIndexes(tree, tabs);
+  }
+  return new Map(tabs.map((tab) => [Number(tab.id), Number(tab.index)]));
+}
+
+/** 取某标签的整棵子树（含自身）的 tabId 列表，供「关闭整棵子树」使用。 */
+export async function collectSubtreeTabIds(windowId, tabId) {
+  const winId = Number(windowId);
+  const id = Number(tabId);
+  if (!Number.isFinite(winId) || !Number.isFinite(id)) {
+    return [];
+  }
+  const tree = await ensureTree(winId);
+  if (!tree || !tree.parentById.has(id)) {
+    return [id];
+  }
+  return collectSubtreeIds(tree, id);
+}
+
+/**
+ * 把一批标签按给定顺序连续移动到 startIndex。
+ *
+ * 与 moveTabTree 的区别：这里不推断父子关系，只负责"按顺序排好物理位置"（撤销恢复用），
+ * 同时同步内存下标表——否则后续基于下标排序的操作（promote 的"第一个子标签"）会用到过期数据。
+ */
+export async function moveTabsInternallyTo(windowId, orderedTabIds, startIndex) {
+  const winId = Number(windowId);
+  const ids = Array.isArray(orderedTabIds) ? orderedTabIds.map(Number).filter(Number.isFinite) : [];
+  if (!Number.isFinite(winId) || ids.length === 0) {
+    return { moved: 0, skipped: 0 };
+  }
+  const tree = trees.get(winId);
+  const position = Number.isFinite(startIndex) ? Math.max(0, Math.floor(startIndex)) : -1;
+  const result = await moveTabsInternally(ids, winId, position);
+  if (tree && position >= 0) {
+    const movedSet = new Set(ids);
+    const rest = [...tree.indexById.entries()]
+      .filter(([id]) => !movedSet.has(id))
+      .sort((a, b) => a[1] - b[1])
+      .map(([id]) => id);
+    const insertAt = Math.max(0, Math.min(position, rest.length));
+    rest.splice(insertAt, 0, ...ids);
+    tree.indexById = new Map(rest.map((id, index) => [id, index]));
+  }
+  return result;
+}
+
+/**
+ * 等到这些标签都被登记进内存树（下标表里出现）。
+ *
+ * 用途：撤销恢复会先创建标签、再套用父子关系；而 `tabs.onCreated` 是异步派发的，
+ * 若不等这一步，恢复逻辑写好的父标签可能被随后到达的创建事件覆盖成顶层。
+ */
+export async function waitUntilTabsTracked(windowId, tabIds, timeoutMs = 2000) {
+  const winId = Number(windowId);
+  const ids = Array.isArray(tabIds) ? tabIds.map(Number).filter(Number.isFinite) : [];
+  if (!Number.isFinite(winId) || ids.length === 0) {
+    return true;
+  }
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const tree = trees.get(winId);
+    if (tree && ids.every((id) => tree.indexById.has(id))) {
+      return true;
+    }
+    if (Date.now() >= deadline) {
+      return false;
+    }
+    await delay(20);
+  }
 }

@@ -860,4 +860,20 @@ export {
   getRecentTabsSnapshot,
   markRecentReviewed,
   snoozeRecentReminder,
+  getCachedTabInfo,
 };
+
+/**
+ * 读取某个标签的缓存条目（url / 标题 / pinned / index 等）。
+ *
+ * 为什么开放这个入口：撤销关闭需要在 `tabs.onRemoved` 里记录"被关掉的是哪个页面"，
+ * 而该事件只给 tabId、不给 Tab 对象；本模块已经在维护一份全量标签缓存（`ensureTabCache`），
+ * 复用它可以避免再复制一份 url/标题的内存开销。
+ * 调用方必须**在 handleRecentTabRemoved 之前**读，否则条目已被删除。
+ */
+function getCachedTabInfo(tabId) {
+  const id = Number(tabId);
+  if (!Number.isFinite(id)) {
+    return null;
+  }  return tabCache.get(String(id)) || null;
+}

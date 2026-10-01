@@ -18,4 +18,9 @@ export const TREE_VIEW_MODE_KEY = "treeViewMode";
 // 折叠状态：仅当前浏览器会话有效，存放在 storage.session。
 export const TREE_COLLAPSED_KEY = "treeCollapsed";
 export const TREE_FLUSH_ALARM = "treeFlush";
+// 撤销关闭：关闭记录只存活于当前浏览器会话，因此同样放 storage.session。
+// closedTabLog 记单个标签的关闭现场（供浏览器原生「重新打开已关闭的标签页」恢复父子关系），
+// closedGroups 记本插件自己发起的批量关闭（供「撤销关闭」整组恢复）。
+export const CLOSED_LOG_KEY = "closedTabLog";
+export const CLOSED_GROUPS_KEY = "closedGroups";
 export const HAS_SESSION_STORAGE = Boolean(chrome.storage && chrome.storage.session);
