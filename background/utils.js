@@ -2,6 +2,24 @@ export function generateId() {
   return `list_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/**
+ * 判断标签页是否处于静音状态。
+ *
+ * 必须读 `mutedInfo.muted`：`tabs.Tab` **没有** `muted` 字段（Firefox 与 Chromium 的 schema 都没有），
+ * 读 `tab.muted` 只会拿到 `undefined`——"切换静音"于是被算成"永远是未静音"，
+ * `!tab.muted` 恒为 true，表现为「取消静音」永远失败。写路径才是 `tabs.update({ muted })`。
+ *
+ * 之所以放在后台共享模块里：右键菜单与 Firefox 侧边栏（行内喇叭按钮、固定标签的静音圆点）
+ * 必须使用同一条读法，任何一处读错都会让静音状态在两处的显示与行为不一致。
+ * 侧边栏通过 `src/sidebar/audio_state.js` 复用本函数。
+ *
+ * @param {{ mutedInfo?: { muted?: boolean } }|null|undefined} tab chrome.tabs.Tab
+ * @returns {boolean}
+ */
+export function isTabMuted(tab) {
+  return Boolean(tab && tab.mutedInfo && tab.mutedInfo.muted);
+}
+
 export function normalizeListName(name) {
   return (name || "").trim();
 }

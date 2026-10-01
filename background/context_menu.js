@@ -1,5 +1,6 @@
 import { manualDiscard } from "./discard.js";
 import { getLists, saveCurrentTab } from "./lists.js";
+import { isTabMuted } from "./utils.js";
 
 // 右键菜单分两类：
 // 1. `contexts: ["page"]`：网页右键里的「保存到列表 / 关闭并保存到列表」，沿用原有行为；
@@ -230,7 +231,8 @@ async function handleContextMenuShown(info, tab) {
     return;
   }
   const pinned = Boolean(tab.pinned);
-  const muted = Boolean(tab.muted);
+  // 静音状态只能读 mutedInfo.muted（tabs.Tab 没有 muted 字段），否则文案永远停在「静音标签页」。
+  const muted = isTabMuted(tab);
   const discarded = Boolean(tab.discarded);
   const tabWindowId = Number(tab.windowId);
 
@@ -373,7 +375,9 @@ async function handleContextMenuClick(info, tab) {
       return;
     case TAB_ITEM.mute:
       if (tab && Number.isFinite(Number(tab.id))) {
-        updateTab(Number(tab.id), { muted: !tab.muted });
+        // 取反必须以 mutedInfo.muted 为基准：读 tab.muted 恒为 undefined，`!undefined` 恒真，
+        // 于是这个菜单项只能"静音"，永远无法取消静音。
+        updateTab(Number(tab.id), { muted: !isTabMuted(tab) });
       }
       return;
     case TAB_ITEM.discard:

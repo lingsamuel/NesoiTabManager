@@ -209,13 +209,17 @@ function lastUpdate(id) {
 async function main() {
   setupChromeMock();
   windows = [{ id: 10 }, { id: 20 }, { id: 30 }];
+  // 假标签的形状必须与真实 chrome.tabs.Tab 一致：静音状态只在 mutedInfo 里，
+  // **没有** muted 字段。早期这里写的是 `muted: true`，于是测试永远通过，
+  // 而真实浏览器里 `tab.muted` 是 undefined —— 菜单文案永远停在「静音标签页」、
+  // 点击也永远只会传 muted: true（"取消静音"静默失效）。形状对齐后这类错误才会被测出来。
   tabs = [
     {
       id: 5,
       windowId: 10,
       index: 0,
       pinned: true,
-      muted: true,
+      mutedInfo: { muted: true, reason: "user" },
       discarded: false,
       url: "https://example.org/page",
       title: "示例",
@@ -315,6 +319,9 @@ async function main() {
 
   await menu.handleContextMenuClick({ menuItemId: "nesoi-tab:mute" }, tab);
   assertDeepEqual(calls.updateTab.slice(-1)[0], { id: 5, changes: { muted: false } }, "已静音 → 取消静音");
+  // 另一个方向也要能走通：读法一旦退回 tab.muted，这里会得到 muted: true（永远静音）。
+  await menu.handleContextMenuClick({ menuItemId: "nesoi-tab:mute" }, { ...tab, mutedInfo: { muted: false } });
+  assertDeepEqual(calls.updateTab.slice(-1)[0], { id: 5, changes: { muted: true } }, "未静音 → 静音");
 
   await menu.handleContextMenuClick({ menuItemId: "nesoi-tab:discard" }, tab);
   assertDeepEqual(calls.discard, [5], "冻结标签页 → tabs.discard(5)");
