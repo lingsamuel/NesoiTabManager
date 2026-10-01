@@ -15,6 +15,8 @@
 import { ref } from "vue";
 import { pinnedTabTooltip } from "../pinned_data.js";
 import { isExternalDropData, resolvePinnedDropPosition } from "../dropped_data.js";
+// 静音状态必须走 mutedInfo（tabs.Tab 没有 muted 字段），与行内喇叭、右键菜单共用同一条读法。
+import { isTabMuted } from "../audio_state.js";
 import TabFavicon from "../../manager/components/TabFavicon.vue";
 
 const props = defineProps({
@@ -239,7 +241,7 @@ function onContainerDragLeave(event) {
         @dragend="onDragEnd"
       >
         <TabFavicon class="sb-pin-icon" :url="tab.favIconUrl" />
-        <span v-if="tab.muted" class="sb-pin-muted" title="已静音" aria-hidden="true"></span>
+        <span v-if="isTabMuted(tab)" class="sb-pin-muted" title="已静音" aria-hidden="true"></span>
       </div>
       </template>
     </div>

@@ -46,7 +46,8 @@ function pin(id, windowId, index, extra = {}) {
     favIconUrl: "",
     active: false,
     discarded: false,
-    muted: false,
+    // 与真实 tabs.Tab 一致：没有 muted 字段，静音状态在 mutedInfo 里（组件读的是它）。
+    mutedInfo: { muted: false },
     ...extra,
   };
 }

@@ -30,6 +30,14 @@ import {
   isExternalDropData,
   parseDroppedItem,
 } from "./dropped_data.js";
+// 行内「发声 / 静音 / 需要关注」标记的纯逻辑（判定与 changeInfo → 本地补丁都在这里）
+import {
+  audioIndicator,
+  isTabAttention,
+  isTabMuted,
+  mutedPatch,
+  statePatchFromChangeInfo,
+} from "./audio_state.js";
 import {
   pickCurrentMatchFromVisibleRange,
   resolveActiveRow,
@@ -176,7 +184,15 @@ const items = computed(() => {
     if (!tab) {
       continue;
     }
-    result.push({ ...row, key: `tab-${row.id}`, tab });
+    // 展示态（发声/静音喇叭、需要关注圆点）在这里算一次：模板不必重复调用判定函数，
+    // 而且这里读过 tab 的这几个字段，标签状态被增量补丁改掉时行模型会自动重算。
+    result.push({
+      ...row,
+      key: `tab-${row.id}`,
+      tab,
+      audio: audioIndicator(tab),
+      attention: isTabAttention(tab),
+    });
   }
   return result;
 });
@@ -678,8 +694,10 @@ const TAB_EVENT_SOURCES = [
   [
     "onUpdated",
     (_tabId, changeInfo, tab) => {
-      // onUpdated 在页面加载期间会连续触发（status/audible 等变化），
-      // 只有真正影响显示的字段才值得重取数据。
+      // onUpdated 在页面加载期间会连续触发（status 等字段连续变化），
+      // 只有真正影响"列表结构或文本"的字段才值得重取数据。
+      // 发声 / 静音 / 需要关注这三个展示态字段**刻意不在这里**：它们由 bindTabStateEvents
+      // 做本地增量补丁，用一次整窗查询去换一个布尔值不成比例（见该函数注释）。
       if (!changeInfo) {
         return undefined;
       }
@@ -688,12 +706,60 @@ const TAB_EVENT_SOURCES = [
         "url" in changeInfo ||
         "favIconUrl" in changeInfo ||
         "discarded" in changeInfo ||
-        "pinned" in changeInfo ||
-        "mutedInfo" in changeInfo;
+        "pinned" in changeInfo;
       return relevant && tab ? tab.windowId : undefined;
     },
   ],
 ];
+
+/**
+ * 把一组状态补丁写进本地标签对象（本窗口标签 + 跨窗口聚合的固定标签）。
+ *
+ * 为什么需要它：`audible` / `mutedInfo` / `attention` 只影响行内的小标记，却可能随播放状态频繁变化，
+ * 而一次整窗刷新在 10K 标签下要序列化约 2MB 并附带父子映射——用这个代价换一个布尔值完全不成比例。
+ * 这里直接在内存里改那一个标签的字段，是 O(标签数) 的遍历。
+ *
+ * 找不到该标签时什么都不做：说明本地数据已经过时（例如新标签的 onCreated 防抖刷新还没跑），
+ * 那次刷新本来就会取回权威值。
+ */
+function applyTabStatePatch(tabId, patch) {
+  if (!patch || Object.keys(patch).length === 0) {
+    return;
+  }
+  const id = Number(tabId);
+  let changed = false;
+  const patchOne = (tab) => {
+    if (!tab || Number(tab.id) !== id) {
+      return;
+    }
+    Object.assign(tab, patch);
+    changed = true;
+  };
+  tabs.value.forEach(patchOne);
+  pinnedGroups.value.forEach((group) => group.tabs.forEach(patchOne));
+  if (changed) {
+    // 显式换一次数组引用：与 applyActiveTab 同一手法，保证依赖"整份列表"的计算属性也一定重算。
+    tabs.value = tabs.value.slice();
+  }
+}
+
+/**
+ * 展示态专用监听器：`onUpdated` 的 changeInfo 直接补进本地对象，不参与 250ms 防抖刷新。
+ *
+ * 与 TAB_EVENT_SOURCES 里的 onUpdated 监听器并存是有意的——那个负责"结构/文本变化 → 重取数据"，
+ * 这个负责"展示态变化 → 改内存"。两者的触发条件与代价完全不同，混在一个函数里会让刷新策略难以读懂。
+ */
+function bindTabStateEvents() {
+  const target = chrome.tabs && chrome.tabs.onUpdated;
+  if (!target || typeof target.addListener !== "function") {
+    return;
+  }
+  const listener = (tabId, changeInfo) => {
+    applyTabStatePatch(tabId, statePatchFromChangeInfo(changeInfo));
+  };
+  target.addListener(listener);
+  cleanups.push(() => target.removeListener(listener));
+}
 
 function bindTabEvents() {
   for (const [name, extract] of TAB_EVENT_SOURCES) {
@@ -786,6 +852,40 @@ async function discardTab(tab) {
   } else {
     scheduleRefresh("pinned");
   }
+}
+
+/**
+ * 切换某个标签的静音状态（行内喇叭按钮的唯一动作）。
+ *
+ * 采用"乐观更新 + 权威校正"：先本地打补丁让界面立刻响应（静音必须是点一下就有反馈的操作），
+ * 再用 tabs.update 的回调结果校正；失败时把本地补丁视为脏数据，重取一次权威状态。
+ * 这里直接调 chrome.tabs.update 而不是经后台转发：侧边栏文档拥有与后台同等的特权 API
+ * （和关闭标签、重排固定标签同一取舍）。
+ */
+function toggleMute(tab) {
+  if (!tab || !Number.isFinite(Number(tab.id))) {
+    return;
+  }
+  const tabId = Number(tab.id);
+  const nextMuted = !isTabMuted(tab);
+  applyTabStatePatch(tabId, mutedPatch(tab, nextMuted));
+  chrome.tabs.update(tabId, { muted: nextMuted }, (updated) => {
+    if (chrome.runtime.lastError) {
+      setStatus(chrome.runtime.lastError.message || "切换静音失败。", "error");
+      // 本地补丁可能已经写脏，重取一次权威状态把它纠正回来（固定标签也可能来自其它窗口）。
+      if (Number(tab.windowId) === Number(windowId.value)) {
+        scheduleRefresh("full");
+      } else {
+        scheduleRefresh("pinned");
+      }
+      return;
+    }
+    setStatus("", "");
+    // 回调返回的就是更新后的标签；用它的 mutedInfo 覆盖乐观值，reason 等字段也一并跟上。
+    if (updated && updated.mutedInfo) {
+      applyTabStatePatch(tabId, { mutedInfo: updated.mutedInfo });
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1371,6 +1471,7 @@ onMounted(async () => {
   await tree.loadCollapsed();
   await refresh();
   bindTabEvents();
+  bindTabStateEvents();
   document.addEventListener("visibilitychange", onVisibilityChange);
   cleanups.push(() => document.removeEventListener("visibilitychange", onVisibilityChange));
   // 保存清单打开时用 Escape 关闭（清单盖住整个列表，必须给一个键盘出口）。
@@ -1482,6 +1583,7 @@ onBeforeUnmount(() => {
         @select="onTreeSelect"
         @close="closeTab"
         @discard="discardTab"
+        @toggle-mute="toggleMute"
         @toggle-collapse="toggleCollapse"
         @tree-drop="onTreeDrop"
         @external-drop="onTreeExternalDrop"

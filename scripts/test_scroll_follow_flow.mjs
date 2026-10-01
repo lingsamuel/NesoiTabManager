@@ -7,6 +7,9 @@
 // 纯函数测试对此完全无感。
 //
 // 覆盖两处：侧边栏（跟随活动标签 + 跳转模式提交关键词后的显式滚动）、管理页「打开的窗口」（跳转模式同上）。
+// 另外还覆盖侧边栏的**行内展示态**（发声/静音喇叭按钮、"需要关注"圆点）：它同样是
+// "chrome 事件 → 本地增量补丁 → 重新渲染"这条链路。判定逻辑有纯函数测试（test_audio_state.mjs），
+// 但"补丁有没有真的写进组件状态、有没有误触发整窗重查、点击有没有调到 tabs.update"只有把真组件跑起来才能验。
 // 做法：在 Node 里把**真实的** .vue 组件跑起来——用 vue/compiler-sfc 即时编译 .vue，
 // 用 Vue 的 createRenderer 提供假 DOM（只实现 SidebarApp 真正用到的那点几何语义：
 // clientHeight、scrollTop 及其夹取），再用假 chrome 控制标签列表与事件顺序。
@@ -163,6 +166,12 @@ const WINDOW_ID = 1;
 const createdTabId = 999;
 let browserTabs = [];
 const listeners = { created: [], activated: [], updated: [], removed: [] };
+// tabs.update 的调用记录（展示态场景用它验证"点击喇叭 = 一次 tabs.update"）。
+const updateCalls = [];
+// 发往后台的消息动作（展示态场景用它验证"点喇叭不会走 activateTab"）。
+const messageLog = [];
+// 整窗查询次数：展示态变化只要走了"整窗重查"这条错路，计数就会露馅。
+let queryCount = 0;
 
 /** 返回副本：侧边栏会就地改 active 标记，不能让"假浏览器"的状态被它改掉。 */
 function snapshot() {
@@ -182,6 +191,7 @@ function makeEvent(store) {
 
 function sendMessage(message, callback) {
   const action = message && message.action;
+  messageLog.push(action);
   if (action === "createRootTab") {
     // 真实顺序：浏览器先创建并激活新标签（此刻侧边栏列表里还没有它），后台随后才回消息。
     // 这一段顺序正是回归的关键，不能简化成"直接刷新出海新标签"。
@@ -221,6 +231,7 @@ globalThis.chrome = {
   },
   tabs: {
     query(info, callback) {
+      queryCount += 1;
       const list = snapshot().filter((tab) => {
         if (info && info.pinned === true && !tab.pinned) return false;
         if (info && info.windowId !== undefined && tab.windowId !== info.windowId) return false;
@@ -231,7 +242,13 @@ globalThis.chrome = {
     create() {},
     remove() {},
     move() {},
-    update() {},
+    // 回调参数按真实 API 的形状给：tabs.update 的回调收到的是更新后的 Tab（静音状态在 mutedInfo 里）。
+    update(tabId, props, callback) {
+      updateCalls.push({ tabId, props });
+      if (callback) {
+        callback({ id: tabId, mutedInfo: { muted: Boolean(props && props.muted) } });
+      }
+    },
     onCreated: makeEvent(listeners.created),
     onActivated: makeEvent(listeners.activated),
     onUpdated: makeEvent(listeners.updated),
@@ -524,7 +541,88 @@ console.log("场景 7：滚动同步改写了当前项，但绝不能反过来�
   );
 }
 
-console.log("场景 8：管理页「打开的窗口」跳转模式下输入关键词 → 同样要跳转");
+console.log("场景 8：行内展示态（发声/静音/关注）走本地增量补丁——不重查、点了不跳转");
+{
+  // 挑一个**当前可见**的行来改状态：虚拟列表只渲染可见行，改看不见的行观察不到渲染结果。
+  const nonPinned = browserTabs.filter((tab) => !tab.pinned);
+  const rowIndex = visibleRange().start + 1;
+  const target = nonPinned[rowIndex];
+  check(Boolean(target), "观察对象落在可见区间里", `行 ${rowIndex}`);
+
+  console.log("  8.1 开始发声 → 只改本地对象，不排整窗刷新");
+  const queriesBefore = queryCount;
+  for (const listener of listeners.updated) {
+    listener(target.id, { audible: true }, { ...target, audible: true });
+  }
+  await sleep(60);
+  const audioButton = find("sb-audio");
+  check(Boolean(audioButton), "发声标签行渲染出喇叭按钮");
+  check(queryCount === queriesBefore, "发声变化没有触发整窗重查", `查询次数 ${queriesBefore} → ${queryCount}`);
+  check(Boolean(audioButton && audioButton.props.title === "静音此标签页"), "未静音时提示「静音此标签页」");
+
+  console.log("  8.2 点喇叭 → 一次 tabs.update，且不激活标签");
+  const updatesBefore = updateCalls.length;
+  const messagesBefore = messageLog.length;
+  audioButton.props.onClick({ stopPropagation() {} });
+  await sleep(60);
+  check(
+    updateCalls.length === updatesBefore + 1 &&
+      updateCalls[updatesBefore].tabId === target.id &&
+      updateCalls[updatesBefore].props.muted === true,
+    "点击喇叭 → tabs.update({ muted: true })",
+    JSON.stringify(updateCalls.slice(updatesBefore))
+  );
+  check(!messageLog.slice(messagesBefore).includes("activateTab"), "点击喇叭不会激活/跳转该标签");
+  const mutedButton = find("sb-audio");
+  check(
+    Boolean(mutedButton && mutedButton._class.includes("muted")),
+    "乐观补丁让按钮立刻变成「已静音」样式"
+  );
+  check(Boolean(mutedButton && mutedButton.props.title === "取消静音"), "已静音时提示「取消静音」");
+
+  console.log("  8.3 在别处取消静音 → onUpdated 把侧边栏同步回去，并且没有重查");
+  const queriesBeforeUnmute = queryCount;
+  for (const listener of listeners.updated) {
+    listener(
+      target.id,
+      { audible: false, mutedInfo: { muted: false } },
+      { ...target, audible: false, mutedInfo: { muted: false } }
+    );
+  }
+  await sleep(60);
+  check(find("sb-audio") === null, "既无声也未静音后按钮消失（不占位）");
+  check(queryCount === queriesBeforeUnmute, "取消静音同样没有触发整窗重查");
+
+  console.log("  8.4 需要关注 → 圆点出现/消失同样只走本地补丁");
+  const queriesBeforeAttention = queryCount;
+  for (const listener of listeners.updated) {
+    listener(target.id, { attention: true }, { ...target, attention: true });
+  }
+  await sleep(60);
+  check(Boolean(find("sb-attention")), "attention=true 时行尾出现关注圆点");
+  for (const listener of listeners.updated) {
+    listener(target.id, { attention: false }, { ...target, attention: false });
+  }
+  await sleep(60);
+  check(find("sb-attention") === null, "attention 清除后圆点消失");
+  check(queryCount === queriesBeforeAttention, "关注状态变化没有触发整窗重查");
+
+  console.log("  8.5 固定标签的静音圆点读的是同一份数据（回归：曾经读 tab.muted 恒为 undefined）");
+  const pinnedTab = browserTabs.find((tab) => tab.pinned);
+  check(Boolean(pinnedTab), "存在一个固定标签用于观察");
+  for (const listener of listeners.updated) {
+    listener(pinnedTab.id, { mutedInfo: { muted: true } }, { ...pinnedTab, mutedInfo: { muted: true } });
+  }
+  await sleep(60);
+  check(Boolean(find("sb-pin-muted")), "固定标签被静音后出现静音圆点");
+  for (const listener of listeners.updated) {
+    listener(pinnedTab.id, { mutedInfo: { muted: false } }, { ...pinnedTab, mutedInfo: { muted: false } });
+  }
+  await sleep(60);
+  check(find("sb-pin-muted") === null, "取消静音后圆点消失");
+}
+
+console.log("场景 9：管理页「打开的窗口」跳转模式下输入关键词 → 同样要跳转");
 {
   // 侧边栏那套已经跑完，先卸载：两个应用都靠同一个 scrollContainer 变量记录滚动容器。
   sidebarApp.unmount();

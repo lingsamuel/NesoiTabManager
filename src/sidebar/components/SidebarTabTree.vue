@@ -69,6 +69,8 @@ const emit = defineEmits([
   "select",
   "close",
   "discard",
+  // 点击行内喇叭按钮：只切换该标签的静音状态（不激活、不选中），由父级调用 tabs.update
+  "toggle-mute",
   "toggle-collapse",
   "tree-drop",
   "context-menu",
@@ -123,6 +125,23 @@ function onRowClick(item, event) {
 function onMouseDown(event) {
   // 不清掉这一下，Firefox 会在中键按下时启动自动滚动。
   if (event.button === 1) {
+    event.preventDefault();
+  }
+}
+
+/**
+ * 行内显示态标记（喇叭按钮）上的按下：必须与"行拖拽 / 行选中 / 中键关闭"彻底解耦。
+ *
+ * - stopPropagation：行看不到这次按下，不会据此进入拖拽准备，也不会把这次点击当成"点行"；
+ * - preventDefault（左键）：即使冒泡被挡住，Firefox 仍可能从**最近的可拖拽祖先**（行自身）发起拖拽，
+ *   只有屏蔽这次按下的默认行为才能可靠阻断；click 事件不受 mousedown 的 preventDefault 影响，按钮照常可点；
+ * - preventDefault（中键）：行里的"中键 preventDefault"已经被这里挡住，不补上就会触发中键自动滚动
+ *   （中键的 auxclick 仍会冒泡给行 → 与原生标签一致地关闭标签）；
+ * - 右键故意不 preventDefault，让 contextmenu 正常冒泡到行的右键处理。
+ */
+function onAudioMouseDown(event) {
+  event.stopPropagation();
+  if (event.button === 0 || event.button === 1) {
     event.preventDefault();
   }
 }
@@ -367,6 +386,39 @@ onBeforeUnmount(() => {
         <span class="sb-title" :title="item.tab.title || item.tab.url || ''">
           {{ item.tab.title || item.tab.url || "未命名" }}
         </span>
+        <!--
+          展示态标记：刻意放在 .sb-actions 之外，因此不随 hover 出现/消失——
+          原生标签栏的音频图标同样是常显的，用户需要在扫视时就知道"哪个标签在响 / 被静音了"。
+          item.audio / item.attention 由 SidebarApp 的行模型预先算好（见那里的 items 计算属性）。
+        -->
+        <span
+          v-if="item.attention"
+          class="sb-attention"
+          title="该标签页需要关注"
+          aria-hidden="true"
+        ></span>
+        <button
+          v-if="item.audio.visible"
+          type="button"
+          class="sb-audio"
+          :class="{ muted: item.audio.muted }"
+          :title="item.audio.title"
+          :aria-pressed="item.audio.muted ? 'true' : 'false'"
+          draggable="false"
+          @click.stop="emit('toggle-mute', item.tab)"
+          @mousedown="onAudioMouseDown"
+          @dragstart.stop.prevent
+        >
+          <!-- 已静音：喇叭 + 一道斜线；正在发声：喇叭 + 两道声波 -->
+          <svg v-if="item.audio.muted" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M11 5 6.5 9H3v6h3.5L11 19z" />
+            <path d="M16 15l5-6" />
+          </svg>
+          <svg v-else viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M11 5 6.5 9H3v6h3.5L11 19z" />
+            <path d="M15.5 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11" />
+          </svg>
+        </button>
         <span class="sb-actions">
           <button
             type="button"

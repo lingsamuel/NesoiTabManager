@@ -56,7 +56,9 @@
   树状模式下 `refreshWindows()` 还会额外拉一次父子映射（`getTreeStructure`），窗口多、标签多时这是几百 KB 级的往返，
   因此在错误视图上刷新不只是浪费一次 `windows.getAll`。
 - **`onUpdated` 只认影响显示的字段**：`title` / `url` / `favIconUrl` / `discarded` / `pinned` / `mutedInfo`。
-  页面加载期间 `status`、`audible` 等字段会连续变化，若不过滤会把防抖窗口填满无意义的整表查询（与侧边栏同一口径）。
+  页面加载期间 `status`、`audible` 等字段会连续变化，若不过滤会把防抖窗口填满无意义的整表查询。
+  （侧边栏另有一份口径：`audible` / `mutedInfo` / `attention` 走本地增量补丁、不重取数据，见 `docs/ui/firefox_sidebar.md`；
+  管理页不显示这几个状态，因此这里不求与它一致。）
 - **成本量级**：单次刷新 = 一次 `chrome.windows.getAll({ populate: true })`（10K 标签下约数 MB 序列化）
   \+ 树状模式下一次 `getTreeStructure`；因为防抖 + 不可见不刷新 + 非本视图不刷新，实际频率与用户在管理页上的操作次数同量级。
   这与侧边栏已有的策略是同一套机制，不是新的开销来源。

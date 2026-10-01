@@ -345,6 +345,63 @@ body {
   text-overflow: ellipsis;
 }
 
+/*
+  行内展示态标记（「需要关注」圆点 + 发声/静音喇叭按钮）。
+
+  刻意放在 .sb-actions **之外**：它们不随 hover 出现/消失。
+  原生标签栏的音频图标同样是常显的——用户扫视侧边栏时要能一眼看出"哪个标签在响、哪个被自己静音了"，
+  藏到 hover 后面等于把这条信息丢掉；而 hover 才出现的冻结/关闭按钮属于"要动手时才找"的操作，两者语义不同。
+*/
+.sb-attention {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  /* 琥珀色与"活动/选中"的蓝、匹配的浅黄区分开，避免和既有状态混淆 */
+  background: #f59e0b;
+}
+
+.sb-audio {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  /* 正在发声：偏蓝，表示"有东西在动"；已静音改成警示红，一眼可辨且能点回去 */
+  color: #2563eb;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.sb-audio.muted {
+  color: #b42318;
+}
+
+.sb-audio:hover {
+  background: #e5e7eb;
+  transform: none;
+}
+
+.sb-audio.muted:hover {
+  background: #fee4e2;
+}
+
+.sb-audio svg {
+  width: 12px;
+  height: 12px;
+  display: block;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .sb-actions {
   flex: none;
   display: none;
