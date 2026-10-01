@@ -506,6 +506,51 @@ async function main() {
   rebuilt10 = await tree.getTreeStructure([7]);
   assertEqual(rebuilt10.structures[7].parents[o10.id], undefined, "10c：祖先全部关闭时 O 落回顶层");
 
+  // --- 场景 11：子标签已被卸载（discard / 冻结），URL 拿不到 ---
+  // 已卸载标签的 URL 不可靠（Firefox 曾经完全取不到，现在也可能给出 about:blank），
+  // 若因此把它们判成"新增标签"，父子关系会整条丢失、整棵子树被抬成顶层。
+  // 回归点：这类"身份不可知"的标签必须按位置与快照配对，保住父子链。
+  console.log("场景 11：子标签已卸载导致 URL 不可用（身份不可知 → 按位置配对）");
+  const parentsOf = (snapshot, windowId) => snapshot.structures[windowId].parents;
+  // 沿父链上溯到顶层，用来断言"仍挂在原来的祖先之下"而不是看具体是第几层
+  const rootOf = (parents, tabId) => {
+    let cursor = tabId;
+    let guard = 0;
+    while (parents[cursor] !== undefined && guard < 32) {
+      cursor = parents[cursor];
+      guard += 1;
+    }
+    return cursor;
+  };
+
+  for (const [windowId, unavailableUrl] of [[8, ""], [9, "about:blank"]]) {
+    windows.push({ id: windowId });
+    seedOrphanSnapshot(windowId, [
+      { u: "https://p.example.com/", t: "P", p: -1 },
+      { u: "https://q.example.com/", t: "Q", p: 0 },
+      { u: "about:newtab", t: "R", p: 1 },
+      { u: "about:newtab", t: "S", p: 1 },
+      { u: "about:newtab", t: "T", p: 1 },
+    ]);
+    const p11 = addTab({ windowId, url: "https://p.example.com/", title: "P" });
+    // 被关闭的 Q 的 id 已不可知：这里用一个窗口内不存在的 id 模拟"opener 已被关闭"
+    const r11 = addTab({ windowId, url: unavailableUrl, title: "R", openerTabId: 999999 });
+    const s11 = addTab({ windowId, url: unavailableUrl, title: "S", openerTabId: 999999 });
+    const t11 = addTab({ windowId, url: unavailableUrl, title: "T", openerTabId: 999999 });
+    for (const tab of [r11, s11, t11]) {
+      tab.discarded = true;
+    }
+    rebuilt10 = await tree.getTreeStructure([windowId]);
+    const parents = parentsOf(rebuilt10, windowId);
+    const label = unavailableUrl === "" ? "url 为空" : "url 变成 about:blank";
+    assertEqual(parents[r11.id] !== undefined, true, `11（${label}）：R 没有被抬成顶层`);
+    assertEqual(parents[s11.id] !== undefined, true, `11（${label}）：S 没有被抬成顶层`);
+    assertEqual(parents[t11.id] !== undefined, true, `11（${label}）：T 没有被抬成顶层`);
+    assertEqual(rootOf(parents, r11.id), p11.id, `11（${label}）：R 的祖先链仍回到 P`);
+    assertEqual(rootOf(parents, s11.id), p11.id, `11（${label}）：S 的祖先链仍回到 P`);
+    assertEqual(rootOf(parents, t11.id), p11.id, `11（${label}）：T 的祖先链仍回到 P`);
+  }
+
   console.log("");
   console.log(`共 ${checks} 项断言，失败 ${failures} 项`);
   if (failures > 0) {

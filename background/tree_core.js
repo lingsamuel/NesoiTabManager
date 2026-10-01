@@ -375,6 +375,24 @@ export function alignSnapshotToTabs(orderedTabs, snapshot, options = {}) {
     }
 
     if (found < 0) {
+      // 兜底：URL 证据整体失效时（标签已被卸载/冻结，见 hasUnknownIdentity），
+      // 不能再把这一项判成"新增标签"——那会连带丢掉它在快照里的整条父子关系，
+      // 表现为整棵子树被抬到顶层。对身份不可知的标签只按位置配对。
+      // 要求候选本身就是这类标签，因此正常标签之间的 URL 匹配完全不受影响。
+      for (let k = 0; k < PROBE_OFFSETS.length; k += 1) {
+        const index = expected + PROBE_OFFSETS[k];
+        if (index < 0 || index >= total || used[index]) {
+          continue;
+        }
+        if (!hasUnknownIdentity(orderedTabs[index])) {
+          continue;
+        }
+        found = index;
+        break;
+      }
+    }
+
+    if (found < 0) {
       // 快照里有、实际没有 → 该标签已被关闭，跳过。
       // 关键：它后面的快照项在实际序列里整体左移了一位，必须同步把偏移 -1，
       // 否则「以期望下标为中心就近优先」的探测会把同名 URL 的相邻项（连续多个
@@ -523,6 +541,20 @@ function confirmForwardMatch(items, index, candidate, orderedTabs, used, total) 
     }
   }
   return false;
+}
+
+/**
+ * 判断一个"实际标签"的身份是不是**不可知**。
+ *
+ * 已卸载（discard / 冻结）的标签拿不到可靠的 URL：Firefox 曾完全取不到（Bug 1694699），
+ * 现在也可能给出与快照不同的值（例如 about:blank）。这类标签无法用 URL 与快照配对，
+ * 只能退化为按位置配对——这本来就是对齐算法的第一假设（偏移估计）。
+ *
+ * 使用场景：`alignSnapshotToTabs` 的 URL 匹配全部失败后的兜底。
+ * 副作用：仅放宽"候选必须同 URL"这一条，不会让身份明确的标签被误配。
+ */
+function hasUnknownIdentity(tab) {
+  return Boolean(tab && (tab.discarded || !(tab.url || "")));
 }
 
 /**
