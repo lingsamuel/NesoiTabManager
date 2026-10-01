@@ -27,8 +27,10 @@
   - 展示标签页的父子层级，支持折叠子树
   - 支持在管理页拖拽改变父子关系（上/下 1/4 → 兄弟，中间 → 子标签），被拖标签的整棵子树一起移动
   - 树结构持久化到 `chrome.storage.local`，跨浏览器重启尽力恢复
+  - 撤销关闭：本插件发起的批量关闭（关闭整棵子树 / 多选批量关闭 / 保存后关闭）可整组撤销，
+    连同父子层级、兄弟顺序与物理位置一起恢复；浏览器原生「重新打开已关闭的标签页」也会回到原父节点
   - 面向 10K 级标签页设计：无 O(n²) 算法、启动静默期不加载不写盘、脏窗口空闲防抖落盘
-- Firefox 标签右键菜单（仅 Firefox）：刷新 / 固定(取消固定) / 静音(取消静音) / 冻结 / 复制链接 / 移动到窗口▸，
+- Firefox 标签右键菜单（仅 Firefox）：刷新 / 固定(取消固定) / 静音(取消静音) / 冻结 / 复制链接 / 关闭整棵子树 / 撤销关闭最近一组 / 移动到窗口▸，
   由 Firefox 原生菜单控件渲染，并同样出现在浏览器自带标签栏的右键菜单里。
 - Firefox 原生侧边栏（仅 Firefox，`sidebar_action`）：
   - 常驻显示当前窗口的标签树，实时跟随标签增删与移动
@@ -46,13 +48,14 @@
 ## 实现说明
 
 - Manifest V3：Chrome/Edge 后台使用 service worker，Firefox 使用 event page（构建时自动适配）。
-- 使用 `chrome.tabs`、`chrome.storage`、`chrome.contextMenus`。
+- 使用 `chrome.tabs`、`chrome.storage`、`chrome.contextMenus`、`chrome.sessions`。
 - 列表数据存放在 `chrome.storage.local`。
 - `chrome.storage.session` 为 Chrome 专有能力，Firefox 下自动降级。
 - UI 构建使用 Vite + Vue，输出到 `ui/` 目录。
 - AI 分组需要在“插件设置”里配置完整 API 端点、Key、模型、API 格式与单次上限。
 - 列表描述会在启用“发送已有列表标题/描述作为参考”时一并发送给 AI。
-- 树状标签页不新增任何浏览器权限，也不在非用户操作时移动标签页。
+- 树状标签页与撤销关闭新增 `sessions` 权限（最近关闭列表 / 恢复，以及 Firefox 侧的 `setTabValue`）；
+  插件只在用户操作（拖拽改父子、跨窗口迁移、移动到窗口、撤销关闭）时移动标签页。
 - Firefox 侧边栏使用 `sidebar_action`（Firefox 专有清单键），Chrome 目标清单不受影响。
 - Firefox 标签右键菜单需要专有权限 `menus.overrideContext`，只加在 Firefox 目标清单；Chrome 清单的权限保持不变。
 - Firefox 目标最低版本为 140：该版本起浏览器内置「数据收集与传输同意」体验，可以只靠清单声明完成合规。

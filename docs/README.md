@@ -8,7 +8,7 @@
 - `docs/ui/ai_grouping.md`：AI 分组能力与使用流程。
 - `docs/ui/auto_discard.md`：自动冻结与冻结历史交互。
 - `docs/ui/recent_tabs.md`：近期标签页与回收提醒。
-- `docs/ui/tree_style_tabs.md`：树状标签页（树模型、持久化、拖拽改父子、性能约束）。
+- `docs/ui/tree_style_tabs.md`：树状标签页（树模型、持久化、拖拽改父子、撤销关闭与树恢复、性能约束）。
 - `docs/ui/firefox_sidebar.md`：Firefox 原生侧边栏（`sidebar_action`、实时刷新、构建与清单）。
 
 ## 系统与数据（docs/data）

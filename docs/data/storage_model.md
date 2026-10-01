@@ -115,6 +115,25 @@
 - 存放在 `chrome.storage.local` 的 `treeViewMode` 键，取值 `"tree"` 或 `"flat"`，全局一份。
 - 用途：管理页「打开的窗口」视图记住用户上次选择的展示模式。
 
+### 关闭标签记录（closedTabLog）
+- 存放在 `chrome.storage.session` 的 `closedTabLog` 键，**栈式**（新记录在栈顶），容量 `CLOSED_LOG_MAX`（拟 50）。
+- 结构：`[{ tabId, windowId, parentId, prevId, nextId, index, pinned, url, title, at }]`。
+- 用途：浏览器原生「重新打开已关闭的标签页」时，把恢复出来的标签挂回原父节点与原物理位置。
+- **必须在关闭事件里同步抓取**：调用方紧接着就会执行"关闭提升"改写树、并删除 recent_tabs 的标签缓存，
+  中间插入一个 await 就取不到父标签与 url/标题了。
+- **直接存 `tabId` 即可**：同一浏览器会话内 `tabId` 不复用，且该记录只在这个会话内有效，因此不需要稳定身份映射。
+- 记录带 TTL（拟 5 分钟）；关闭组记录见下条。写入在关闭动作**之前**完成（此刻树还完整）。
+
+### 关闭组记录（closedGroups）
+- 存放在 `chrome.storage.session` 的 `closedGroups` 键，**栈式**，容量 `CLOSED_GROUP_MAX`（拟 5）。
+- 结构：`[{ groupId, windowId, at, label, structure, members: [...] }]`，成员为
+  `{ tabId, url, title, index, parentIndex, parentId, prevId, nextId, pinned, collapsed }`。
+  `parentIndex` 为父成员在组内的下标（`-1` 表示父不在这组里）；`parentId` 用于"原父还开着但不在这一组里"；
+  `prevId` / `nextId` 是关闭那一刻的原物理邻居，用于把标签放回原位附近；`structure` 为 false 表示降级为只记成员。
+- 用途：撤销本插件自己发起的批量关闭（关闭整棵子树 / 多选批量关闭 / 保存后关闭），整组恢复父子关系与物理位置。
+- 只有走后台 `closeTabsAsGroup` 的关闭才成组；其余关闭入口只写 `closedTabLog`。
+- 单组超过 `GROUP_MAX_MEMBERS`（拟 500）时降级为只记成员 URL、不记结构，避免撑爆 `storage.session` 配额。
+
 ### 筛选模式（filterMode）
 - 存放在 `chrome.storage.local` 的 `filterMode` 键，取值 `"filter"` 或 `"jump"`，全局一份。
 - 用途：记住「过滤 / 跳转」的选择。
@@ -133,3 +152,5 @@
 - 近期标签页：监听 tabs 事件 -> 更新 `recentTabsOpenAt`；“已阅”更新 `recentTabsState.lastReviewedAt`；提醒定时器读取统计并触发气泡。
 - 树结构：tabs 事件（创建/关闭/移动/跨窗口） -> 后台内存树更新 -> 脏窗口空闲防抖 -> `treeStructure:<windowId>` 覆盖写 + `treeStructureWindows` 索引更新。
 - 树视图：管理页 `getTreeStructure` 读取内存树 -> 本地 DFS 扁平化 + 折叠（`treeCollapsed`） -> 渲染。
+- 撤销关闭：批量关闭前写 `closedGroups`（关闭组）或关闭时写 `closedTabLog`（单标签） -> 撤销时按记录重开标签、
+  重建父子关系、`chrome.tabs.move` 移回原物理位置。详见 `docs/ui/tree_style_tabs.md` 的「撤销关闭与树恢复」。

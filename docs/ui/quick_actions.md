@@ -16,13 +16,18 @@
 - 用途：Firefox 侧边栏右键标签时，用 `menus.overrideContext({ context: "tab", tabId })` 把上下文切到 "tab"，
   由 Firefox **原生菜单控件**渲染本插件注册的菜单项（详见 `docs/ui/firefox_sidebar.md` 的「右键菜单」）。
 - 注册的菜单项（`contexts: ["tab"]`）：刷新标签页 / 固定标签页(取消固定) / 静音标签页(取消静音) /
-  冻结标签页 / 复制链接 / 保存到列表 ▸ / 关闭并保存到列表 ▸ / 移动到窗口 ▸（各窗口 + 移动到新窗口）。
+  冻结标签页 / 复制链接 / 保存到列表 ▸ / 关闭并保存到列表 ▸ / **关闭整棵子树** / **撤销关闭最近一组** /
+  移动到窗口 ▸（各窗口 + 移动到新窗口）。
 - 两个「保存」子菜单与网页右键**完全一致**：子项由现有列表动态生成，无列表时显示禁用的「暂无列表」；
   点击后走同一条 `saveTabs` 路径（后者保存完再关闭被右键的那个标签）。
   列表增删改会触发 `chrome.storage.onChanged` → 重建菜单，因此子菜单自动保持最新。
+- **关闭整棵子树**：关闭被右键标签及其全部后代，走后台 `closeTabsAsGroup` 记为**一个关闭组**，
+  之后可用「撤销关闭」整组恢复（含父子关系与物理位置）。
+- **撤销关闭最近一组**：无关闭组记录时置灰；执行结果用现有状态条提示。
+  原生 Ctrl+Shift+T 只恢复单个标签（浏览器没有「一组」的概念），详见 `docs/ui/tree_style_tabs.md` 的「撤销关闭与树恢复」。
 - 这些项同样会出现在 Firefox 自带标签栏的右键菜单里。
 - 只在 Firefox 注册（侧边栏是 Firefox 专有实现，且“复制链接”依赖后台页面的 DOM）；Chrome 侧右键菜单不受影响。
-- 需要 Firefox 专有权限 `menus.overrideContext`，只写进 Firefox 目标清单。
+- 需要 Firefox 专有权限 `menus.overrideContext`，只写进 Firefox 目标清单；新增的 `sessions` 权限两端都写（见 `docs/ui/tree_style_tabs.md`）。
 
 ## 页面悬浮组件（content script）
 - 位置与触发：固定在页面左下角，鼠标靠近自动展开。

@@ -2,10 +2,11 @@
 
 ## 目标与范围
 - 在管理页「打开的窗口」视图中提供树状展示，让用户看清标签页之间「谁打开了谁 / 谁被挂到谁下面」的层级关系。
-- 参考 Firefox 扩展 Tree Style Tab（TST）的树模型与交互语义，但**不复制**其 Firefox 专有能力（垂直标签栏注入、`sessions.setTabValue`、`tabs.insertAfterCurrent` 等）。
+- 参考 Firefox 扩展 Tree Style Tab（TST）的树模型与交互语义，但**不复制**其 Firefox 专有能力（垂直标签栏注入、`tabs.insertAfterCurrent` 等）。
+  `sessions.setTabValue` 是唯一例外：只在 Firefox 下作为「原生撤销关闭」的精确识别手段使用（见「撤销关闭与树恢复」），Chrome 侧走自建关闭记录。
 - 只有「打开的窗口」视图支持树状与平铺切换；保存的列表、冻结历史、近期标签页保持平铺。
-- Firefox 下另提供原生侧边栏作为同一棵树的常驻入口（见 `docs/ui/firefox_sidebar.md`），侧边栏只做单条操作，批量能力仍在管理页。
-- **不新增任何浏览器权限**（详见「权限」）。
+- Firefox 下另提供原生侧边栏作为同一棵树的常驻入口（见 `docs/ui/firefox_sidebar.md`）；侧边栏以单条操作为主，另有多选模式的批量关闭/冻结/保存。
+- 权限：在原有 `tabs` / `storage` / `alarms` 之外新增 `sessions`（最近关闭列表 + Firefox 侧 `setTabValue`），详见「权限」。
 
 ## 术语
 - **父 / 子**：`child.parent = parent`，表示子标签挂在父标签之下。
@@ -16,10 +17,11 @@
 
 ## 树数据的唯一真相
 - 树是**本插件自己维护的数据**：后台按窗口在内存中维持，并持久化到 `chrome.storage.local`。
-- `openerTabId` **只在两个时机**参与：
+- `openerTabId` **只在三个时机**参与：
   1. 标签刚被创建、且后台当前持有该窗口的树时，用于确定它的**初始**父标签；
-  2. 浏览器重启后的会话恢复中，持久化快照无法对齐的标签用它兜底。
-- 父子关系一旦确定，**不再因为 `openerTabId` 后续变化而回写**（与 TST 的 `syncParentTabAndOpenerTab` 默认关闭一致）。改变父子关系的途径只有：标签创建、父标签被关闭后的提升、跨窗口迁移、用户在原生标签栏拖动（按新位置重新推断）、用户在管理页拖拽。
+  2. 浏览器重启后的会话恢复中，持久化快照无法对齐的标签用它兜底；
+  3. **撤销关闭恢复**的标签找不到原父（父标签也已被关闭）时的兜底。
+- 父子关系一旦确定，**不再因为 `openerTabId` 后续变化而回写**（与 TST 的 `syncParentTabAndOpenerTab` 默认关闭一致）。改变父子关系的途径只有：标签创建、父标签被关闭后的提升、跨窗口迁移、撤销关闭恢复、用户在原生标签栏拖动（按新位置重新推断）、用户在管理页拖拽。
 - **不变量**（任何时刻都必须成立）：
   - 父标签必须存在、在同一窗口、非固定（pinned）、且其 `index` 小于子标签的 `index`；
   - 固定标签一律为顶层，且不能作为任何标签的父；
@@ -30,6 +32,8 @@
 
 ## 父子关系的确定规则
 ### 1) 标签创建（`tabs.onCreated`）
+- **被识别为「撤销关闭 / 重新打开」的标签优先套用关闭记录**（父标签与物理位置，见「撤销关闭与树恢复」），
+  不走下面的 opener / 活动标签规则；记录中的父已不存在时落顶层，并保留浏览器给出的物理位置。
 - 固定标签 → 顶层。
 - 有 `openerTabId`，且 opener 同窗口、非固定、`opener.index < tab.index` → 挂到 opener 下，追加为**最后一个子标签**。
 - 否则（无 opener 或 opener 不合法）：
@@ -79,6 +83,7 @@
   - `treeViewMode`：管理页窗口视图的展示模式（`"tree"` / `"flat"`），全局一份。
 - `chrome.storage.session`
   - `treeCollapsed`：折叠状态 `{ [windowId]: [tabId, ...] }`，仅当前浏览器会话有效（重启后全部展开）。会话存储是内存态，写入不落盘。
+  - `closedTabLog` / `closedGroups`：撤销关闭用的单标签记录栈与关闭组栈，同样只存活于当前会话（见「撤销关闭与树恢复」）。
 - 不持久化 `openerTabId`（不可靠），不持久化除 URL / 标题之外的标签元数据。
 
 ### 快照结构
@@ -148,6 +153,67 @@
 - 静默期结束后，或用户打开管理页请求树数据时，才对被标记的窗口做一次对齐重建。
 - 因此 10K 标签的启动恢复不会产生逐事件的 O(n) 重复对齐，也不会产生磁盘写入。
 
+## 撤销关闭与树恢复（新增）
+
+### 目标与边界
+- **整组恢复**：本插件自己发起的批量关闭（①「关闭整棵子树」②管理页 / 侧边栏多选后的批量关闭 ③保存后关闭）
+  记为一个**关闭组**；撤销时把组内标签连同父子关系、兄弟顺序与物理位置一起恢复。
+- **单标签恢复**：浏览器原生的「重新打开已关闭的标签页」（Ctrl+Shift+T 或原生右键菜单）恢复单个标签时，
+  把它挂回原父节点与原物理位置。
+- **不做**：浏览器没有「一组关闭」的概念，因此原生 Ctrl+Shift+T 永远只恢复被点开的那一个标签，不会连带恢复整组；
+  想整组回来必须用本插件自己的撤销入口。关闭记录只存活于当前浏览器会话，重启后不做恢复。
+- 撤销是**用户显式操作**触发的；插件不会在无人操作时移动标签页。这是「位置稳定性」一节的唯一例外。
+
+### 关闭记录（`chrome.storage.session`）
+- `closedTabLog`：**单标签**关闭记录栈，容量 `CLOSED_LOG_MAX`（拟 50）。
+  每条：`{ tabId, windowId, parentId, prevId, nextId, index, pinned, url, title, at }`。
+- `closedGroups`：**关闭组**栈，容量 `CLOSED_GROUP_MAX`（拟 5）。
+  每组：`{ groupId, windowId, at, label, structure, members: [...] }`，成员为
+  `{ tabId, url, title, index, parentIndex, parentId, prevId, nextId, pinned, collapsed }`：
+  `parentIndex` 是父成员在组内的下标（`-1` 表示父不在这组里），`parentId` 用于"父还开着、但它不在这组里"的情况
+  （关掉几个子标签后仍要挂回原父），`prevId` / `nextId` 是关闭那一刻的原物理邻居，用于把标签放回原位附近。
+  `structure` 为 false 表示这一组降级为"只记成员、不记结构"。
+- **为什么可以直接存 `tabId`**：同一浏览器会话内 `tabId` 不复用，而记录只在这个会话内有效，
+  因此不需要 TST 那种 `uniqueId` 稳定身份映射——这是「不跨重启」这条边界换来的简化。
+- 单组超过 `GROUP_MAX_MEMBERS`（拟 500）时**降级**：只记成员 URL、不记结构，避免一次关闭大树把 `storage.session`
+  配额撑爆；这种组恢复后是平铺的，不会恢复出错误层级。
+- 写入时机：**关闭动作发生前**一次性写入（此刻树还完整），关闭结束后按实际结果剔除「其实没被关掉」的成员
+  （例如 `beforeunload` 取消了关闭）。
+
+### 关闭侧的成组口径
+- 只有**本插件发起的批量关闭**成组：新增后台函数 `closeTabsAsGroup()`，管理页与侧边栏的批量关闭入口统一走它。
+- 「关闭整棵子树」= 关闭被操作标签**及其全部后代**（用 `collectSubtreeIds()` 取集合），
+  入口见 `docs/ui/manager_ui.md` 与 `docs/ui/firefox_sidebar.md`。
+- 单标签关闭（行内 ×、中键、Ctrl+W 等）只进 `closedTabLog`，不成组。
+
+### 恢复流程（整组）
+1. 取 `closedGroups` 栈顶一组（本次只支持撤销最近一组）；原窗口已关闭时落到当前窗口。
+2. 优先用 `chrome.sessions.getRecentlyClosed()` + `chrome.sessions.restore()` 恢复浏览器仍记得的会话
+   （保住前进后退历史），最多 `chrome.sessions.MAX_SESSION_RESULTS` 个——Chrome 下只有约 25 个，
+   因此稍大的组必然落到第 3 步。
+3. 其余成员按记录中的 `url` / `title` 重新打开（后台打开、不激活、不冻结）。
+4. 组内成员若已被原生撤销提前恢复（`tabId` 不同），复用该实例，不重复打开。
+5. 按记录结构重建父子（`setParent`），再用分批 `chrome.tabs.move` 把成员移回原物理顺序与位置。
+6. 收尾跑一次 `sanitizeTreeState()` 不变量校验，并**激活组内第一个标签**（按原顺序）。
+7. 恢复完成后该组出栈；任何一步失败都只影响这一组，不破坏现有树。
+
+### 恢复流程（单标签 / 原生撤销）
+- **Firefox**：树结构变化时把 `{ parentId, at }` 写进 `sessions.setTabValue(tabId, "nesoi:tree-ref", …)`，
+  标签被原生恢复时用 `sessions.getTabValue()` 读回 → **精确识别**，再按关闭记录里的父/邻居挂回原父与原位置。
+  会话值只用来回答"这是不是一次撤销关闭"（以及取更新的父标签）；完整的现场（父 + 前后邻居 + 下标）
+  仍以关闭记录为准——它在关闭那一刻同步抓取，比防抖写入的会话值更准。
+  （实现时需先确认 Firefox 的 `chrome.*` 命名空间下这两个方法的调用形式——本插件统一走 `chrome.*` 别名，
+  `sessions.setTabValue` 属 Firefox 专有 API。）
+- **Chrome**：没有等价的每标签会话值，只能启发式识别——用 `closedTabLog` **栈顶**记录与新建标签的 URL 全等匹配，
+  命中即认领出栈；记录带 TTL（拟 5 分钟），插件自己发起的打开直接跳过匹配。
+- 识别失败、或记录中的父已不存在 → 退回原有规则（opener / 位置推断），**不报错、不破坏现有树**。
+- 这条路径是**尽力而为**：URL 被重定向改写、或刚关掉又手动打开同一 URL 时可能误判 / 漏判，这是 Chrome 侧 API 的固有上限。
+
+### 与既有机制的关系
+- 恢复出的标签同样受「不变量」约束（父在子前、pinned 不参与父子、无环），违反者降级为顶层。
+- 恢复期间会产生一批 `tabs.onCreated`：按窗口合并处理，避免逐条做 O(n) 对齐。
+- 关闭记录与 `treeStructure:<windowId>` 快照是两件事：前者服务「撤销关闭」，后者服务「浏览器重启后对齐」，互不替代。
+
 ## 消息协议（新增）
 - `getTreeStructure`
   - 参数：`{ windowIds?: number[] }`（缺省返回所有窗口）
@@ -159,6 +225,15 @@
   - 返回：`{ ok, moved, skipped, parentId }` 或 `{ ok: false, error }`（中文提示）
   - 语义：先改父子关系，再用一次（可分批）`chrome.tabs.move` 把「被拖标签 + 其整棵子树」按 DFS 顺序落到目标位置。
   - 校验：拒绝跨窗口、拒绝固定标签参与父子、拒绝挂到自身或自身子孙之下。
+- `closeTabsAsGroup`
+  - 参数：`{ windowId, tabIds, label }`
+  - 返回：`{ ok, groupId, removed, skipped }` 或 `{ ok: false, error }`
+  - 语义：先写 `closedGroups` 记录，再分批关闭（单批上限与批间隔沿用现有批量关闭策略）。
+    只有走这条消息的关闭才成组；其余关闭入口只写 `closedTabLog`。
+- `restoreClosedGroup`
+  - 参数：`{ windowId? }`（缺省 = 最近一组）
+  - 返回：`{ ok, groupId, restored, skipped, windowId }` 或 `{ ok: false, error }`（中文提示）
+  - 语义：执行「恢复流程（整组）」；没有可恢复的组时返回明确的中文错误，由 UI 直接展示。
 - 折叠状态由管理页直接读写 `chrome.storage.session`，不经后台。
 
 ## 管理页交互
@@ -198,11 +273,17 @@
 - 拖拽过程中显示落点指示（兄弟 → 插入线；子标签 → 目标行高亮）。
 - **无效落点**（目标是自身或自身后代、目标或被拖项是固定标签、跨窗口）→ 不显示指示、不触发操作。
 - 拖拽结束后：先更新后台内存树，再用一次（可分批）`chrome.tabs.move` 把「被拖标签 + 其子树」按 DFS 顺序移动到目标物理位置，使物理顺序向树顺序靠拢。
-- 这是**除跨窗口子树迁移外，插件唯一会移动标签页的场景**；非用户操作时插件绝不移动标签页。
+- 这是**除跨窗口子树迁移与撤销关闭恢复外，插件唯一会移动标签页的场景**；其余情况下非用户操作时插件绝不移动标签页。
 
 ### 位置稳定性
 - 树视图按 DFS 顺序渲染，可能与浏览器标签栏的物理顺序不一致（例如某子标签物理上离父标签很远，仍会显示在父标签正下方）。这是**有意设计**：插件不为了「子树物理连续」而在用户未操作时改动标签栏。
 - 原生标签栏拖动会按位置重新推断父子（规则 3），因此用户在标签栏里的拖动依然能改变树。
+
+### 关闭整棵子树 / 撤销关闭
+- 树状模式下每行提供「关闭整棵子树」（关闭该标签及其全部后代），走后台 `closeTabsAsGroup` 成组。
+- 视图标题栏提供「撤销关闭」按钮：撤销最近一组，无记录时禁用。
+- 折叠、筛选、选择等既有交互不受影响；恢复完成后按现有事件机制刷新。
+- 详细交互与文案见 `docs/ui/manager_ui.md`。
 
 ## 性能验收
 - `scripts/bench_tree.mjs`（`npm run bench:tree`）对 `background/tree_core.js` 的纯函数做 10K 级基准：
@@ -219,18 +300,33 @@
   跨窗口子树迁移、落盘与重启恢复。
 - `scripts/test_tree_ui.mjs` 覆盖管理页行构建：DFS 顺序与深度、折叠隐藏子树、筛选补祖先并忽略折叠、
   隐藏已冻结时的就近提升、平铺模式回归、全选口径。
+- `scripts/test_closed_groups.mjs`（并入 `npm run test:tree`）覆盖撤销恢复链路：
+  关闭整棵子树 → 撤销 → 层级 / 顺序 / 物理位置一致；多选跨父关闭 → 各自回到原父；
+  组容量淘汰与 TTL 过期；记录中的父已关闭 → 降级顶层；`storage.session` 记录在 SW 被回收后仍可用；
+  恢复后不变量（父在子前、pinned 不参与父子、无环）全部成立。
+  复杂度要求 O(k log k)（k = 组内标签数），禁止 O(n²)。
 
 ## 权限
-- **不新增任何权限**：只使用已有的 `tabs`、`storage`、`alarms`。
+- 在原有的 `tabs`、`storage`、`alarms` 之外新增 **`sessions`**，Chrome 与 Firefox 目标清单都写：
+  - 读最近关闭列表（`sessions.getRecentlyClosed`）并恢复（`sessions.restore`）——整组撤销需要；
+  - Firefox 侧的 `sessions.setTabValue` / `sessions.getTabValue`——原生撤销的精确识别需要。
+- 该权限在 Chrome 侧属低风险权限；在 Firefox（AMO）侧属于**新增必需权限**，已安装用户更新时会遇到一次重新授权
+  （`about:debugging` 临时加载无感），代价口径见 `docs/ui/firefox_sidebar.md` 的「权限」一节。
 - 不读取 `chrome.tabGroups`，不新增内容脚本逻辑，不在网页上下文做任何事。
 
 ## 已知限制
 - Chrome 无 Firefox `sessions.setTabValue` 级别的稳定标签标识，因此跨浏览器重启的树恢复是**尽力而为**：URL 变化、顺序大幅变化、或大量重复 URL 时可能退化为顶层。
+- **原生 Ctrl+Shift+T 的整组恢复不做**：浏览器没有「一组关闭」的概念，只有被点开的那一个标签会被恢复；整组回来请用本插件的「撤销关闭」入口。
+- Chrome 侧的原生撤销识别是**启发式**（栈顶记录 + URL 全等 + TTL）：重定向改写了 URL、或刚关掉又手动打开同一 URL 时可能误判 / 漏判；Firefox 侧走 `setTabValue`，识别是精确的。
+- 关闭记录只存活于当前浏览器会话（`chrome.storage.session`），浏览器重启后不可撤销。
+- 单组超过 `GROUP_MAX_MEMBERS` 的关闭组只恢复成员、不恢复层级。
 - Chrome 下 `openerTabId` 在部分场景并不可靠（例如 Ctrl+T），需要靠位置规则与快照对齐纠正。
 - 不参与 `chrome.tabGroups` 原生分组。
 - 折叠状态不跨浏览器重启保留。
 
 ## 后续可选扩展（本次不做）
+- 「最近关闭组」历史列表 UI：可选择撤销任意一组，而不只是最近一组。
+- 关闭组跨浏览器重启保留（需要并入 `treeStructure` 快照并引入稳定身份）。
 - 原生标签组作为分组节点并入树。
 - 「全部展开 / 全部折叠」「展开到第 N 层」。
 - 按子树保存到列表。

@@ -2,19 +2,22 @@
 
 ## 模块定位
 - 入口：`background.js`（Manifest V3 service worker）。
-- 子模块：`background/context_menu.js`、`background/lists.js`、`background/ai.js`、`background/discard.js`、`background/recent_tabs.js`、`background/tree.js`、`background/tree_core.js`、`background/storage.js`。
-- 职责：统一事件监听、消息路由、持久化、自动冻结调度与树状结构维护。
+- 子模块：`background/context_menu.js`、`background/lists.js`、`background/ai.js`、`background/discard.js`、`background/recent_tabs.js`、`background/tree.js`、`background/tree_core.js`、`background/closed_groups.js`、`background/storage.js`。
+- 职责：统一事件监听、消息路由、持久化、自动冻结调度、树状结构维护与撤销关闭。
 - `background/tree_core.js` 为**无 chrome API 依赖的纯逻辑**（建树、对齐、提升、移动推断、扁平化），既被 `tree.js` 调用，也被 `scripts/bench_tree.mjs` 直接引用，保证基准测的就是生产代码。
 
 ## 核心功能
 - 扩展启动与安装：清理 action 弹窗、重建右键菜单、重置冻结跟踪状态并初始化自动冻结定时器。
 - 扩展按钮：点击后打开 `ui/manager.html`；若已打开则聚焦现有窗口与标签页。
 - 右键菜单：根据列表动态生成“保存到列表 / 关闭并保存到列表”子项；Firefox 下额外注册一组 `contexts: ["tab"]` 的
-  标签菜单项（刷新/固定/静音/冻结/复制链接/移动到窗口），供侧边栏用 `menus.overrideContext` 以原生菜单外壳呈现，
+  标签菜单项（刷新/固定/静音/冻结/复制链接/关闭整棵子树/撤销关闭最近一组/移动到窗口），供侧边栏用 `menus.overrideContext` 以原生菜单外壳呈现，
   并在 `menus.onShown` 中按被右键标签的状态刷新文案与可用性。
 - 自动冻结：监听 `chrome.alarms`、标签激活与窗口焦点变化、标签增删替换，用于计算闲置与冻结候选。
 - 近期标签页提醒：监听标签新增/关闭、维护打开时间与启动期状态、按间隔触发提醒，并向内容脚本广播气泡展示。
 - 树状结构：监听标签创建/关闭/移动/跨窗口/`openerTabId` 变化，按窗口懒加载并维护内存树，空闲防抖后写入 `chrome.storage.local`。
+- 撤销关闭：批量关闭前把整组连同结构快照写入 `chrome.storage.session`，单个关闭写入关闭记录栈；
+  「撤销关闭」按记录重开标签、重建父子关系并把标签移回原物理位置；原生「重新打开已关闭的标签页」也会挂回原父节点。
+  详见 `docs/ui/tree_style_tabs.md` 的「撤销关闭与树恢复」。
 - 消息接口：统一处理 UI 与内容脚本的运行时消息（保存标签、列表管理、AI 分组、冻结配置、树结构等）。
 
 ## 树状结构维护
@@ -58,6 +61,10 @@
   （路径中没有 await），避免与随后的事件处理竞争导致层级被改回默认规则。
 - `openDroppedItem`：执行一次外部拖放的结果——覆盖指定标签（`tabs.update({url})`）或按落位新建标签页；
   传入的是搜索词时改用 `chrome.search.search({ query, tabId })`，让结果落在指定的那个标签上。
+- `closeTabsAsGroup`：关闭指定标签并把它们记为**一个关闭组**（写 `closedGroups`），供之后整组撤销。
+  仅本插件发起的批量关闭（关闭整棵子树 / 多选批量关闭 / 保存后关闭）走这条消息；其余关闭入口只写 `closedTabLog`。
+- `restoreClosedGroup`：撤销最近一个关闭组——按记录重开标签、重建父子关系、`chrome.tabs.move` 移回原物理位置，
+  并激活组内第一个标签；无可撤销的组时返回中文错误提示。
 
 ## 存储模型
 - 详细存储结构与字段说明见：`docs/data/storage_model.md`。
@@ -67,7 +74,8 @@
 - 列表变化触发 `chrome.storage.onChanged` 自动刷新右键菜单。
 - 自动冻结配置变更会即时更新定时器与历史上限裁剪。
 - 非可冻结 URL（如 `chrome://`、`edge://`）会被过滤，避免误操作。
-- 树状结构不新增任何浏览器权限：只使用已有的 `tabs` / `storage` / `alarms`。
-- 非用户操作时，后台不会主动移动标签页；只有管理页拖拽改父子、跨窗口子树迁移、以及右键菜单的“移动到窗口”会调用 `chrome.tabs.move`。
+- 权限：树状结构与撤销关闭新增 `sessions`（最近关闭列表 / 恢复，以及 Firefox 侧的 `setTabValue`），其余沿用已有的 `tabs` / `storage` / `alarms`。
+- 非用户操作时，后台不会主动移动标签页；只有管理页拖拽改父子、跨窗口子树迁移、右键菜单的“移动到窗口”、
+  以及用户执行「撤销关闭」恢复关闭组时会调用 `chrome.tabs.move`。
 - `chrome.windows.onCreated` / `onRemoved` 除维护树结构外，还会重建右键菜单的“移动到窗口”子菜单；
   `menus.onShown` 仅在“期望呈现状态”真的变化时才写回并 `menus.refresh()`，避免刷新死循环。
