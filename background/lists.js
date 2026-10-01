@@ -1,5 +1,6 @@
 import { storageGet, storageSet } from "./storage.js";
 import { STORAGE_KEY } from "./constants.js";
+import { closeTabsAsGroup } from "./closed_groups.js";
 import {
   ensureUniqueListName,
   generateId,
@@ -256,7 +257,9 @@ async function saveTabs({ tabIds, listId, newListName, closeTabs, newListDescrip
   if (closeTabs) {
     const closeIds = tabs.map((tab) => tab.id).filter(Boolean);
     if (closeIds.length > 0) {
-      chrome.tabs.remove(closeIds);
+      // 走"关闭组"路径：保存后关闭的这批标签之后可以由「撤销关闭」整组恢复（含层级与物理位置）。
+      // 不再直接 chrome.tabs.remove，否则撤销时只剩逐个标签的关闭记录，整棵树回不来。
+      await closeTabsAsGroup(null, closeIds, "保存后关闭的标签页");
     }
   }
 

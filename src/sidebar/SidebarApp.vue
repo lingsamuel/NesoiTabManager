@@ -13,7 +13,7 @@ import FilterInput from "../manager/components/FilterInput.vue";
 import { useFilterQuery } from "../manager/composables/useFilterQuery.js";
 import { useMatchNavigation } from "../manager/composables/useMatchNavigation.js";
 import { useTree } from "../manager/composables/useTree.js";
-import { matchesTabQuery, removeTabsInBatches } from "../manager/utils/helpers.js";
+import { matchesTabQuery } from "../manager/utils/helpers.js";
 import { request } from "../manager/utils/request.js";
 import {
   applySelectionClick,
@@ -939,15 +939,25 @@ function onPinnedSelect(payload) {
 
 /**
  * 关闭所选。
- * 批量关闭复用 helpers.removeTabsInBatches：它会分批下发、对整批失败的情况逐条重试，
- * 避免 10K 标签下一次 remove 全量失败后一个都关不掉。
+ * 走后台的 `closeTabsAsGroup`：它会记下一个**关闭组**（含父子层级与物理位置），
+ * 之后可以用「撤销关闭」整组恢复；分批与逐条重试都在后台完成，这里不必自己拆批。
+ * 选中项可能跨窗口（固定标签区是跨窗口聚合的），后台会按成员各自的窗口分别恢复。
  */
 async function closeSelectedTabs() {
   const list = selectedTabs.value;
   if (list.length === 0) {
     return;
   }
-  const { removed, skipped } = await removeTabsInBatches(list.map((tab) => tab.id));
+  const response = await request("closeTabsAsGroup", {
+    tabIds: list.map((tab) => tab.id),
+    label: "关闭所选",
+  });
+  if (!response || !response.ok) {
+    setStatus((response && response.error) || "关闭失败。", "error");
+    return;
+  }
+  const removed = Number(response.removed) || 0;
+  const skipped = Number(response.skipped) || 0;
   const skippedText = skipped > 0 ? `，跳过 ${skipped} 个` : "";
   setStatus(`已关闭 ${removed} 个标签页${skippedText}。`, skipped > 0 ? "error" : "ok");
   // 不主动刷新：onRemoved 会带本窗口信息回来触发刷新，选中项随之被剪枝。

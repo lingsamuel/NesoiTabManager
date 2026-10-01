@@ -1,4 +1,9 @@
 import { manualDiscard } from "./discard.js";
+import {
+  closeTabsAsGroup,
+  hasRestorableGroup,
+  restoreClosedGroup,
+} from "./closed_groups.js";
 import { getLists, saveCurrentTab } from "./lists.js";
 import { isTabMuted } from "./utils.js";
 
@@ -31,6 +36,9 @@ const TAB_ITEM = {
   moveTo: "nesoi-tab:moveTo",
   moveToNew: "nesoi-tab:moveTo:new",
   moveToWindowPrefix: "nesoi-tab:moveTo:win:",
+  // 撤销关闭：前者是"一组关闭"的来源（关闭该标签及其全部后代），后者是它的逆操作。
+  closeTree: "nesoi-tab:closeTree",
+  undoCloseGroup: "nesoi-tab:undoCloseGroup",
 };
 
 // 每个窗口一个子项，窗口增删时需要精确重建。
@@ -176,6 +184,10 @@ async function createTabItems(lists) {
     contexts: ["tab"],
   });
   await menuCreate({ id: TAB_ITEM.moveTo, title: "移动到窗口", contexts: ["tab"] });
+  // 「关闭整棵子树」把该标签与其全部后代记为**一个关闭组**，之后可用「撤销关闭最近一组」整组恢复。
+  // 二者必须放在最后：撤销项的状态由 onShown 按"是否存在关闭组"刷新。
+  await menuCreate({ id: TAB_ITEM.closeTree, title: "关闭整棵子树", contexts: ["tab"] });
+  await menuCreate({ id: TAB_ITEM.undoCloseGroup, title: "撤销关闭最近一组", contexts: ["tab"] });
 }
 
 /**
@@ -237,11 +249,14 @@ async function handleContextMenuShown(info, tab) {
   const tabWindowId = Number(tab.windowId);
 
   // 把"这次应当呈现的状态"压成签名：标题（由 pinned/muted 决定）、冻结可用性（discarded）、
-  // 以及每个窗口子项的可见性（当前窗口那一项要隐藏）。窗口子项集合变化时签名也会变。
+  // 撤销关闭可用性（是否存在关闭组）、以及每个窗口子项的可见性（当前窗口那一项要隐藏）。
+  // 窗口子项集合变化时签名也会变。
+  const canUndoClose = hasRestorableGroup();
   const signature = JSON.stringify([
     pinned,
     muted,
     discarded,
+    canUndoClose,
     moveToWindowItems.map((item) => [item.windowId, item.windowId !== tabWindowId]),
   ]);
   if (signature === lastTabMenuSignature) {
@@ -253,6 +268,8 @@ async function handleContextMenuShown(info, tab) {
     menuUpdate(TAB_ITEM.pin, { title: pinned ? "取消固定" : "固定标签页" }),
     menuUpdate(TAB_ITEM.mute, { title: muted ? "取消静音" : "静音标签页" }),
     menuUpdate(TAB_ITEM.discard, { enabled: !discarded }),
+    // 没有可撤销的关闭组时置灰，避免点了没反应。
+    menuUpdate(TAB_ITEM.undoCloseGroup, { enabled: canUndoClose }),
     ...moveToWindowItems.map((item) =>
       menuUpdate(item.itemId, { visible: item.windowId !== tabWindowId })
     ),
@@ -385,6 +402,28 @@ async function handleContextMenuClick(info, tab) {
         await manualDiscard(Number(tab.id));
       }
       return;
+    // 关闭整棵子树：走后台的关闭组路径，之后可整组撤销（含层级与物理位置）。
+    // 叶子标签也允许点（等于只关它自己，仍然记为一个一元的关闭组）。
+    case TAB_ITEM.closeTree: {
+      if (!tab || !Number.isFinite(Number(tab.id)) || !Number.isFinite(Number(tab.windowId))) {
+        return;
+      }
+      const result = await closeTabsAsGroup(Number(tab.windowId), [], "关闭的子树", {
+        subtreeOf: Number(tab.id),
+      });
+      if (!result.ok) {
+        console.warn("关闭整棵子树失败：", result.error);
+      }
+      return;
+    }
+    // 撤销关闭最近一组：原生菜单没有状态条，失败只写调试日志，不打扰用户。
+    case TAB_ITEM.undoCloseGroup: {
+      const result = await restoreClosedGroup();
+      if (!result.ok) {
+        console.warn("撤销关闭失败：", result.error);
+      }
+      return;
+    }
     case TAB_ITEM.copyUrl:
       await copyTabUrl(tab);
       return;

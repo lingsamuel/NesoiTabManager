@@ -606,6 +606,41 @@ async function main() {
   );
   assertEqual(recentlyClosed.length, 0, "被用掉的会话记录已从最近关闭列表消费掉");
 
+  // --- 场景 9：跨窗口多选关闭 → 各自回到自己的窗口与原父 ---
+  console.log("场景 9：跨窗口批量关闭后整组撤销");
+  await tree.getTreeStructure([2]);
+  const w1root = await openTab({ url: "https://w1-root.example/", title: "W1R", windowId: 1 });
+  const w1child = await openTab({
+    url: "https://w1-child.example/",
+    title: "W1C",
+    windowId: 1,
+    openerTabId: w1root.id,
+  });
+  const w2root = await openTab({ url: "https://w2-root.example/", title: "W2R", windowId: 2 });
+  const w2child = await openTab({
+    url: "https://w2-child.example/",
+    title: "W2C",
+    windowId: 2,
+    openerTabId: w2root.id,
+  });
+  structure = await tree.getTreeStructure([1, 2]);
+  assertEqual(parentsOf(structure, 1)[w1child.id], w1root.id, "前置：窗口 1 的子标签挂在 W1R 之下");
+  assertEqual(parentsOf(structure, 2)[w2child.id], w2root.id, "前置：窗口 2 的子标签挂在 W2R 之下");
+
+  const crossClose = await closed.closeTabsAsGroup(1, [w1child.id, w2child.id], "跨窗口关闭");
+  assertEqual(crossClose.ok, true, "跨窗口批量关闭成功");
+  const crossRestore = await closed.restoreClosedGroup(1);
+  await tick(40);
+  assertEqual(crossRestore.ok, true, "跨窗口整组撤销成功");
+  assertEqual(crossRestore.restored, 2, "两个窗口的标签都回来了");
+  structure = await tree.getTreeStructure([1, 2]);
+  const restoredW1Child = tabByUrl("https://w1-child.example/");
+  const restoredW2Child = tabByUrl("https://w2-child.example/");
+  assertEqual(restoredW1Child.windowId, 1, "窗口 1 的成员回到窗口 1");
+  assertEqual(restoredW2Child.windowId, 2, "窗口 2 的成员回到窗口 2");
+  assertEqual(parentsOf(structure, 1)[restoredW1Child.id], w1root.id, "窗口 1 的成员回到原父");
+  assertEqual(parentsOf(structure, 2)[restoredW2Child.id], w2root.id, "窗口 2 的成员回到原父");
+
   console.log("");
   console.log(`共 ${checks} 项断言，失败 ${failures} 项`);
   if (failures > 0) {

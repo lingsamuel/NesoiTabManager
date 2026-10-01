@@ -97,6 +97,9 @@
         :on-select-all="() => setVisibleSelection(true)"
         :on-clear="() => setVisibleSelection(false)"
         :on-close-selected="closeSelectedTabs"
+        :on-undo-close="undoCloseGroup"
+        :can-undo-close="canUndoClose"
+        :on-close-tree="closeTabTree"
         :on-discard-selected="() => discardSelectedTabsForView('windows')"
         :on-open-move-modal="openWindowMoveModal"
         :on-open-ai="openAiModal"
@@ -562,6 +565,8 @@ const hasSubSidebar = computed(
   () => !isOverlay.value && (view.value === "windows" || view.value === "lists")
 );
 const status = reactive({ message: "", type: "" });
+// 是否存在可撤销的关闭组：决定「撤销关闭」按钮是否可用（由后台查询，避免点了没反应）。
+const canUndoClose = ref(false);
 const settingsStatus = reactive({ message: "", type: "" });
 const windowMoveStatus = reactive({ message: "", type: "" });
 const recentConfig = reactive({
@@ -984,6 +989,7 @@ function setView(nextView) {
   }
   if (nextView === "windows" && !isOverlay.value) {
     refreshWindows();
+    refreshUndoCloseState();
   }
 }
 
@@ -1276,6 +1282,64 @@ async function closeTab(tab) {
   }
 }
 
+/**
+ * 关闭整棵子树（树状模式行内动作）。
+ * 走后台的 `closeTabsAsGroup`：该标签与其全部后代被记为**一个关闭组**，
+ * 之后可以用「撤销关闭」整组恢复（含父子层级与物理位置）。
+ */
+async function closeTabTree(tab) {
+  const tabId = normalizeTabId(tab && tab.id);
+  const windowId = Number(tab && tab.windowId);
+  if (tabId === null || !Number.isFinite(windowId)) {
+    return;
+  }
+  setStatus(status, "正在关闭整棵子树...", "");
+  const response = await request("closeTabsAsGroup", {
+    windowId,
+    tabIds: [],
+    subtreeOf: tabId,
+    label: "关闭的子树",
+  });
+  if (!response || !response.ok) {
+    setStatus(status, (response && response.error) || "关闭整棵子树失败。", "error");
+    return;
+  }
+  const removed = Number(response.removed) || 0;
+  setStatus(status, `已关闭 ${removed} 个标签页（可用「撤销关闭」整组恢复）。`, "ok");
+  await refreshWindows();
+  await refreshUndoCloseState();
+}
+
+/** 查询后台是否还有可撤销的关闭组，用于「撤销关闭」按钮的可用态。 */
+async function refreshUndoCloseState() {
+  if (isOverlay.value) {
+    return;
+  }
+  const response = await request("getClosedGroupState");
+  canUndoClose.value = Boolean(response && response.restorable);
+}
+
+/** 撤销关闭：恢复最近一次批量关闭的整组标签页（层级、兄弟顺序与物理位置一起回来）。 */
+async function undoCloseGroup() {
+  if (!canUndoClose.value) {
+    setStatus(status, "没有可撤销的关闭记录。", "error");
+    return;
+  }
+  setStatus(status, "正在恢复关闭的标签页...", "");
+  const response = await request("restoreClosedGroup");
+  if (!response || !response.ok) {
+    setStatus(status, (response && response.error) || "撤销关闭失败。", "error");
+    await refreshUndoCloseState();
+    return;
+  }
+  const restored = Number(response.restored) || 0;
+  const skipped = Number(response.skipped) || 0;
+  const skippedText = skipped > 0 ? `，跳过 ${skipped} 个` : "";
+  setStatus(status, `已恢复 ${restored} 个标签页${skippedText}。`, "ok");
+  await refreshWindows();
+  await refreshUndoCloseState();
+}
+
 async function closeSelectedTabs() {
   await closeSelectedTabsForView("windows");
 }
@@ -1297,11 +1361,20 @@ async function closeSelectedTabsForView(targetView) {
     return;
   }
   setStatus(statusTarget, "正在关闭标签页...", "");
-  const result = await removeTabsInBatches(ids);
-  const removed = result && Number.isFinite(result.removed) ? result.removed : ids.length;
-  const skipped = result && Number.isFinite(result.skipped) ? result.skipped : 0;
+  // 统一走后台的关闭组路径：这批标签之后可以用「撤销关闭」整组恢复（含层级与物理位置）。
+  // 后台会按成员各自的窗口分段处理，因此跨窗口多选（「全部窗口」下）也能正确恢复。
+  const response = await request("closeTabsAsGroup", { tabIds: ids, label: "关闭所选" });
+  if (!response || !response.ok) {
+    setStatus(statusTarget, (response && response.error) || "关闭标签页失败。", "error");
+    return;
+  }
+  const removed = Number(response.removed) || 0;
+  const skipped = Number(response.skipped) || 0;
   const skippedText = skipped > 0 ? `，跳过 ${skipped} 个` : "";
   setStatus(statusTarget, `已关闭 ${removed} 个标签页${skippedText}。`, "ok");
+  if (!isOverlay.value) {
+    refreshUndoCloseState();
+  }
   if (targetView === "discard") {
     clearHistorySelection();
     await loadDiscardHistory();
@@ -1415,6 +1488,7 @@ onMounted(async () => {
   // 先恢复视图偏好（树状/平铺 + 折叠状态），再按偏好决定是否拉取树结构。
   await tree.loadPreferences();
   await refreshWindows();
+  await refreshUndoCloseState();
   await loadLists();
   await loadAiConfig();
   await loadDiscardConfig();

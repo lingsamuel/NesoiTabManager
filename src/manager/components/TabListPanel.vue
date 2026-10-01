@@ -114,6 +114,21 @@
             >
               保存并关闭
             </span>
+            <button
+              v-if="treeMode && onCloseTree"
+              class="ghost tab-action danger btn-icon"
+              title="关闭该标签及其全部后代（可整组撤销）"
+              @click.stop="handleCloseTree(item.tab)"
+            >
+              <span class="icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M12 4v6" />
+                  <path d="M6 20v-4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v4" />
+                  <path d="M6 10h12" />
+                </svg>
+              </span>
+              关闭子树
+            </button>
             <button class="ghost tab-action danger btn-icon" @click.stop="handleClose(item.tab)">
               <span class="icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24">
@@ -258,6 +273,11 @@ const props = defineProps({
     type: Function,
     default: null,
   },
+  // 只提供回调时才显示「关闭子树」：它关闭该标签及其全部后代，并记为可整组撤销的关闭组。
+  onCloseTree: {
+    type: Function,
+    default: null,
+  },
   onDiscard: {
     type: Function,
     default: null,
@@ -322,6 +342,13 @@ function handleActivate(tab) {
 function handleClose(tab) {
   if (props.onClose) {
     props.onClose(tab);
+  }
+}
+
+/** 关闭整棵子树：由调用方走后台的关闭组路径（可整组撤销）。 */
+function handleCloseTree(tab) {
+  if (props.onCloseTree) {
+    props.onCloseTree(tab);
   }
 }
 

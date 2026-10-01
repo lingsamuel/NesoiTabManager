@@ -297,63 +297,80 @@ async function flushTabRefs() {
  */
 export async function closeTabsAsGroup(windowId, tabIds, label, options = {}) {
   await ensureClosedGroupsLoaded();
-  const winId = Number(windowId);
-  if (!Number.isFinite(winId)) {
-    return { ok: false, error: "窗口参数无效。" };
-  }
+  const requestedWindowId = Number(windowId);
 
   let ids = Array.isArray(tabIds) ? tabIds.map(Number).filter(Number.isFinite) : [];
   if (isFiniteId(options.subtreeOf)) {
-    ids = await collectSubtreeTabIds(winId, Number(options.subtreeOf));
+    if (!Number.isFinite(requestedWindowId)) {
+      return { ok: false, error: "窗口参数无效。" };
+    }
+    ids = await collectSubtreeTabIds(requestedWindowId, Number(options.subtreeOf));
   }
   ids = [...new Set(ids)];
   if (ids.length === 0) {
     return { ok: false, error: "没有可关闭的标签页。" };
   }
 
-  // 以关闭前的实际状态为准构造成员表：一律按物理下标升序，保证"父在子前"，
-  // 这样恢复时按顺序重建即可满足"父 index 必须小于子 index"这条不变量。
-  const tabs = (await Promise.all(ids.map(getTabInfo))).filter(
-    (tab) => tab && Number(tab.windowId) === winId
-  );
+  // 以关闭前的实际状态为准构造成员表。
+  // 成员可以来自**多个窗口**（管理页「全部窗口」与侧边栏固定标签区的多选都会跨窗口），
+  // 因此每个成员各自记住自己的 windowId；组内排序按「窗口 + 物理下标」，
+  // 同一窗口内天然满足"父在子之前"，恢复时按顺序重建即可满足不变量。
+  const tabs = (await Promise.all(ids.map(getTabInfo))).filter(Boolean);
   if (tabs.length === 0) {
     return { ok: false, error: "没有可关闭的标签页。" };
   }
-  tabs.sort((a, b) => Number(a.index) - Number(b.index));
+  tabs.sort((a, b) => (Number(a.windowId) - Number(b.windowId)) || (Number(a.index) - Number(b.index)));
 
   const structureKnown = tabs.length <= GROUP_MAX_MEMBERS;
   const positionById = new Map(tabs.map((tab, index) => [Number(tab.id), index]));
-  const collapsedSet = await loadCollapsedSet(winId);
+  const collapsedSets = new Map();
+  for (const tab of tabs) {
+    const winId = Number(tab.windowId);
+    if (!collapsedSets.has(winId)) {
+      collapsedSets.set(winId, await loadCollapsedSet(winId));
+    }
+  }
 
-  const members = tabs.map((tab, index) => {
+  const members = tabs.map((tab) => {
     const id = Number(tab.id);
+    const winId = Number(tab.windowId);
     const cached = getCachedTabInfo(id);
     // 结构快照与标题都取自关闭前：关闭事件的顺序无法保证，因此这里一次性算好。
     const info = structureKnown ? getTabStructureInfo(id, winId) : null;
     const parentId = info ? info.parentId : null;
+    const parentInGroup = structureKnown && parentId !== null && positionById.has(parentId);
     return {
       tabId: id,
+      windowId: winId,
       url: cached ? cached.url || "" : tab.url || "",
       title: cached ? cached.title || "" : tab.title || "",
       index: Number(tab.index),
       // parentIndex：父也在这一组里时的组内下标（-1 表示父不在这组里）。
-      parentIndex: structureKnown && parentId !== null && positionById.has(parentId)
-        ? positionById.get(parentId)
-        : -1,
+      parentIndex: parentInGroup ? positionById.get(parentId) : -1,
       // parentId：父不在这一组里时的绝对 tabId，用于"关掉几个子标签后仍挂回原父"。
-      parentId: structureKnown && parentId !== null && !positionById.has(parentId) ? parentId : null,
+      parentId: structureKnown && parentId !== null && !parentInGroup ? parentId : null,
       // 原物理前后邻居：恢复时用来把标签放回原位附近。
       // 只用"绝对下标"回落是不行的——这期间标签栏早就变了，那个下标可能指向毫不相干的位置。
       prevId: info ? info.prevId : null,
       nextId: info ? info.nextId : null,
       pinned: Boolean(tab.pinned),
-      collapsed: collapsedSet.has(id),
+      collapsed: collapsedSets.get(winId).has(id),
     };
   });
 
+  // 组自身的 windowId 只用于"恢复时窗口都不在了"的兜底：优先用调用方指定的窗口，
+  // 否则用成员最多的那个窗口。
+  const memberCountByWindow = new Map();
+  for (const member of members) {
+    memberCountByWindow.set(member.windowId, (memberCountByWindow.get(member.windowId) || 0) + 1);
+  }
+  const primaryWindowId = Number.isFinite(requestedWindowId) && memberCountByWindow.has(requestedWindowId)
+    ? requestedWindowId
+    : [...memberCountByWindow.entries()].sort((a, b) => b[1] - a[1])[0][0];
+
   const group = {
     groupId: `group-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    windowId: winId,
+    windowId: primaryWindowId,
     at: Date.now(),
     label: label || `关闭的 ${members.length} 个标签页`,
     structure: structureKnown,
@@ -564,38 +581,78 @@ export async function restoreClosedGroup(windowId = null) {
     return { ok: false, error: "找不到可用于恢复的窗口。" };
   }
 
-  // 按原物理下标升序恢复：父标签天然排在子标签之前，重建层级时就不会出现"先挂子后挂父"。
-  const members = group.members.slice().sort((a, b) => Number(a.index) - Number(b.index));
-  const idByMember = await reopenMembers(members, targetWindowId, group);
-  const reopenedIds = members.map((member) => idByMember.get(member)).filter(isFiniteId);
+  // 按「窗口 + 原物理下标」升序恢复：同一窗口内父标签天然排在子标签之前，
+  // 重建层级时就不会出现"先挂子后挂父"。
+  const members = group.members.slice().sort(
+    (a, b) => (Number(a.windowId) - Number(b.windowId)) || (Number(a.index) - Number(b.index))
+  );
+  const idByMember = new Map();
+  const restoredIds = [];
+  const windowIds = [];
 
-  // 等 onCreated 全部被树的创建流程登记，否则随后写入的父子关系会被它覆盖。
-  await ensureTreeFor(targetWindowId);
-  await waitUntilTabsTracked(targetWindowId, reopenedIds);
+  // 跨窗口多选关闭是允许的（管理页「全部窗口」与侧边栏固定标签区），
+  // 因此按成员各自的窗口分别恢复；原窗口已被关闭的成员退到 targetWindowId。
+  const windowExistence = new Map();
+  const windowStillExists = async (id) => {
+    const key = Number(id);
+    if (!Number.isFinite(key)) {
+      return false;
+    }
+    if (!windowExistence.has(key)) {
+      windowExistence.set(key, Boolean(await getWindow(key)));
+    }
+    return windowExistence.get(key);
+  };
+  const byWindow = new Map();
+  for (const member of members) {
+    const recorded = Number(member.windowId);
+    const effective = (await windowStillExists(recorded)) ? recorded : targetWindowId;
+    if (!byWindow.has(effective)) {
+      byWindow.set(effective, []);
+    }
+    byWindow.get(effective).push(member);
+  }
 
-  // 先按实时下标重建一次：`indexById` 是"删除不重编号"的近似表，
-  // 而下面判断"父是否排在子之前"必须依据物理事实。
-  let indexMap = await refreshTreeIndexes(targetWindowId);
-  applyGroupStructure(members, idByMember, targetWindowId, indexMap);
-  await placeGroupMembers(members, idByMember, targetWindowId);
-  // 物理位置变化后重新校验一次不变量（父必须在子之前）。落位算法本身保证了这一点，
-  // 这一步是防御性的：不变量优先于"尽量还原"，违反者降级为顶层。
-  indexMap = await refreshTreeIndexes(targetWindowId);
-  applyGroupStructure(members, idByMember, targetWindowId, indexMap);
+  for (const [memberWindowId, windowMembers] of [...byWindow.entries()].sort((a, b) => a[0] - b[0])) {
+    windowIds.push(memberWindowId);
+    const reopened = await reopenMembers(windowMembers, memberWindowId, group);
+    for (const [member, tabId] of reopened) {
+      idByMember.set(member, tabId);
+    }
+    const reopenedIds = windowMembers.map((member) => idByMember.get(member)).filter(isFiniteId);
+    restoredIds.push(...reopenedIds);
 
-  await restoreCollapsedState(group, members, idByMember, targetWindowId);
+    // 等 onCreated 全部被树的创建流程登记，否则随后写入的父子关系会被它覆盖。
+    await ensureTreeFor(memberWindowId);
+    await waitUntilTabsTracked(memberWindowId, reopenedIds);
+
+    // 先按实时下标重建一次：`indexById` 是"删除不重编号"的近似表，
+    // 而下面判断"父是否排在子之前"必须依据物理事实。
+    // 注意：parentIndex 是**组内全局下标**，因此查找父时始终传完整的 members。
+    let indexMap = await refreshTreeIndexes(memberWindowId);
+    applyGroupStructure(members, windowMembers, idByMember, memberWindowId, indexMap);
+    await placeGroupMembers(windowMembers, idByMember, memberWindowId);
+    // 物理位置变化后重新校验一次不变量（父必须在子之前）。落位算法本身保证了这一点，
+    // 这一步是防御性的：不变量优先于"尽量还原"，违反者降级为顶层。
+    indexMap = await refreshTreeIndexes(memberWindowId);
+    applyGroupStructure(members, windowMembers, idByMember, memberWindowId, indexMap);
+
+    await restoreCollapsedState(windowMembers, idByMember, memberWindowId);
+  }
+
   await activateTab(idByMember.get(members[0]));
 
   closedGroups = closedGroups.filter((item) => item !== group);
   persist();
 
-  const skipped = members.length - reopenedIds.length;
-  logDebug("restoreClosedGroup", group.groupId, { restored: reopenedIds.length, skipped });
+  const skipped = members.length - restoredIds.length;
+  logDebug("restoreClosedGroup", group.groupId, { restored: restoredIds.length, skipped });
   return {
     ok: true,
     groupId: group.groupId,
-    windowId: targetWindowId,
-    restored: reopenedIds.length,
+    windowId: windowIds[0] || targetWindowId,
+    windowIds,
+    restored: restoredIds.length,
     skipped,
   };
 }
@@ -683,20 +740,26 @@ function prunePendingCreatedUrls() {
   }
 }
 
-/** 按记录重建父子关系；父无处可寻时落顶层（不变量优先级高于"尽量还原"）。 */
-function applyGroupStructure(members, idByMember, windowId, indexMap) {
-  members.forEach((member, index) => {
+/**
+ * 按记录重建父子关系；父无处可寻时落顶层（不变量优先级高于"尽量还原"）。
+ *
+ * @param {Array} allMembers 组内**全部**成员（用于解析 parentIndex 这个组内全局下标）
+ * @param {Array} windowMembers 本窗口的成员（只处理它们）
+ */
+function applyGroupStructure(allMembers, windowMembers, idByMember, windowId, indexMap) {
+  windowMembers.forEach((member) => {
     const tabId = idByMember.get(member);
     if (!isFiniteId(tabId)) {
       return;
     }
     let parentId = null;
-    if (member.parentIndex >= 0 && members[member.parentIndex]) {
-      const parentTabId = idByMember.get(members[member.parentIndex]);
+    if (member.parentIndex >= 0 && allMembers[member.parentIndex]) {
+      const parentTabId = idByMember.get(allMembers[member.parentIndex]);
       parentId = isFiniteId(parentTabId) ? parentTabId : null;
     }
     if (parentId === null && isFiniteId(member.parentId)) {
       // 父标签不在这组里：它可能还开着（关掉几个子标签的情况），也可能已经关了。
+      // 父在别的窗口时，applyRestoredParent 会因为"父不在本窗口的树里"而拒绝并落顶层。
       parentId = Number(member.parentId);
     }
     applyRestoredParent(windowId, Number(tabId), parentId, {
@@ -780,8 +843,8 @@ async function isAliveInWindow(tabId, windowId) {
 }
 
 /** 恢复组内被折叠的子树（折叠状态在前端存 storage.session，与管理页/侧边栏共用一份）。 */
-async function restoreCollapsedState(group, members, idByMember, windowId) {
-  const collapsedMembers = members.filter((member) => member.collapsed && isFiniteId(idByMember.get(member)));
+async function restoreCollapsedState(windowMembers, idByMember, windowId) {
+  const collapsedMembers = windowMembers.filter((member) => member.collapsed && isFiniteId(idByMember.get(member)));
   if (collapsedMembers.length === 0) {
     return;
   }
@@ -791,7 +854,6 @@ async function restoreCollapsedState(group, members, idByMember, windowId) {
     forWindow[String(idByMember.get(member))] = true;
   }
   await storageSessionSet({ [TREE_COLLAPSED_KEY]: { ...current, [windowId]: forWindow } });
-  logDebug("restoreCollapsedState", group.groupId, collapsedMembers.length);
 }
 
 async function loadCollapsedSet(windowId) {

@@ -62,6 +62,20 @@
           </span>
           全不选
         </button>
+        <button
+          class="ghost btn-icon"
+          :disabled="!canUndoClose"
+          title="恢复最近一次批量关闭的整组标签页（含层级与物理位置）"
+          @click="onUndoClose"
+        >
+          <span class="icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M9 14L4 9l5-5" />
+              <path d="M4 9h9a7 7 0 0 1 0 14H8" />
+            </svg>
+          </span>
+          撤销关闭
+        </button>
         <button class="ghost danger btn-icon" @click="onCloseSelected">
           <span class="icon" aria-hidden="true">
             <svg viewBox="0 0 24 24">
@@ -137,6 +151,7 @@
       :on-toggle-tab="onToggleTab"
       :on-activate="onActivate"
       :on-close="onClose"
+      :on-close-tree="onCloseTree"
       :on-discard="onDiscard"
       :on-save-ai-group="onSaveAiGroup"
       :on-drop-tab="onDropTab"
@@ -243,6 +258,15 @@ const props = defineProps({
     type: Function,
     default: null,
   },
+  // 「撤销关闭」：恢复最近一次批量关闭的整组标签页；无记录时按钮禁用。
+  onUndoClose: {
+    type: Function,
+    default: null,
+  },
+  canUndoClose: {
+    type: Boolean,
+    default: false,
+  },
   onOpenMoveModal: {
     type: Function,
     default: null,
@@ -276,6 +300,11 @@ const props = defineProps({
     default: null,
   },
   onClose: {
+    type: Function,
+    default: null,
+  },
+  // 树状模式下每行的「关闭子树」：关闭该标签及其全部后代，并记为可整组撤销的关闭组。
+  onCloseTree: {
     type: Function,
     default: null,
   },

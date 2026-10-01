@@ -10,7 +10,7 @@
     "96": "icons/icon-96.png",
     "128": "icons/icon-128.png"
   },
-  "permissions": ["tabs", "storage", "contextMenus", "alarms"],
+  "permissions": ["tabs", "storage", "contextMenus", "alarms", "sessions"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js",
