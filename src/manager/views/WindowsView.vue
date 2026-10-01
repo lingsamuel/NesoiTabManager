@@ -423,6 +423,21 @@ watch(
   }
 );
 
+// 提交新的搜索词后同理：跳转模式下 useMatchNavigation 会把当前项重置（第一个匹配，
+// 或由滚动同步改写后的那个），列表自身不会滚动，必须在这里显式滚过去，
+// 否则"输入的关键词明明有匹配，列表却停在原地，要先按一下 ↓ 才会跳"。
+// 只监听**提交的关键词**：滚动同步改写当前项时绝不能反过来触发滚动。
+watch(
+  () => props.committedFilterQuery,
+  async () => {
+    if (props.filterMode !== "jump") {
+      return;
+    }
+    await nextTick();
+    scrollToCurrentMatch();
+  }
+);
+
 function handleToggleHideDiscarded(checked) {
   if (props.onToggleHideDiscarded) {
     props.onToggleHideDiscarded(checked);

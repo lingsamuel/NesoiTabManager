@@ -1,4 +1,4 @@
-// 侧边栏「滚动位置跟随活动标签」的端到端回归测试。
+// 侧边栏与「打开的窗口」视图里"滚动位置自动跟随"的端到端回归测试。
 //
 // 为什么不满足于纯函数单测（scripts/test_scroll_markers.mjs）：这条链路由"chrome 事件 → 状态
 // → watcher → 真实滚动容器"四段拼成，最容易坏的一环恰恰是中间的状态流转，而且坏掉时**不会**报错、
@@ -6,10 +6,11 @@
 // 把其它标签的活动标记一并清掉，"变化前的活动行"这条跟随依据被丢掉，于是新建标签后再也不跟随；
 // 纯函数测试对此完全无感。
 //
-// 做法：在 Node 里把**真实的** SidebarApp.vue 跑起来——用 vue/compiler-sfc 即时编译 .vue，
+// 覆盖两处：侧边栏（跟随活动标签 + 跳转模式提交关键词后的显式滚动）、管理页「打开的窗口」（跳转模式同上）。
+// 做法：在 Node 里把**真实的** .vue 组件跑起来——用 vue/compiler-sfc 即时编译 .vue，
 // 用 Vue 的 createRenderer 提供假 DOM（只实现 SidebarApp 真正用到的那点几何语义：
 // clientHeight、scrollTop 及其夹取），再用假 chrome 控制标签列表与事件顺序。
-import { createRenderer } from "vue";
+import { computed, createRenderer, h, reactive } from "vue";
 import { registerHooks } from "node:module";
 import { readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -168,6 +169,17 @@ function snapshot() {
   return browserTabs.map((tab) => ({ ...tab }));
 }
 
+/** 假事件对象：addListener / removeListener 都要有，否则组件卸载时清理监听会抛错。 */
+function makeEvent(store) {
+  return {
+    addListener: (listener) => store.push(listener),
+    removeListener: (listener) => {
+      const index = store.indexOf(listener);
+      if (index >= 0) store.splice(index, 1);
+    },
+  };
+}
+
 function sendMessage(message, callback) {
   const action = message && message.action;
   if (action === "createRootTab") {
@@ -205,7 +217,7 @@ globalThis.chrome = {
   storage: {
     local: { get: (_key, cb) => cb({}), set: (_obj, cb) => cb && cb() },
     session: { get: (_key, cb) => cb({}), set: (_obj, cb) => cb && cb() },
-    onChanged: { addListener() {} },
+    onChanged: makeEvent([]),
   },
   tabs: {
     query(info, callback) {
@@ -220,13 +232,13 @@ globalThis.chrome = {
     remove() {},
     move() {},
     update() {},
-    onCreated: { addListener: (fn) => listeners.created.push(fn) },
-    onActivated: { addListener: (fn) => listeners.activated.push(fn) },
-    onUpdated: { addListener: (fn) => listeners.updated.push(fn) },
-    onRemoved: { addListener: (fn) => listeners.removed.push(fn) },
-    onMoved: { addListener() {} },
-    onAttached: { addListener() {} },
-    onDetached: { addListener() {} },
+    onCreated: makeEvent(listeners.created),
+    onActivated: makeEvent(listeners.activated),
+    onUpdated: makeEvent(listeners.updated),
+    onRemoved: makeEvent(listeners.removed),
+    onMoved: makeEvent([]),
+    onAttached: makeEvent([]),
+    onDetached: makeEvent([]),
   },
   windows: {
     getCurrent: (cb) => cb({ id: WINDOW_ID }),
@@ -273,7 +285,8 @@ const { default: SidebarApp } = await import(
   pathToFileURL(path.join(here, "..", "src", "sidebar", "SidebarApp.vue")).href
 );
 const root = createEl("root");
-createRenderer(nodeOps).createApp(SidebarApp).mount(root);
+const sidebarApp = createRenderer(nodeOps).createApp(SidebarApp);
+sidebarApp.mount(root);
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 await sleep(50);
@@ -288,13 +301,13 @@ function check(condition, label, detail = "") {
   }
 }
 
-function visibleRange() {
-  const start = Math.floor(scrollContainer.scrollTop / ITEM_HEIGHT);
-  return { start, end: start + Math.floor(VIEWPORT_HEIGHT / ITEM_HEIGHT) };
+function visibleRange(itemHeight = ITEM_HEIGHT) {
+  const start = Math.floor(scrollContainer.scrollTop / itemHeight);
+  return { start, end: start + Math.floor(VIEWPORT_HEIGHT / itemHeight) };
 }
 
-function isRowVisible(index) {
-  const range = visibleRange();
+function isRowVisible(index, itemHeight = ITEM_HEIGHT) {
+  const range = visibleRange(itemHeight);
   return range.start <= index && index < range.end;
 }
 
@@ -302,6 +315,27 @@ function find(className, node = root) {
   if (node._class && node._class.includes(className)) return node;
   for (const child of node.children || []) {
     const found = find(className, child);
+    if (found) return found;
+  }
+  return null;
+}
+
+/** 按标签名找元素（搜索框是 <input>，没有可用的 class）。 */
+function findByTag(tag, node = root) {
+  if (node.tag === tag) return node;
+  for (const child of node.children || []) {
+    const found = findByTag(tag, child);
+    if (found) return found;
+  }
+  return null;
+}
+
+/** 按纯文本找按钮（「过滤 / 跳转」两个按钮没有各自的 class）。 */
+function findButtonByText(text, node = root) {
+  // 模板里的换行会被"压缩空白"保留成单个空格，这里按 trim 后比较
+  if (node.tag === "button" && String(node.text || "").trim() === text) return node;
+  for (const child of node.children || []) {
+    const found = findButtonByText(text, child);
     if (found) return found;
   }
   return null;
@@ -437,6 +471,117 @@ console.log("场景 5：停在固定标签上按 Ctrl+T → 跟随到新标签")
     isRowVisible(lastRow),
     "新标签落在可见区间里",
     `可见 ${visibleRange().start}..${visibleRange().end}，新标签行 ${lastRow}`
+  );
+}
+
+console.log("场景 6：跳转模式下输入能匹配到的关键词 → 直接跳到匹配项");
+{
+  const jumpButton = findButtonByText("跳转");
+  check(Boolean(jumpButton && typeof jumpButton.props.onClick === "function"), "找到「跳转」模式按钮");
+  jumpButton.props.onClick();
+  await sleep(50);
+  // 把视野挪回顶部：这样"跳转"如果真的发生，滚动位置一定会变
+  scrollContainer.scrollTop = 0;
+  const before = scrollContainer.scrollTop;
+
+  const input = findByTag("input");
+  check(Boolean(input && typeof input.props.onInput === "function"), "找到搜索框");
+  input.props.onInput({ target: { value: "标签 55" } });
+  await sleep(400); // FilterInput 的 250ms 防抖 + 渲染
+
+  const targetRow = 54; // 标签 55 在非固定标签行序列里的行号
+  check(scrollContainer.scrollTop > before, "列表滚动了", `${before} → ${scrollContainer.scrollTop}`);
+  check(
+    isRowVisible(targetRow),
+    "匹配项落在可见区间里",
+    `可见 ${visibleRange().start}..${visibleRange().end}，匹配行 ${targetRow}`
+  );
+}
+
+console.log("场景 7：滚动同步改写了当前项，但绝不能反过来把列表拉回去");
+{
+  // 换一个匹配项分散在列表里的关键词（标签 5 与 标签 50–59，共 11 项）：
+  // 这样"滚到别处"时可见范围里一定有别的匹配项，会触发滚动同步改写当前项。
+  // 注意这里不断言"跳到第几个匹配"——当前项由 useMatchNavigation 重置 + 滚动同步共同决定，
+  // 只保证提交关键词后视野里一定有匹配项（这正是用户要的效果）。
+  const input = findByTag("input");
+  input.props.onInput({ target: { value: "标签 5" } });
+  await sleep(400);
+  check(
+    isRowVisible(4) || isRowVisible(49),
+    "提交关键词后视野里有匹配项",
+    `可见 ${visibleRange().start}..${visibleRange().end}（匹配行 4 与 49..58）`
+  );
+
+  // 模拟用户自己往下滚：直接改滚动位置并派发 scroll（虚拟列表据此重算可见区间）
+  scrollContainer.scrollTop = 1200;
+  scrollContainer.props.onScroll();
+  await sleep(50);
+  check(
+    scrollContainer.scrollTop === 1200,
+    "用户滚到别处后没有被拉回匹配项",
+    `scrollTop=${scrollContainer.scrollTop}`
+  );
+}
+
+console.log("场景 8：管理页「打开的窗口」跳转模式下输入关键词 → 同样要跳转");
+{
+  // 侧边栏那套已经跑完，先卸载：两个应用都靠同一个 scrollContainer 变量记录滚动容器。
+  sidebarApp.unmount();
+  await sleep(20);
+
+  // 真实应用里 windowRows 的 matched 由 App.vue 按关键词算好，这里按同一口径现算。
+  const baseRows = Array.from({ length: 60 }, (_, index) => ({
+    type: "tab",
+    tab: {
+      id: index + 1,
+      windowId: WINDOW_ID,
+      title: `标签 ${index + 1}`,
+      url: `https://example.com/${index + 1}`,
+      active: index === 0,
+      pinned: false,
+    },
+  }));
+  const managerState = reactive({ committed: "" });
+  const managerRows = computed(() =>
+    baseRows.map((row) => ({
+      ...row,
+      tab: {
+        ...row.tab,
+        matched: Boolean(managerState.committed) && row.tab.title.includes(managerState.committed),
+      },
+    }))
+  );
+
+  const { default: WindowsView } = await import(
+    pathToFileURL(path.join(here, "..", "src", "manager", "views", "WindowsView.vue")).href
+  );
+  const managerRoot = createEl("root");
+  const Host = {
+    render: () =>
+      h(WindowsView, {
+        windowSubtitle: "窗口 1",
+        selectedWindowId: 1,
+        windowRows: managerRows.value,
+        filterMode: "jump",
+        filterQuery: managerState.committed,
+        committedFilterQuery: managerState.committed,
+      }),
+  };
+  createRenderer(nodeOps).createApp(Host).mount(managerRoot);
+  await sleep(50);
+
+  const MANAGER_ITEM_HEIGHT = 44;
+  scrollContainer.scrollTop = 0;
+  const before = scrollContainer.scrollTop;
+  managerState.committed = "标签 55"; // 只匹配第 55 行（标签 55），远在视口之外
+  await sleep(50);
+
+  check(scrollContainer.scrollTop > before, "提交关键词后列表滚动了", `${before} → ${scrollContainer.scrollTop}`);
+  check(
+    isRowVisible(54, MANAGER_ITEM_HEIGHT),
+    "匹配行落在可见区间里",
+    `可见 ${visibleRange(MANAGER_ITEM_HEIGHT).start}..${visibleRange(MANAGER_ITEM_HEIGHT).end}`
   );
 }
 
