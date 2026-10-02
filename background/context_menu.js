@@ -26,6 +26,8 @@ const TAB_ITEM = {
   pin: "nesoi-tab:pin",
   mute: "nesoi-tab:mute",
   discard: "nesoi-tab:discard",
+  // 「复制标题」必须排在「复制链接」之前（顺序即显示顺序），见 createTabItems。
+  copyTitle: "nesoi-tab:copyTitle",
   copyUrl: "nesoi-tab:copyUrl",
   // 保存到列表的两个子菜单（与网页右键同构）。contextMenus 的 id 全局唯一，
   // 因此即使 contexts 不同，也不能和网页右键的 `saveTo` / `save:xxx` 重名。
@@ -171,6 +173,7 @@ async function createTabItems(lists) {
   await menuCreate({ id: TAB_ITEM.pin, title: "固定标签页", contexts: ["tab"] });
   await menuCreate({ id: TAB_ITEM.mute, title: "静音标签页", contexts: ["tab"] });
   await menuCreate({ id: TAB_ITEM.discard, title: "冻结标签页", contexts: ["tab"] });
+  await menuCreate({ id: TAB_ITEM.copyTitle, title: "复制标题", contexts: ["tab"] });
   await menuCreate({ id: TAB_ITEM.copyUrl, title: "复制链接", contexts: ["tab"] });
   // 「保存到列表 / 关闭并保存到列表」：网页右键早已有这两个能力，标签右键此前缺失，
   // 侧边栏右键又只能弹出这份注册，因此补在这里即同时覆盖"侧边栏右键"与"Firefox 标签栏右键"。
@@ -296,24 +299,58 @@ function moveTabToWindow(tabId, windowId) {
 }
 
 /**
- * 复制标签链接。
- * 后台页在 Firefox 下是一个带 DOM 的扩展页面，因此可以直接用剪贴板 API；
+ * 写入剪贴板。
+ *
+ * 后台页在 Firefox 下是一个带 DOM 的扩展页面，因此这里可以直接用剪贴板 API；
  * 这也是这组 tab 菜单项只在 Firefox 注册的原因之一。
+ * 没有可写内容（空字符串）时直接返回：调用方已经做过"内容为空就不复制"的判定，
+ * 这里再兜一层是为了避免把空串写进剪贴板、覆盖用户原有的内容。
+ *
+ * @param {string} text 要写入的文本（可含换行，多行复制时由调用方拼好）
+ * @param {string} label 失败日志里显示的动作名（如「复制标题」）
  */
-async function copyTabUrl(tab) {
-  const url = tab && tab.url ? String(tab.url) : "";
-  if (!url) {
+async function writeClipboard(text, label) {
+  const content = text === null || text === undefined ? "" : String(text);
+  if (!content) {
     return;
   }
-  if (typeof navigator === "undefined" || !navigator.clipboard || typeof navigator.clipboard.writeText !== "function") {
-    console.warn("复制链接失败：当前环境不支持剪贴板 API。");
+  if (
+    typeof navigator === "undefined" ||
+    !navigator.clipboard ||
+    typeof navigator.clipboard.writeText !== "function"
+  ) {
+    console.warn(`${label}失败：当前环境不支持剪贴板 API。`);
     return;
   }
   try {
-    await navigator.clipboard.writeText(url);
+    await navigator.clipboard.writeText(content);
   } catch (error) {
-    console.warn("复制链接失败：", String(error && error.message ? error.message : error));
+    console.warn(`${label}失败：`, String(error && error.message ? error.message : error));
   }
+}
+
+/**
+ * 取一个标签用于复制的标题。
+ * `tabs.Tab.title` 在页面还没有标题时可能是空串，此时回退到 URL——
+ * 侧边栏行内显示用的也是同一口径（`title || url`），复制结果与用户看到的一致。
+ */
+function tabCopyTitle(tab) {
+  const title = tab && tab.title ? String(tab.title) : "";
+  if (title) {
+    return title;
+  }
+  return tab && tab.url ? String(tab.url) : "";
+}
+
+/** 复制标签标题。 */
+async function copyTabTitle(tab) {
+  await writeClipboard(tabCopyTitle(tab), "复制标题");
+}
+
+/** 复制标签链接。 */
+async function copyTabUrl(tab) {
+  const url = tab && tab.url ? String(tab.url) : "";
+  await writeClipboard(url, "复制链接");
 }
 
 // ---------------------------------------------------------------------------
@@ -424,6 +461,9 @@ async function handleContextMenuClick(info, tab) {
       }
       return;
     }
+    case TAB_ITEM.copyTitle:
+      await copyTabTitle(tab);
+      return;
     case TAB_ITEM.copyUrl:
       await copyTabUrl(tab);
       return;

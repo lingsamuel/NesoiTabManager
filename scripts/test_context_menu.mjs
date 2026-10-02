@@ -236,11 +236,18 @@ async function main() {
   await menu.rebuildContextMenus();
   assertEqual(Boolean(findCreated("saveTo")), true, "注册了网页右键的「保存到列表」");
   assertEqual(Boolean(findCreated("save:list1")), true, "列表子项按现有列表生成");
-  const tabItemIds = ["nesoi-tab:reload", "nesoi-tab:pin", "nesoi-tab:mute", "nesoi-tab:discard", "nesoi-tab:copyUrl", "nesoi-tab:saveTo", "nesoi-tab:saveCloseTo", "nesoi-tab:moveTo"];
+  const tabItemIds = ["nesoi-tab:reload", "nesoi-tab:pin", "nesoi-tab:mute", "nesoi-tab:discard", "nesoi-tab:copyTitle", "nesoi-tab:copyUrl", "nesoi-tab:saveTo", "nesoi-tab:saveCloseTo", "nesoi-tab:moveTo"];
   assertDeepEqual(
     tabItemIds.map((id) => Boolean(findCreated(id))),
     tabItemIds.map(() => true),
-    "八个标签菜单项都已注册"
+    "九个标签菜单项都已注册"
+  );
+  // 菜单的显示顺序 = 注册顺序，"复制标题"必须在"复制链接"上面。
+  assertEqual(
+    createdItems.findIndex((item) => item.id === "nesoi-tab:copyTitle") <
+      createdItems.findIndex((item) => item.id === "nesoi-tab:copyUrl"),
+    true,
+    "「复制标题」注册在「复制链接」之前（顺序即显示顺序）"
   );
   assertDeepEqual(
     tabItemIds.map((id) => findCreated(id).contexts),
@@ -327,8 +334,14 @@ async function main() {
   assertDeepEqual(calls.discard, [5], "冻结标签页 → tabs.discard(5)");
   assertDeepEqual(discardArgs, [1], "tabs.discard 只传 tabId（Firefox 不接受 callback）");
 
+  await menu.handleContextMenuClick({ menuItemId: "nesoi-tab:copyTitle" }, tab);
+  assertDeepEqual(calls.clipboard.slice(-1), ["示例"], "复制标题 → 写入剪贴板");
+  // 标题为空时回退复制 URL（与侧边栏行内 `title || url` 的显示口径一致）。
+  await menu.handleContextMenuClick({ menuItemId: "nesoi-tab:copyTitle" }, { ...tab, title: "" });
+  assertDeepEqual(calls.clipboard.slice(-1), ["https://example.org/page"], "标题为空 → 回退复制 URL");
+
   await menu.handleContextMenuClick({ menuItemId: "nesoi-tab:copyUrl" }, tab);
-  assertDeepEqual(calls.clipboard, ["https://example.org/page"], "复制链接 → 写入剪贴板");
+  assertDeepEqual(calls.clipboard.slice(-1), ["https://example.org/page"], "复制链接 → 写入剪贴板");
 
   await menu.handleContextMenuClick({ menuItemId: "nesoi-tab:moveTo:new" }, tab);
   assertDeepEqual(calls.createWindow, [{ tabId: 5 }], "移动到新窗口 → windows.create({tabId})");
