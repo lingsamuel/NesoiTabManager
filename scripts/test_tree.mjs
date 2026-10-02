@@ -41,6 +41,10 @@ function reindex() {
   }
 }
 
+// storage.local.get 的模拟延迟（毫秒）。默认 0 = 同步回调，保持既有场景的时序不变；
+// 需要制造"对齐正在飞行、事件插进 await 空档"的竞态时临时调大（见场景 12）。
+let mockStorageDelayMs = 0;
+
 function storageArea(area) {
   return {
     get(key, callback) {
@@ -59,6 +63,10 @@ function storageArea(area) {
         for (const [k, v] of Object.entries(storageData[area])) {
           result[k] = clone(v);
         }
+      }
+      if (mockStorageDelayMs > 0) {
+        setTimeout(() => callback(result), mockStorageDelayMs);
+        return;
       }
       callback(result);
     },
@@ -550,6 +558,83 @@ async function main() {
     assertEqual(rootOf(parents, s11.id), p11.id, `11（${label}）：S 的祖先链仍回到 P`);
     assertEqual(rootOf(parents, t11.id), p11.id, `11（${label}）：T 的祖先链仍回到 P`);
   }
+
+  // --- 场景 12：关闭事件恰好落在"树正在对齐"的空档里 ---
+  // 触发条件：树不在内存里（后台被回收），用户的操作先触发了 loadTree。
+  // loadTree 是「先 queryWindowTabs 拿到标签列表、再 await storageGet 等快照」，
+  // 若关闭恰好落在这两步之间，装好的树里就会留下一个"幽灵父标签"（B 已关闭却仍挂在树上）。
+  // 之后任何一次落盘都会跑不变量校验，旧实现会把 B 的子标签全部抬成顶层并把损坏写进快照。
+  // 回归点：关闭必须延后补做提升，且落盘后的快照里子标签仍然挂在祖父之下。
+  console.log("场景 12：树加载中到达的关闭（幽灵父标签）");
+  windows.push({ id: 10 });
+  seedOrphanSnapshot(10, [
+    { u: "https://a12.example.com/", t: "A", p: -1 },
+    { u: "https://b12.example.com/", t: "B", p: 0 },
+    { u: "https://c12.example.com/", t: "C", p: 1 },
+    { u: "https://d12.example.com/", t: "D", p: 1 },
+    { u: "https://e12.example.com/", t: "E", p: 1 },
+  ]);
+  const a12 = addTab({ windowId: 10, url: "https://a12.example.com/", title: "A" });
+  const b12 = addTab({ windowId: 10, url: "https://b12.example.com/", title: "B" });
+  const c12 = addTab({ windowId: 10, url: "https://c12.example.com/", title: "C" });
+  const d12 = addTab({ windowId: 10, url: "https://d12.example.com/", title: "D" });
+  const e12 = addTab({ windowId: 10, url: "https://e12.example.com/", title: "E" });
+  mockStorageDelayMs = 30;
+  const loading12 = tree.getTreeStructure([10]);
+  await tick(10); // queryWindowTabs 已经返回（列表含 B），树还没装进内存
+  tabs = tabs.filter((tab) => tab.id !== b12.id);
+  reindex();
+  tree.handleTreeTabRemoved(b12.id, { windowId: 10, isWindowClosing: false });
+  await loading12;
+  mockStorageDelayMs = 0;
+  const parents12 = parentsOf(await tree.getTreeStructure([10]), 10);
+  assertEqual(parents12[c12.id], a12.id, "12：C 被提升到祖父 A 之下");
+  assertEqual(parents12[d12.id], a12.id, "12：D 被提升到祖父 A 之下");
+  assertEqual(parents12[e12.id], a12.id, "12：E 被提升到祖父 A 之下");
+  assertEqual(parents12[b12.id], undefined, "12：已关闭的 B 不再是任何标签的父");
+  // 真实使用中的暴露时机：下一次结构变化把窗口置脏，落盘时才会跑不变量校验。
+  // 旧实现此时才把 C/D/E 抬成顶层，并把 p = -1 写进快照（结构永久损坏）。
+  const f12 = addTab({ windowId: 10, url: "https://f12.example.com/", title: "F" });
+  await tree.handleTreeTabCreated(f12);
+  await tree.handleTreeSuspend();
+  await tick(20);
+  const saved12 = storageData.local["treeStructure:10"];
+  const indexOfUrl12 = (url) => saved12.items.findIndex((item) => item.u === url);
+  const a12Index = indexOfUrl12("https://a12.example.com/");
+  assertEqual(indexOfUrl12("https://b12.example.com/"), -1, "12：快照里不再有已关闭的 B");
+  assertEqual(saved12.items[indexOfUrl12("https://c12.example.com/")].p, a12Index, "12：快照里 C 的父下标是 A");
+  assertEqual(saved12.items[indexOfUrl12("https://d12.example.com/")].p, a12Index, "12：快照里 D 的父下标是 A");
+  assertEqual(saved12.items[indexOfUrl12("https://e12.example.com/")].p, a12Index, "12：快照里 E 的父下标是 A");
+
+  // --- 场景 13：不变量校验（sanitizeTreeState）的就近改挂语义 ---
+  // 这是内存树与磁盘快照之间最后一道纠偏，必须与"关闭标签"的 promote intelligently 同口径：
+  // 关系不合法时先沿父链向上改挂，整条链都没有存活祖先才落顶层。
+  console.log("场景 13：不变量校验的就近改挂语义");
+  const core = await import("../background/tree_core.js");
+  // 13a：父已不在窗口里 → 子标签接回祖父（这正是"幽灵父标签"落地时的情形）
+  const ghost = core.createTreeStateFromParents(
+    new Map([[1, null], [4, 1], [5, 4], [6, 4], [2, null], [3, null]])
+  );
+  core.sanitizeTreeState(ghost, [1, 5, 6, 2, 3], null);
+  assertEqual(ghost.parentById.get(5), 1, "13a：父已关闭时子标签接回祖父");
+  assertEqual(ghost.parentById.get(6), 1, "13a：父已关闭时第二个子标签也接回祖父");
+  // 13b：父链上连续多个节点都已关闭 → 一直接到最近的存活祖先
+  const deep = core.createTreeStateFromParents(new Map([[1, null], [7, 1], [8, 7], [9, 8]]));
+  core.sanitizeTreeState(deep, [1, 9], null);
+  assertEqual(deep.parentById.get(9), 1, "13b：连续多个已关闭的父 → 接到最近的存活祖先");
+  // 13c：整条父链都没有存活祖先 → 顶层（父标签必须真实存在）
+  const orphan = core.createTreeStateFromParents(new Map([[4, null], [5, 4]]));
+  core.sanitizeTreeState(orphan, [5], null);
+  assertEqual(orphan.parentById.get(5), null, "13c：整条父链都没有存活祖先 → 顶层");
+  // 13d：固定标签一律顶层；固定标签不能作为父，子标签要跳过它继续向上
+  const pinnedState = core.createTreeStateFromParents(new Map([[1, null], [2, 1], [3, 2]]));
+  core.sanitizeTreeState(pinnedState, [1, 2, 3], new Set([2]));
+  assertEqual(pinnedState.parentById.get(2), null, "13d：固定标签自己一律顶层");
+  assertEqual(pinnedState.parentById.get(3), 1, "13d：父是固定标签时跳过它，接到它的父");
+  // 13e：父排在子之后 → 关系非法；这里父已没有更上层的存活祖先 → 顶层
+  const behind = core.createTreeStateFromParents(new Map([[1, null], [2, null], [3, 2]]));
+  core.sanitizeTreeState(behind, [1, 3, 2], null);
+  assertEqual(behind.parentById.get(3), null, "13e：父排在子之后且无更高祖先 → 顶层");
 
   console.log("");
   console.log(`共 ${checks} 项断言，失败 ${failures} 项`);

@@ -670,12 +670,43 @@ export function handleTreeTabRemoved(tabId, removeInfo = {}) {
   }
   const tree = trees.get(windowId);
   if (!tree) {
+    // 树还没进内存：这次关闭不能就这么丢掉。
+    // loadTree 的标签列表是「先 queryWindowTabs、再 await storageGet」拿到的——若关闭恰好落在
+    // 这个空档里，装好的树里会留下一个"幽灵父标签"（该标签已关闭，却仍作为子标签的父）；
+    // 之后任何一次落盘都会触发不变量校验，把它的子标签抬成顶层，并把损坏写进快照。
+    // 因此这里挂到正在进行的加载上，等树装好后再补做一次提升，语义与关闭时就地提升完全一致。
+    const loading = loadingTrees.get(windowId);
+    if (loading) {
+      loading.then(
+        () => {
+          const loaded = trees.get(windowId);
+          if (loaded) {
+            applyRemovalToTree(loaded, tabId, windowId);
+          }
+        },
+        () => {}
+      );
+    }
     return;
   }
-  tree.indexById.delete(Number(tabId));
+  applyRemovalToTree(tree, tabId, windowId);
+}
+
+/**
+ * 把一次关闭真正落到树上（promote intelligently）。
+ *
+ * 幂等：树是加载完成后才装上的，那时被关闭的标签可能压根不在树里（列表是在关闭之后查的），
+ * 此时无需处理，也不该因此把窗口标脏。
+ */
+function applyRemovalToTree(tree, tabId, windowId) {
+  const id = Number(tabId);
+  if (!tree.parentById.has(id)) {
+    return;
+  }
+  tree.indexById.delete(id);
   // 提升"第一个子标签"前先按物理顺序排序，保证结果确定且符合直觉。
-  sortChildrenByIndex(tree, Number(tabId));
-  applyRemovePromotion(tree, Number(tabId));
+  sortChildrenByIndex(tree, id);
+  applyRemovePromotion(tree, id);
   markDirty(windowId);
 }
 

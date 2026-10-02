@@ -174,36 +174,111 @@ export function getDepth(state, tabId, cache = null) {
 }
 
 /**
- * 校验并规范化父子关系，返回是否发生过降级。
+ * 校验并规范化父子关系，返回被修正的关系数量。
  *
  * 需要成立的不变量（见 docs/ui/tree_style_tabs.md）：
  * - 父标签必须存在、同窗口、index 小于子标签；
  * - 固定标签一律顶层，且不能作为父；
  * - 无环。父 index 严格小于子 index 已足以排除环（下标严格递减的链不可能成环），
  *   所以这里不需要额外的环检测。
+ *
+ * 关键：**父不合法时不能直接落顶层**。父不在本窗口（已被关闭、或在树没进内存时被关闭、
+ * 或被移到了别的窗口）是最常见的情形，此时父链信息往往还留在 state 里——直接落顶层会把
+ * 整棵子树凭空抬到根上，这正是"关掉父标签后子标签全变成顶层"的成因。正确做法是按
+ * promote intelligently 的口径沿父链向上，取最近的「存活、排在子标签之前、非固定」的祖先；
+ * 整条链都没有存活祖先才落顶层（父标签必须真实存在是硬性不变量）。
+ * 与快照对齐里的 findNearestAliveAncestor、关闭标签时的 applyRemovePromotion 同一语义。
  */
 export function sanitizeTreeState(state, orderedTabIds, pinnedIds = null) {
   const indexById = new Map();
   for (let i = 0; i < orderedTabIds.length; i += 1) {
     indexById.set(orderedTabIds[i], i);
   }
-  let demoted = 0;
+  // 「已不在本窗口的父」→ 最近的存活祖先。一次校验里会被大量复用：没有它时，
+  // 一长串已关闭的父会让每个子标签都把父链重走一遍，退化成 O(n²)。
+  const liveAncestorCache = new Map();
+  let repaired = 0;
   for (let i = 0; i < orderedTabIds.length; i += 1) {
     const tabId = orderedTabIds[i];
     const parentId = state.parentById.has(tabId) ? state.parentById.get(tabId) : null;
     if (parentId == null) {
       continue;
     }
+    // 固定标签自己不能有父：留到第二趟再清——第一趟先让"沿父链向上"能用上它记录里的原父，
+    // 否则把某个中间层标签固定住时，它的子标签会直接掉到顶层，而不是接回祖父。
+    if (pinnedIds && pinnedIds.has(tabId)) {
+      continue;
+    }
     const parentIndex = indexById.has(parentId) ? indexById.get(parentId) : -1;
-    const isPinnedChild = pinnedIds ? pinnedIds.has(tabId) : false;
     const isPinnedParent = pinnedIds ? pinnedIds.has(parentId) : false;
-    if (parentIndex < 0 || parentIndex >= i || isPinnedChild || isPinnedParent) {
-      state.parentById.set(tabId, null);
-      demoted += 1;
+    if (parentIndex >= 0 && parentIndex < i && !isPinnedParent) {
+      continue;
+    }
+    // 逐级向上，直到找到一个「在子标签之前、且非固定」的存活祖先。
+    // 结果的下标严格小于子标签，因此不可能成环，无需额外的环检测；guard 只防御外部损坏的状态。
+    let resolved = nearestLiveAncestor(state, parentId, indexById, liveAncestorCache);
+    let guard = 0;
+    while (
+      resolved != null &&
+      guard <= state.parentById.size &&
+      (indexById.get(resolved) >= i || (pinnedIds ? pinnedIds.has(resolved) : false))
+    ) {
+      const next = state.parentById.has(resolved) ? state.parentById.get(resolved) : null;
+      resolved = next == null ? null : nearestLiveAncestor(state, next, indexById, liveAncestorCache);
+      guard += 1;
+    }
+    state.parentById.set(tabId, resolved == null ? null : resolved);
+    repaired += 1;
+  }
+  // 第二趟：固定标签一律顶层（放在解析之后，理由见上）。
+  if (pinnedIds) {
+    for (let i = 0; i < orderedTabIds.length; i += 1) {
+      const tabId = orderedTabIds[i];
+      if (!pinnedIds.has(tabId)) {
+        continue;
+      }
+      if (state.parentById.has(tabId) && state.parentById.get(tabId) != null) {
+        state.parentById.set(tabId, null);
+        repaired += 1;
+      }
     }
   }
   state.childIdsById = buildChildIndex(state.parentById);
-  return demoted;
+  return repaired;
+}
+
+/**
+ * 沿 parentById 向上找最近的「在 orderedTabIds 里」的祖先，找不到返回 null。
+ *
+ * 与快照对齐里的 findNearestAliveAncestor 同一语义，区别只在"存活"的判据：
+ * 那边由快照配对结果决定，这边由"是否在窗口当前标签序列里"决定。
+ * 路径上的死节点会被记忆，避免重复走父链（长链关闭场景下是 O(n) 而非 O(n²)）。
+ */
+function nearestLiveAncestor(state, startId, indexById, cache) {
+  if (startId == null) {
+    return null;
+  }
+  const path = [];
+  let cursor = startId;
+  let resolved = null;
+  let guard = 0;
+  while (cursor != null && guard <= state.parentById.size) {
+    if (indexById.has(cursor)) {
+      resolved = cursor;
+      break;
+    }
+    if (cache.has(cursor)) {
+      resolved = cache.get(cursor);
+      break;
+    }
+    path.push(cursor);
+    cursor = state.parentById.has(cursor) ? state.parentById.get(cursor) : null;
+    guard += 1;
+  }
+  for (const node of path) {
+    cache.set(node, resolved);
+  }
+  return resolved;
 }
 
 /**
@@ -492,7 +567,7 @@ export function alignSnapshotToTabs(orderedTabs, snapshot, options = {}) {
   }
 
   const state = createTreeStateFromParents(parentById);
-  const demoted = sanitizeTreeState(
+  const repaired = sanitizeTreeState(
     state,
     orderedTabs.map((tab) => tab.id),
     pinnedIds
@@ -500,7 +575,7 @@ export function alignSnapshotToTabs(orderedTabs, snapshot, options = {}) {
   const removed = items.length - matchedCount;
   return {
     state,
-    exact: matchedCount === items.length && added === 0 && demoted === 0 && !usedFallback,
+    exact: matchedCount === items.length && added === 0 && repaired === 0 && !usedFallback,
     matched: matchedCount,
     added,
     removed,
