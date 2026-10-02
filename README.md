@@ -30,8 +30,8 @@
   - 撤销关闭：本插件发起的批量关闭（关闭整棵子树 / 多选批量关闭 / 保存后关闭）可整组撤销，
     连同父子层级、兄弟顺序与物理位置一起恢复；浏览器原生「重新打开已关闭的标签页」也会回到原父节点
   - 面向 10K 级标签页设计：无 O(n²) 算法、启动静默期不加载不写盘、脏窗口空闲防抖落盘
-- Firefox 标签右键菜单（仅 Firefox）：刷新 / 固定(取消固定) / 静音(取消静音) / 冻结 / 复制链接 / 关闭整棵子树 / 撤销关闭最近一组 / 移动到窗口▸，
-  由 Firefox 原生菜单控件渲染，并同样出现在浏览器自带标签栏的右键菜单里。
+- Firefox 标签右键菜单（仅 Firefox）：刷新 / 固定(取消固定) / 静音(取消静音) / 冻结 / 复制标题 / 复制链接 / 关闭整棵子树 / 撤销关闭最近一组 / 移动到窗口▸，
+  由 Firefox 原生菜单控件渲染，并同样出现在浏览器自带标签栏的右键菜单里；侧边栏多选模式下，复制标题/复制链接会按显示顺序输出多行。
 - Firefox 原生侧边栏（仅 Firefox，`sidebar_action`）：
   - 常驻显示当前窗口的标签树，实时跟随标签增删与移动
   - 支持折叠、搜索过滤/跳转、拖拽改父子
@@ -50,6 +50,8 @@
 - Manifest V3：Chrome/Edge 后台使用 service worker，Firefox 使用 event page（构建时自动适配）。
 - 使用 `chrome.tabs`、`chrome.storage`、`chrome.contextMenus`、`chrome.sessions`。
 - 列表数据存放在 `chrome.storage.local`。
+- 保存列表时 favicon 会去重：图标集中在 `favIcons` 表中只存一份，条目只保留短键 `iconKey`；
+  读取时再解析回 `favIconUrl`，因此导出格式与界面渲染保持不变。详见 `docs/data/favicon_dedup.md`。
 - `chrome.storage.session` 为 Chrome 专有能力，Firefox 下自动降级。
 - UI 构建使用 Vite + Vue，输出到 `ui/` 目录。
 - AI 分组需要在“插件设置”里配置完整 API 端点、Key、模型、API 格式与单次上限。

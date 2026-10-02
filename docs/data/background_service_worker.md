@@ -10,8 +10,9 @@
 - 扩展启动与安装：清理 action 弹窗、重建右键菜单、重置冻结跟踪状态并初始化自动冻结定时器。
 - 扩展按钮：点击后打开 `ui/manager.html`；若已打开则聚焦现有窗口与标签页。
 - 右键菜单：根据列表动态生成“保存到列表 / 关闭并保存到列表”子项；Firefox 下额外注册一组 `contexts: ["tab"]` 的
-  标签菜单项（刷新/固定/静音/冻结/复制链接/关闭整棵子树/撤销关闭最近一组/移动到窗口），供侧边栏用 `menus.overrideContext` 以原生菜单外壳呈现，
+  标签菜单项（刷新/固定/静音/冻结/复制标题/复制链接/关闭整棵子树/撤销关闭最近一组/移动到窗口），供侧边栏用 `menus.overrideContext` 以原生菜单外壳呈现，
   并在 `menus.onShown` 中按被右键标签的状态刷新文案与可用性。
+  「复制标题 / 复制链接」在多选场景下会读取侧边栏推来的选择集合（`setCopySelection`）并按行输出，见 `docs/ui/firefox_sidebar.md`。
 - 自动冻结：监听 `chrome.alarms`、标签激活与窗口焦点变化、标签增删替换，用于计算闲置与冻结候选。
 - 近期标签页提醒：监听标签新增/关闭、维护打开时间与启动期状态、按间隔触发提醒，并向内容脚本广播气泡展示。
 - 树状结构：监听标签创建/关闭/移动/跨窗口/`openerTabId` 变化，按窗口懒加载并维护内存树，空闲防抖后写入 `chrome.storage.local`。
@@ -34,7 +35,11 @@
 
 ## 消息协议（runtime message）
 - `activateTab`：激活指定标签页（参数 `tabId`、`windowId`），用于管理页点击跳转。
-- `getLists`：读取全部列表。
+- `getLists`：读取全部列表（返回值会把 `iconKey` 解析回 `favIconUrl`，结构对调用方保持不变）。
+- `getListSummaries`：只读取列表的 `{ id, name, count }`，供侧边栏「保存到列表」弹出清单使用，
+  避免为了几个列表名把去重后的图标重新展开成数 MB 的 base64。
+- `setCopySelection`：侧边栏在弹出原生标签右键菜单前推来当前选中项（`{ windowId, items: [{ title, url }] }`），
+  供「复制标题 / 复制链接」输出多行；`menus.onHidden` 与 10 秒 TTL 负责清理，详见 `docs/ui/firefox_sidebar.md`。
 - `saveTabs`：按列表保存指定 tabIds，可选择新建列表、可选关闭标签。
 - `saveCurrentTab`：保存当前页面（用于右键菜单与悬浮组件）。
 - `createList` / `renameList` / `deleteList`：列表增删改。

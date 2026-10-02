@@ -14,6 +14,7 @@
 ## 系统与数据（docs/data）
 - `docs/data/background_service_worker.md`：后台服务、事件与消息协议。
 - `docs/data/storage_model.md`：存储结构、字段与数据流。
+- `docs/data/favicon_dedup.md`：列表 favicon 去重（全局图标表 + 内容指纹，含子域名隔离与懒迁移）。
 
 ## 构建与发布（docs）
 - `docs/build.md`：Chrome 与 Firefox 双浏览器构建与打包方案。

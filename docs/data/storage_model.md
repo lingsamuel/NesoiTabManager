@@ -17,8 +17,23 @@
 - `ListItem`：
   - `url`：标签链接。
   - `title`：标题或 URL 兜底。
-  - `favIconUrl`：图标地址（可为空）。
+  - `iconKey`：图标在全局图标表 `favIcons` 中的短键（可为空字符串）。
+    **落盘结构里不再有 `favIconUrl`**；面向 UI 的读取出口会把它解析回 `favIconUrl`，因此调用方看到的字段与旧结构一致。
   - `savedAt`：保存时间（ISO 字符串）。
+
+### 图标表（favIcons）
+- 存放在 `chrome.storage.local` 的 `favIcons` 键。
+- 结构：`{ [iconKey]: favIconUrl }`，**全局一张表**，跨列表共享。
+- 用途：消除"同一张 favicon 在每个条目里各存一份"的重复。实测 `favIconUrl` 主要是
+  `data:image/...;base64,...`，同一站点的大量标签页会成倍占用 `storage.local` 配额。
+- `iconKey` 规则（详见 `docs/data/favicon_dedup.md`）：
+  - `d:<内容指纹>`：`data:` 形态，按图片内容去重；
+  - `p:<origin>`：`page-icon:<pageUrl>` 形态，归一到页面 origin（协议+主机+端口，**不同子域名各自独立**）；
+  - `u:<去掉 fragment 的 URL>`：其它形态；
+  - `""`：无图标。
+- 与 `lists` 在**同一次 `storageSet`** 中写入；每次写列表时顺带裁剪掉不再被引用的表项（GC）。
+- 旧数据里的 `favIconUrl` 采用**懒迁移**：读取时原样返回，下一次列表写操作时转成 `iconKey` 并登记入表。
+- 导出的 JSON 仍是内联 `favIconUrl` 的自包含格式，不包含 `favIcons`（见 `docs/data/favicon_dedup.md`）。
 
 ### AI 配置（aiConfig）
 - 存放在 `chrome.storage.local` 的 `aiConfig` 键。
@@ -155,6 +170,8 @@
 
 ## 数据流
 - 保存标签：UI/右键/悬浮组件 -> `saveTabs` -> 写入 `lists`。
+- favicon：写列表的路径统一经 `setLists` 归一化（`favIconUrl` -> `iconKey` + 登记 `favIcons` + 裁剪未引用项）；
+  面向 UI 的 `getLists` 出口把 `iconKey` 解析回 `favIconUrl` 后返回。详见 `docs/data/favicon_dedup.md`。
 - 列表管理：`createList / renameList / deleteList / moveListItems` -> 更新 `lists`。
 - AI 分组：`aiGroupTabs` -> 生成分组 -> `saveGroupedTabs` 写入新列表。
 - 自动冻结：定时扫描 -> `discardSession` + `historyBatches` 更新。
