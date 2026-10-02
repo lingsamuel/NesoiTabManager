@@ -65,6 +65,23 @@ const VIEWPORT_HEIGHT = 600;
 const ITEM_HEIGHT = 30;
 let scrollContainer = null;
 
+// 多选条占用的列表高度（真实侧边栏约 55–85px，即 2–3 行）。
+// 假 DOM 不做布局，因此要手动模拟"多选条进/出 DOM 时列表视口变矮/变高"——这正是
+// "选中最底部的标签后它们被多选条挤出视野"那条 bug 的触发条件，不模拟就测不到补偿逻辑。
+const BULK_BAR_HEIGHT = 90;
+let bulkBarMounted = false;
+
+function isBulkBar(node) {
+  return Boolean(node && node._class && node._class.includes("sb-bulk"));
+}
+
+function syncBulkBarLayout() {
+  if (!scrollContainer) {
+    return;
+  }
+  scrollContainer.clientHeight = VIEWPORT_HEIGHT - (bulkBarMounted ? BULK_BAR_HEIGHT : 0);
+}
+
 function normalizeClass(value) {
   if (!value) return [];
   if (typeof value === "string") return value.split(/\s+/).filter(Boolean);
@@ -115,6 +132,10 @@ const nodeOps = {
     const index = anchor ? parent.children.indexOf(anchor) : -1;
     if (index >= 0) parent.children.splice(index, 0, child);
     else parent.children.push(child);
+    if (isBulkBar(child)) {
+      bulkBarMounted = true;
+      syncBulkBarLayout();
+    }
   },
   remove(child) {
     if (child.parent) {
@@ -122,6 +143,10 @@ const nodeOps = {
       if (index >= 0) child.parent.children.splice(index, 1);
     }
     child.parent = null;
+    if (isBulkBar(child)) {
+      bulkBarMounted = false;
+      syncBulkBarLayout();
+    }
   },
   createElement: createEl,
   createText: (text) => ({ text, parent: null }),
@@ -146,9 +171,10 @@ const nodeOps = {
     if (key === "class") {
       el._class = normalizeClass(next);
       // 认出滚动容器并给它一个视口高度：这是整套模拟里唯一的"尺寸来源"。
+      // 高度始终由 syncBulkBarLayout 统一给出，免得后续的 class 更新把多选条压小的高度冲掉。
       if (el._class.includes("virtual-scroller")) {
-        el.clientHeight = VIEWPORT_HEIGHT;
         scrollContainer = el;
+        syncBulkBarLayout();
       }
       return;
     }
@@ -329,6 +355,17 @@ function visibleRange(itemHeight = ITEM_HEIGHT) {
 function isRowVisible(index, itemHeight = ITEM_HEIGHT) {
   const range = visibleRange(itemHeight);
   return range.start <= index && index < range.end;
+}
+
+/**
+ * 该行此刻是否**完整**落在真实视口里。
+ * 视口高度取容器当前值（会被多选条压小），不能再用 VIEWPORT_HEIGHT——这正是要验证的点。
+ */
+function isRowFullyVisible(index, itemHeight = ITEM_HEIGHT) {
+  const top = index * itemHeight;
+  const bottom = top + itemHeight;
+  const viewportBottom = scrollContainer.scrollTop + scrollContainer.clientHeight;
+  return top >= scrollContainer.scrollTop && bottom <= viewportBottom;
 }
 
 function find(className, node = root) {
@@ -651,7 +688,7 @@ console.log("场景 8：行内展示态（发声/静音/关注）走本地增量
   check(find("sb-pin-muted") === null, "取消静音后圆点消失");
 }
 
-console.log("场景 8.6：普通模式下 Shift+点击 → 自动进入多选并选中「活动标签 → 被点项」");
+console.log("场景 8.6：普通模式下 Shift+点击 → 自动进入多选、选中区间，并补偿多选条压小的视口");
 {
   // 此刻活动标签是「Ctrl+T 新标签」（非固定标签的最后一行）；把视野挪到列表底部，
   // 让活动行与目标行都真的被虚拟列表渲染出来（虚拟列表只渲染可见区间）。
@@ -659,6 +696,8 @@ console.log("场景 8.6：普通模式下 Shift+点击 → 自动进入多选并
   scrollContainer.scrollTop = treeRowCount * ITEM_HEIGHT; // 会被夹取到最大滚动位置
   scrollContainer.props.onScroll();
   await sleep(60);
+  const bottomBefore = scrollContainer.scrollTop + scrollContainer.clientHeight;
+  check(isRowFullyVisible(61), "点击前最后一行完整可见", `scrollTop=${scrollContainer.scrollTop}`);
 
   check(find("sb-bulk") === null, "普通模式下没有批量操作条");
   const messagesBefore = messageLog.length;
@@ -675,14 +714,28 @@ console.log("场景 8.6：普通模式下 Shift+点击 → 自动进入多选并
   check(rowHasClass("标签 60", "selected"), "区间终点行被选中");
   check(rowHasClass("新建的标签页", "selected"), "区间中间行被选中");
   check(rowHasClass("Ctrl+T 新标签", "selected"), "区间起点（活动标签）被选中");
-  check(!rowHasClass("标签 43", "selected"), "区间之外、同样可见的行不受影响");
+  check(!rowHasClass("标签 46", "selected"), "区间之外、同样可见的行不受影响");
   check(rowHasClass("Ctrl+T 新标签", "current"), "被点标签没有被激活（活动标记仍在原标签上）");
   check(!messageLog.slice(messagesBefore).includes("activateTab"), "Shift+点击不会激活/跳转标签");
   check(nodeText(find("sb-bulk-count")) === "已选 3 项", "批量条显示「已选 3 项」", nodeText(find("sb-bulk-count")));
+
+  // 多选条把列表视口压小了（假 DOM 里 600 → 510）。修复前 scrollTop 不动，最下面几行直接落到
+  // 视口之外（虚拟列表也不再渲染它们）；现在应"底边锚定"，且选中的 3 行完整可见。
+  check(scrollContainer.clientHeight === VIEWPORT_HEIGHT - BULK_BAR_HEIGHT, "多选条确实压小了列表视口");
+  check(
+    scrollContainer.scrollTop + scrollContainer.clientHeight === bottomBefore,
+    "底边锚定：视口下边缘的内容坐标保持不变",
+    `${scrollContainer.scrollTop} + ${scrollContainer.clientHeight}`
+  );
+  check(isRowFullyVisible(59) && isRowFullyVisible(60) && isRowFullyVisible(61), "选中的三行都完整落在视口里");
 }
 
 console.log("场景 8.7：再次 Shift+点击 → 锚点回到被点项，可继续扩选");
 {
+  // 补偿后视野停在列表底部，先像真实用户那样往上滚一点，才能点到第 42 行。
+  scrollContainer.scrollTop = 1260;
+  scrollContainer.props.onScroll();
+  await sleep(60);
   const row = rowNodeOfTitle("标签 43"); // 第 42 行
   check(Boolean(row && typeof row.props.onClick === "function"), "找到新的终点行「标签 43」");
   if (row) row.props.onClick({ shiftKey: true });
@@ -694,9 +747,49 @@ console.log("场景 8.7：再次 Shift+点击 → 锚点回到被点项，可继
     "第 42..61 行共 20 项（不是从活动标签重算）",
     nodeText(find("sb-bulk-count"))
   );
+  check(scrollContainer.scrollTop === 1260, "已在多选模式里的普通扩选不再改动滚动位置");
 }
 
-console.log("场景 8.8：活动标签被过滤隐藏 → 退化为只选中被点项");
+console.log("场景 8.8：区间长过视口 → 视口落在区间内部，被点行仍完整可见");
+{
+  findButtonByText("多选").props.onClick(); // 退出多选模式（同时清空选择）
+  await sleep(60);
+  check(find("sb-bulk") === null, "退出多选后批量操作条消失");
+  check(scrollContainer.clientHeight === VIEWPORT_HEIGHT, "视口高度随多选条消失而恢复");
+
+  // 把活动标签切到第 5 行（标签 6）：从它到最后一行的区间长过视口，不可能整段可见。
+  for (const listener of listeners.activated) {
+    listener({ tabId: 6, windowId: WINDOW_ID });
+  }
+  await sleep(60);
+  scrollContainer.scrollTop = 1350; // 会被夹到当时的最大滚动位置（列表底部）
+  scrollContainer.props.onScroll();
+  await sleep(60);
+  const bottomBefore = scrollContainer.scrollTop + scrollContainer.clientHeight;
+
+  const targetRow = rowNodeOfTitle("Ctrl+T 新标签"); // 第 61 行
+  check(Boolean(targetRow && typeof targetRow.props.onClick === "function"), "找到区间终点行「Ctrl+T 新标签」");
+  if (targetRow) targetRow.props.onClick({ shiftKey: true });
+  await sleep(60);
+
+  check(nodeText(find("sb-bulk-count")) === "已选 57 项", "第 5..61 行共 57 项", nodeText(find("sb-bulk-count")));
+  check(isRowFullyVisible(61), "被点行（区间终点）完整可见");
+  check(
+    scrollContainer.scrollTop + scrollContainer.clientHeight === bottomBefore,
+    "底边锚定后视口仍贴着列表底部",
+    `${scrollContainer.scrollTop} + ${scrollContainer.clientHeight}`
+  );
+  // 区间长过视口时的最优解：视口完全落在区间内部（可见的选中行最多）。
+  const totalRows = browserTabs.filter((tab) => !tab.pinned).length;
+  check(
+    scrollContainer.scrollTop >= 5 * ITEM_HEIGHT &&
+      scrollContainer.scrollTop + scrollContainer.clientHeight <= totalRows * ITEM_HEIGHT,
+    "视口完全落在选中区间内部",
+    `scrollTop=${scrollContainer.scrollTop}`
+  );
+}
+
+console.log("场景 8.9：活动标签被过滤隐藏 → 退化为只选中被点项");
 {
   findButtonByText("多选").props.onClick(); // 退出多选模式（同时清空选择）
   await sleep(60);
@@ -726,7 +819,7 @@ console.log("场景 8.8：活动标签被过滤隐藏 → 退化为只选中被�
   check(!messageLog.slice(messagesBefore).includes("activateTab"), "依然不激活标签");
 }
 
-console.log("场景 8.9：固定标签方块同样支持隐式进入多选");
+console.log("场景 8.10：固定标签方块同样支持隐式进入多选");
 {
   findButtonByText("多选").props.onClick(); // 回到普通模式
   await sleep(60);
@@ -754,9 +847,15 @@ console.log("场景 8.9：固定标签方块同样支持隐式进入多选");
   check(Boolean(pinAfter && pinAfter._class.includes("selected")), "活动固定方块被选中（锚点就在固定区序列里）");
   check(!rowHasClass("标签 5", "selected"), "树区域的行没有被牵连选中");
   check(!messageLog.slice(messagesBefore).includes("activateTab"), "固定方块没有被激活");
+  // 被点项不在滚动列表里，此时只做底边锚定：视口下边缘的内容坐标不变。
+  check(
+    scrollContainer.scrollTop + scrollContainer.clientHeight === VIEWPORT_HEIGHT,
+    "固定区入口只做底边锚定",
+    `${scrollContainer.scrollTop} + ${scrollContainer.clientHeight}`
+  );
 }
 
-console.log("场景 8.10：活动标签与被点项分处两区 → 只选中被点项");
+console.log("场景 8.11：活动标签与被点项分处两区 → 只选中被点项");
 {
   findButtonByText("多选").props.onClick(); // 回到普通模式
   await sleep(60);
@@ -779,6 +878,7 @@ console.log("场景 8.10：活动标签与被点项分处两区 → 只选中被
   const pinAfter = find("sb-pin");
   check(Boolean(pinAfter && !pinAfter._class.includes("selected")), "固定标签方块没有被选中");
   check(!messageLog.slice(messagesBefore).includes("activateTab"), "依然不激活标签");
+  check(isRowFullyVisible(4), "被点行在补偿后仍完整可见（视口顶部越界不会把它顶出去）");
 }
 
 console.log("场景 9：管理页「打开的窗口」跳转模式下输入关键词 → 同样要跳转");

@@ -20,6 +20,11 @@ import {
   clearSelection,
   pruneSelection,
 } from "../manager/utils/selection.js";
+// 视口高度变化后的滚动补偿（多选条出现会压小列表视口）
+import {
+  computeBottomAnchorScrollTop,
+  computeRevealScrollTop,
+} from "../manager/utils/virtual_range.js";
 // 与管理页树状视图、后台、基准测试共用同一份行模型（筛选补祖先 + DFS + 折叠）
 import { buildTreeRows } from "../../background/tree_core.js";
 import { computePinnedReorderIndex, groupPinnedTabs } from "./pinned_data.js";
@@ -72,6 +77,11 @@ const multiSelect = ref(false);
 const selectedTabIds = reactive({});
 // 连续选择的锚点：最近一次被置为选中的那一项（规则与"锚点失效退化"见 manager/utils/selection.js）。
 const selectionAnchor = ref(null);
+// 进入多选模式前"列表视口下边缘"对应的内容坐标（scrollTop + viewportHeight）。
+// 多选条是 .sb-app 的 flex 兄弟节点，一出现就压小列表视口、把底部若干行移出视野；记下这个坐标，
+// 才能等 DOM 落地后把原来贴底的内容顶回新视口下边缘（见 revealAfterEnterMultiSelect）。
+// null 表示当前没有可补偿的滚动容器。不需要参与渲染，因此用普通变量。
+let pendingBottomAnchor = null;
 
 /**
  * 当前活动标签的 id（字符串形式）；窗口里暂时取不到活动标签时为 null。
@@ -903,12 +913,19 @@ function toggleMute(tab) {
 // 多选模式：选择与批量动作
 // ---------------------------------------------------------------------------
 
-/** 开关多选模式。关闭时一并清空选择与弹出清单，避免下次开启看到上次的残留。 */
+/**
+ * 开关多选模式。关闭时一并清空选择与弹出清单，避免下次开启看到上次的残留。
+ * 开启时会顺带修正列表滚动位置：多选条一出现就压小列表视口，底部若干行会被移出视野（见
+ * revealAfterEnterMultiSelect）。关闭时视口变大、内容只会多出来，因此不做反向补偿。
+ */
 function toggleMultiSelect() {
-  multiSelect.value = !multiSelect.value;
-  if (!multiSelect.value) {
+  if (multiSelect.value) {
+    multiSelect.value = false;
     clearSidebarSelection();
+    return;
   }
+  enterMultiSelect();
+  revealAfterEnterMultiSelect();
 }
 
 /** 清空选择（「取消选择」按钮、退出多选模式都用它）：锚点与弹出清单一起复位。 */
@@ -919,18 +936,87 @@ function clearSidebarSelection() {
 }
 
 /**
- * 普通模式下 Shift+点击的入口：自动打开多选模式，并返回本次区间的锚点（当前活动标签）。
+ * 进入多选模式的统一准备（工具栏开关与 Shift+点击隐式进入都走这里）。
  *
- * 锚点必须是活动标签而不是 selectionAnchor：普通模式下的选择集合保证为空（退出多选时已清空），
- * 用户按住 Shift 的意图是"从我正在看的标签一直选到点的那里"。
+ * 除了打开开关，还要记下"进入前列表视口下边缘的内容坐标"：多选条是 .sb-app 的 flex 兄弟节点，
+ * 它一出现就从列表手里拿走高度，而浏览器只会把 maxScroll 变大、不会自己移动 scrollTop，
+ * 底部若干行于是直接落到视口之外。记下这个坐标，revealAfterEnterMultiSelect 才能在 DOM
+ * 落地后把原来的底部内容顶回视口下边缘。
  *
- * 返回 null 或返回一个不在被点项所在区域渲染顺序里的 id 时，applySelectionClick 的区间计算
- * 会失败并退化为"只选中被点项"——正好覆盖活动标签被折叠隐藏 / 被过滤掉 / 属于另一个区域
- * / 窗口暂时没有活动标签这几种情况，不必在这里各写一遍判断。
+ * @returns {string|null} 本次 Shift 区间要用的锚点（当前活动标签 id）
  */
-function beginMultiSelectFromActiveTab() {
+function enterMultiSelect() {
+  const state =
+    treeRef.value && typeof treeRef.value.getScrollState === "function"
+      ? treeRef.value.getScrollState()
+      : null;
+  pendingBottomAnchor =
+    state && state.viewportHeight > 0 ? state.scrollTop + state.viewportHeight : null;
   multiSelect.value = true;
   return activeTabId.value;
+}
+
+/**
+ * 多选条出现后修正列表滚动位置。
+ *
+ * 时机必须是 nextTick：多选条要真的进了 DOM，读到的 clientHeight 才是被压小后的高度。
+ * 不能等 ResizeObserver 回调（时机不确定），也不能把多选条高度写死成常量。
+ *
+ * 两条规则，先粗后细：
+ * 1. **底边锚定**：让进入前贴在视口下边缘的内容继续贴住新的下边缘（列表整体上移约一个多选条
+ *    的高度），这样"列表正好滚到底部"时最下面那几行不会被凭空吃掉；
+ * 2. **选中区间尽量可见**：把本次选中的行（树区域里的连续区间）尽量完整滚进视野，并保证
+ *    **被点行**完整可见；区间长过视口时退化为"视口完全落在区间内部"（可见的选中行最多）。
+ *
+ * @param {string|number|null} clickedId 隐式入口里被点的那一行 id；
+ *   工具栏 / 固定标签区入口传 null（被点项不在这个滚动列表里，只做底边锚定）
+ */
+async function revealAfterEnterMultiSelect(clickedId = null) {
+  await nextTick();
+  const list = treeRef.value;
+  const anchorBottom = pendingBottomAnchor;
+  pendingBottomAnchor = null;
+  if (!list || typeof list.getScrollState !== "function" || typeof list.scrollToOffset !== "function") {
+    return;
+  }
+  const state = list.getScrollState();
+  if (!state || state.viewportHeight <= 0 || state.itemCount === 0) {
+    return;
+  }
+  // 第一步：底边锚定。取不到进入前的坐标时保持原位。
+  const base =
+    anchorBottom === null
+      ? state.scrollTop
+      : computeBottomAnchorScrollTop({
+          anchorBottom,
+          itemCount: state.itemCount,
+          itemHeight: state.itemHeight,
+          viewportHeight: state.viewportHeight,
+        });
+  // 第二步：选中区间尽量可见（固定标签区与树区共用一份选中集合，这里只关心树区域的行）。
+  const selectedIndexes = [];
+  items.value.forEach((item, index) => {
+    if (selectedTabIds[item.id]) {
+      selectedIndexes.push(index);
+    }
+  });
+  if (clickedId === null || selectedIndexes.length === 0) {
+    list.scrollToOffset(base);
+    return;
+  }
+  const clickedIndex = items.value.findIndex((item) => String(item.id) === String(clickedId));
+  list.scrollToOffset(
+    computeRevealScrollTop({
+      scrollTop: base,
+      itemCount: state.itemCount,
+      itemHeight: state.itemHeight,
+      viewportHeight: state.viewportHeight,
+      firstIndex: selectedIndexes[0],
+      lastIndex: selectedIndexes[selectedIndexes.length - 1],
+      // 被点行理论上一定在选中集合里；万一数据刚好被刷新过，退化为区间首行。
+      focusIndex: clickedIndex >= 0 ? clickedIndex : selectedIndexes[0],
+    })
+  );
 }
 
 /**
@@ -945,9 +1031,13 @@ function onTreeSelect(payload) {
   const shiftKey = Boolean(payload.shiftKey);
   // 普通模式下的 Shift+点击先隐式进入多选，并把这次区间的起点强制设为当前活动标签；
   // 已在多选模式里的 Shift+点击沿用既有锚点（最近一次被置为选中的项），可连续扩选。
+  const entering = !multiSelect.value && shiftKey;
   let anchor = selectionAnchor.value;
-  if (!multiSelect.value && shiftKey) {
-    anchor = beginMultiSelectFromActiveTab();
+  if (entering) {
+    // 锚点必须是活动标签而不是 selectionAnchor：普通模式下选择集合保证为空（退出多选时已清空），
+    // 用户按住 Shift 的意图是"从我正在看的标签一直选到点的那里"。
+    // 活动标签不在本区域渲染顺序里时，applySelectionClick 会退化为"只选中被点项"。
+    anchor = enterMultiSelect();
   }
   selectionAnchor.value = applySelectionClick(selectedTabIds, {
     key: payload.id,
@@ -955,6 +1045,10 @@ function onTreeSelect(payload) {
     orderedKeys: treeOrderedIds.value,
     anchor,
   });
+  if (entering) {
+    // 选中集合已经更新，等多选条进 DOM 后再把选中的行滚回视野。
+    revealAfterEnterMultiSelect(payload.id);
+  }
 }
 
 /** 固定标签区的选择动作：区间按固定区的显示顺序（分组 + 组内 index）计算。 */
@@ -963,9 +1057,10 @@ function onPinnedSelect(payload) {
     return;
   }
   const shiftKey = Boolean(payload.shiftKey);
+  const entering = !multiSelect.value && shiftKey;
   let anchor = selectionAnchor.value;
-  if (!multiSelect.value && shiftKey) {
-    anchor = beginMultiSelectFromActiveTab();
+  if (entering) {
+    anchor = enterMultiSelect();
   }
   selectionAnchor.value = applySelectionClick(selectedTabIds, {
     key: payload.id,
@@ -973,6 +1068,10 @@ function onPinnedSelect(payload) {
     orderedKeys: pinnedOrderedIds.value,
     anchor,
   });
+  if (entering) {
+    // 被点的是固定标签方块（在常驻的固定区里，不随列表滚动），只需补偿列表底边。
+    revealAfterEnterMultiSelect();
+  }
 }
 
 /**

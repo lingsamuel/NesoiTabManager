@@ -159,6 +159,25 @@ function scrollToBottom() {
 }
 
 /**
+ * 把滚动位置写到指定取值（会先实测视口高度再夹取，最后同步响应式副本）。
+ *
+ * 专门给"视口高度刚刚变化过"的场景用：Firefox 侧边栏的多选条出现/消失会压小或放大列表视口，
+ * 而 ResizeObserver 的回调时机不确定，此时必须直接读 DOM 的 clientHeight 才能算对补偿量。
+ * 目标位置由调用方用 virtual_range.js 的纯函数算好——几何计算留在那边，这里只负责落地。
+ */
+function scrollToOffset(offset) {
+  if (!container.value) {
+    return;
+  }
+  // 先补测视口高度：多选条可能刚进 DOM，ResizeObserver 还没回报。
+  updateViewportHeight();
+  const maxScroll = Math.max(0, totalHeight.value - viewportHeight.value);
+  container.value.scrollTop = Math.max(0, Math.min(Number(offset) || 0, maxScroll));
+  // 必须读回真实值：内容更矮时浏览器会把赋值夹掉，写进响应式副本会让可见区间失效。
+  syncScrollTop();
+}
+
+/**
  * 读取滚动容器当前的真实几何状态，供调用方判断"某一行在不在视野里"。
  *
  * 为什么不复用 range-change：那里上报的是**渲染区间**（含 overscan，比真正的视口上下各多
@@ -270,6 +289,7 @@ defineExpose({
   scrollToTop,
   scrollToBottom,
   scrollToIndex,
+  scrollToOffset,
   getScrollState,
 });
 

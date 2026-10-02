@@ -200,6 +200,12 @@ defineExpose({
       listRef.value.scrollToIndex(index);
     }
   },
+  // 把滚动位置写到指定取值：多选条出现/消失会改变列表视口高度，父级算好补偿量后经这里落地。
+  scrollToOffset(offset) {
+    if (listRef.value && listRef.value.scrollToOffset) {
+      listRef.value.scrollToOffset(offset);
+    }
+  },
   // 透传列表的真实滚动几何：父级据此判断"活动标签是否（完整）在视野里"。
   // 不能用 range-change 上报的渲染区间代替——那里面含 overscan，口径比真正的视口宽。
   getScrollState() {
