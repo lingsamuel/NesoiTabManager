@@ -861,6 +861,7 @@ export {
   markRecentReviewed,
   snoozeRecentReminder,
   getCachedTabInfo,
+  getCachedTabNeighbors,
 };
 
 /**
@@ -875,5 +876,39 @@ function getCachedTabInfo(tabId) {
   const id = Number(tabId);
   if (!Number.isFinite(id)) {
     return null;
-  }  return tabCache.get(String(id)) || null;
+  }
+  return tabCache.get(String(id)) || null;
+}
+
+/**
+ * 用全量标签缓存求出某标签的物理下标与前后邻居（同窗口）。
+ *
+ * 使用场景：关闭标签时该窗口的树还没进内存（后台刚被回收），`getTabStructureInfo()` 拿不到结构信息；
+ * 而撤销关闭仍需要"原来在第几位、前后是谁"才能把标签放回原位。缓存里的下标来自 `chrome.tabs`，
+ * 比内存树里那张"删除不重编号"的近似下标表更可靠，因此这条兜底比缺省值更准。
+ * 调用方必须**在 handleRecentTabRemoved 之前**调用（否则条目已被删除）。
+ *
+ * @returns {{index: number, prevId: number|null, nextId: number|null}|null}
+ *   缓存里没有这个标签时返回 null。
+ */
+function getCachedTabNeighbors(tabId) {
+  const self = getCachedTabInfo(tabId);
+  if (!self || !Number.isFinite(Number(self.index))) {
+    return null;
+  }
+  const windowId = Number(self.windowId);
+  const index = Number(self.index);
+  let prevId = null;
+  let nextId = null;
+  for (const entry of tabCache.values()) {
+    if (Number(entry.windowId) !== windowId) {
+      continue;
+    }
+    if (Number(entry.index) === index - 1) {
+      prevId = Number(entry.id);
+    } else if (Number(entry.index) === index + 1) {
+      nextId = Number(entry.id);
+    }
+  }
+  return { index, prevId, nextId };
 }

@@ -597,6 +597,38 @@ function attachAsRoot(tree, tabId) {
 // ---------------------------------------------------------------------------
 
 /**
+ * 把一次「撤销关闭」认领套用到树上（父关系 + 物理位置）。
+ *
+ * 前置要求：`tree` 已加载、`claim` 来自 `claimRestoreCandidate`（记录已同步出栈）。
+ * 套用前先把标签登记为顶层：`apply()` 是异步的（Firefox 还要读每标签会话值），
+ * 这段时间不能让默认规则插手；真正的父标签由 closed_groups.js 套用。
+ *
+ * @returns {Promise<boolean>} true 表示已按关闭记录处理完（调用方不要再套用默认规则）
+ */
+async function applyRestoreClaim(tree, tab, claim, windowId) {
+  const createdId = Number(tab.id);
+  // 走 attachAsRoot 而不是直接写父映射：对齐可能刚好把它挂到 opener 之下，
+  // 直接写会把它的 id 留在那个父的 childIdsById 里（见 attachAsRoot 的说明）。
+  attachAsRoot(tree, createdId);
+  const restoredIndex = Number(tab.index);
+  if (Number.isFinite(restoredIndex)) {
+    shiftIndexesForInsert(tree, restoredIndex);
+    tree.indexById.set(createdId, restoredIndex);
+  }
+  markDirty(windowId);
+  let handled = false;
+  try {
+    handled = await claim.apply();
+  } catch (error) {
+    handled = false;
+  }
+  if (handled) {
+    markDirty(windowId);
+  }
+  return handled;
+}
+
+/**
  * 标签刚创建：确定它的初始父标签。
  * 只有这一刻 openerTabId 参与决策；之后父子关系由本插件自己的树数据决定，不再跟随 opener 变化。
  */
@@ -614,8 +646,22 @@ export async function handleTreeTabCreated(tab) {
   const placement = consumePendingPlacement(windowId);
   const tree = trees.get(windowId);
   if (!tree) {
-    // 树还没加载：推迟到稍后统一对齐，避免一次开很多标签时反复做 O(n) 对齐。
-    // 这种情况下"顶层"由对齐时的 opener 兜底自然满足（该标签没有 opener）。
+    // 树还没加载。这时**不能**直接把创建事件扔掉：如果这个标签其实是「撤销关闭」恢复出来的，
+    // 认领机会只有这一次（关闭记录会被后续匹配消费/过期），等树懒加载时它只会按默认规则
+    // （opener / 活动标签）落位——关闭记录里的原父与原物理位置就白丢了，表现为"撤销后位置不对"。
+    // 因此这里同步认领（出栈），等树装好后再套用父关系与位置。
+    if (!placement) {
+      const earlyClaim = restoreCandidateProvider ? restoreCandidateProvider(tab) : null;
+      if (earlyClaim) {
+        const loaded = await ensureTree(windowId);
+        if (loaded) {
+          await applyRestoreClaim(loaded, tab, earlyClaim, windowId);
+          return;
+        }
+      }
+    }
+    // 其余情况推迟到稍后统一对齐，避免一次开很多标签时反复做 O(n) 对齐。
+    // "顶层"由对齐时的 opener 兜底自然满足（该标签没有 opener）。
     scheduleEnsureTrees([windowId]);
     return;
   }
@@ -641,26 +687,8 @@ export async function handleTreeTabCreated(tab) {
   // 之后再被恢复逻辑改写，用户会看到层级跳动。
   const restoreClaim = restoreCandidateProvider ? restoreCandidateProvider(tab) : null;
   if (restoreClaim) {
-    const createdId = Number(tab.id);
-    // 先落在顶层并登记物理下标：apply() 是异步的（Firefox 还要读每标签会话值），
-    // 这段时间不能让默认规则插手；真正的父标签由 closed_groups.js 套用。
-    // 走 attachAsRoot 而不是直接写父映射：对齐可能刚好把它挂到 opener 之下，
-    // 直接写会把它的 id 留在那个父的 childIdsById 里（见 attachAsRoot 的说明）。
-    attachAsRoot(tree, createdId);
-    const restoredIndex = Number(tab.index);
-    if (Number.isFinite(restoredIndex)) {
-      shiftIndexesForInsert(tree, restoredIndex);
-      tree.indexById.set(createdId, restoredIndex);
-    }
-    markDirty(windowId);
-    let handled = false;
-    try {
-      handled = await restoreClaim.apply();
-    } catch (error) {
-      handled = false;
-    }
+    const handled = await applyRestoreClaim(tree, tab, restoreClaim, windowId);
     if (handled) {
-      markDirty(windowId);
       return;
     }
     // 判定失败（例如用户只是手动打开了同一个 URL）：退回默认规则。

@@ -23,7 +23,7 @@ import {
   CLOSED_LOG_KEY,
   TREE_COLLAPSED_KEY,
 } from "./constants.js";
-import { getCachedTabInfo } from "./recent_tabs.js";
+import { getCachedTabInfo, getCachedTabNeighbors } from "./recent_tabs.js";
 import { storageSessionGet, storageSessionSet } from "./storage.js";
 import {
   applyRestoredParent,
@@ -196,13 +196,17 @@ export function handleClosedTabRecorded(tabId, removeInfo = {}) {
 
   const info = getTabStructureInfo(id, windowId);
   const cached = getCachedTabInfo(id);
+  // 树没进内存时（后台刚被回收，或本轮事件早于懒加载）拿不到结构现场。
+  // 此时用全量标签缓存兜底出下标与前后邻居：原生撤销关闭才能把标签放回原位，
+  // 否则记录里是 index = -1、邻居全空，恢复出来的位置只能听天由命。
+  const fallback = info ? null : getCachedTabNeighbors(id);
   const record = {
     tabId: id,
     windowId,
     parentId: info ? info.parentId : null,
-    prevId: info ? info.prevId : null,
-    nextId: info ? info.nextId : null,
-    index: info && Number.isFinite(info.index) ? info.index : -1,
+    prevId: info ? info.prevId : (fallback ? fallback.prevId : null),
+    nextId: info ? info.nextId : (fallback ? fallback.nextId : null),
+    index: info && Number.isFinite(info.index) ? info.index : (fallback ? fallback.index : -1),
     pinned: cached ? Boolean(cached.pinned) : false,
     url: cached ? cached.url || "" : "",
     title: cached ? cached.title || "" : "",

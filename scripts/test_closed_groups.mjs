@@ -718,6 +718,33 @@ async function main() {
   parents8 = parentsOf(await tree.getTreeStructure([8]), 8);
   assertEqual(parents8[x8.id], undefined, "12：关闭 B8 不会把顶层的 X 提升进树");
 
+  // --- 场景 13：树没进内存时关闭标签，关闭记录仍要带上原位置 ---
+  // 触发条件：后台刚被回收（或本轮事件早于懒加载），tabs.onRemoved 到达时拿不到结构现场。
+  // 旧实现此时写下 index = -1、前后邻居全空，原生「撤销关闭」就再也无法把标签放回原位。
+  console.log("场景 13：树未加载时关闭，记录仍需保留下标与前后邻居");
+  windows.push({ id: 9 });
+  const n9a = addTab({ windowId: 9, url: "https://n9-a.example/", title: "N9A" });
+  const n9b = addTab({ windowId: 9, url: "https://n9-b.example/", title: "N9B" });
+  const n9c = addTab({ windowId: 9, url: "https://n9-c.example/", title: "N9C" });
+  const n9d = addTab({ windowId: 9, url: "https://n9-d.example/", title: "N9D" });
+  // 只喂标签缓存（不触发树的懒加载），模拟"后台有全量缓存、但这棵树的现场不在内存里"
+  for (const tab of [n9a, n9b, n9c, n9d]) {
+    recent.handleRecentTabCreated(tab);
+  }
+  await closeTabs([n9c.id]);
+  const record9 = (storageData.session.closedTabLog || [])[0];
+  assertEqual(record9 && record9.index, 2, "13：记录里保留了原物理下标");
+  assertEqual(record9 && record9.prevId, n9b.id, "13：记录里保留了原前驱");
+  assertEqual(record9 && record9.nextId, n9d.id, "13：记录里保留了原后继");
+  // 原生撤销（Chrome 路径：按 URL 认领）→ 应回到原物理位置（N9B 与 N9D 之间）
+  const n9restored = await openTab({ windowId: 9, url: "https://n9-c.example/", title: "N9C" });
+  await tick(30);
+  const order9 = tabs
+    .filter((tab) => tab.windowId === 9)
+    .sort((left, right) => left.index - right.index)
+    .map((tab) => tab.id);
+  assertEqual(order9.indexOf(n9restored.id), 2, "13：撤销后回到原来的第 3 位");
+
   console.log("");
   console.log(`共 ${checks} 项断言，失败 ${failures} 项`);
   if (failures > 0) {

@@ -194,6 +194,10 @@
 ### 关闭记录（`chrome.storage.session`）
 - `closedTabLog`：**单标签**关闭记录栈，容量 `CLOSED_LOG_MAX`（拟 50）。
   每条：`{ tabId, windowId, parentId, prevId, nextId, index, pinned, url, title, at }`。
+  **树没进内存时也要写全**：`tabs.onRemoved` 只给 tabId，`getTabStructureInfo()` 在树未加载时返回 null，
+  此时下标与前后邻居从 `recent_tabs` 的全量标签缓存（来自 `chrome.tabs`，比内存里那张"删除不重编号"的近似下标表更准）兜底，
+  `url` / `title` / `pinned` 同样取自该缓存。否则记录会是 `index = -1` + 邻居全空，
+  原生撤销关闭就只能"听天由命"地落位（用户表现为"撤销后位置不对"）。
 - `closedGroups`：**关闭组**栈，容量 `CLOSED_GROUP_MAX`（拟 5）。
   每组：`{ groupId, windowId, at, label, structure, members: [...] }`，成员为
   `{ tabId, url, title, index, parentIndex, parentId, prevId, nextId, pinned, collapsed }`：
@@ -238,6 +242,10 @@
 - **会话值必须在树已加载时写入**：写入入口是结构变化后的 250ms 防抖任务，旧实现在这一刻若树还不在内存里
   （后台刚被回收、或与 500ms 的树加载防抖撞在一起）会静默跳过，于是那个标签永远没有会话值，
   之后原生撤销它只能落顶层。现在该任务会先 `ensureTreeFor()` 把树准备好再写。
+- **认领机会只有一次，所以树未加载时也要认领**：`handleTreeTabCreated` 在树还没进内存时会推迟对齐，
+  但撤销认领必须在这一刻同步完成（出栈），否则等树懒加载完，标签只会按默认规则（opener / 活动标签）落位，
+  记录里的原父与原位置就白丢了（表现为"撤销后位置不对"）。因此该分支会先认领、把树加载出来、
+  再套用父关系与物理位置；没有认领时才走原来的"稍后统一对齐"。
 
 ### 与既有机制的关系
 - 恢复出的标签同样受「不变量」约束（父在子前、pinned 不参与父子、无环），违反者降级为顶层。
