@@ -377,6 +377,59 @@ async function main() {
   assertEqual(storageData.local.lists[0].items.length, 3, "「关闭并保存到列表」也写入记录");
   assertDeepEqual(calls.remove, [[5]], "「关闭并保存到列表」保存后关闭该标签");
 
+  console.log("场景 10：多选模式下按侧边栏推来的选中集合输出多行");
+  calls.clipboard.length = 0;
+  const selection = [
+    { title: "甲", url: "https://a.example.com/1" },
+    { title: "", url: "https://a.example.com/2" },
+    { title: "丙", url: "" },
+  ];
+  menu.setCopySelection({ items: selection });
+  await menu.handleContextMenuClick({ menuItemId: "nesoi-tab:copyTitle" }, tab);
+  assertDeepEqual(
+    calls.clipboard.slice(-1),
+    ["甲\nhttps://a.example.com/2\n丙"],
+    "复制标题输出多行：标题为空回退 URL，顺序与推来的一致"
+  );
+  // 一次性消费：集合已被上一次复制用掉，紧接着再点就回到单标签口径。
+  await menu.handleContextMenuClick({ menuItemId: "nesoi-tab:copyTitle" }, tab);
+  assertDeepEqual(calls.clipboard.slice(-1), ["示例"], "选中集合被复制消费后立即回退到单标签");
+
+  menu.setCopySelection({ items: selection });
+  await menu.handleContextMenuClick({ menuItemId: "nesoi-tab:copyUrl" }, tab);
+  assertDeepEqual(
+    calls.clipboard.slice(-1),
+    ["https://a.example.com/1\nhttps://a.example.com/2"],
+    "复制链接输出多行：链接为空的行被跳过（不留空行）"
+  );
+
+  // 固定标签区是跨窗口聚合的，右键其它窗口的固定标签时 tab.windowId 与侧边栏不同；
+  // 是否使用选中集合只看暂存是否新鲜，不做窗口校验，否则这里会退化成单标签。
+  menu.setCopySelection({ items: selection });
+  await menu.handleContextMenuClick({ menuItemId: "nesoi-tab:copyTitle" }, { ...tab, windowId: 20 });
+  assertDeepEqual(
+    calls.clipboard.slice(-1),
+    ["甲\nhttps://a.example.com/2\n丙"],
+    "右键其它窗口的固定标签时同样使用选中集合"
+  );
+
+  // 空推送必须清掉上一次的暂存：否则一次单标签复制会被上一次的选择变成多行。
+  menu.setCopySelection({ items: selection });
+  menu.setCopySelection({ items: [] });
+  await menu.handleContextMenuClick({ menuItemId: "nesoi-tab:copyTitle" }, tab);
+  assertDeepEqual(calls.clipboard.slice(-1), ["示例"], "空推送清空暂存，回到单标签");
+
+  // TTL 兜底：菜单关闭事件缺失时，过期集合不能再被使用。
+  const realNow = Date.now;
+  menu.setCopySelection({ items: selection });
+  Date.now = () => realNow() + 60001;
+  await menu.handleContextMenuClick({ menuItemId: "nesoi-tab:copyTitle" }, tab);
+  Date.now = realNow;
+  assertDeepEqual(calls.clipboard.slice(-1), ["示例"], "超过 TTL 的暂存不再生效");
+
+  menu.clearCopySelection();
+  assertEqual(true, true, "clearCopySelection 可调用");
+
   console.log("");
   console.log(`共 ${checks} 项断言，失败 ${failures} 项`);
   if (failures > 0) {

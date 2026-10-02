@@ -1573,17 +1573,56 @@ function onPinnedReorder(payload) {
 // ---------------------------------------------------------------------------
 
 /**
+ * 把当前选中项推给后台，供原生标签右键菜单的「复制标题 / 复制链接」输出多行。
+ *
+ * 顺序按**界面显示顺序**：固定标签区在前、树区域在后（树区域用 `items` 的 DFS 渲染顺序，
+ * 过滤模式下天然只含可见行）。未选中任何项时推空数组——**必须推**，否则后台会一直留着上一次的暂存，
+ * 把一次单标签复制变成多行。
+ *
+ * 为什么这里不 await：`menus.overrideContext` 必须在 contextmenu 事件的同步调用栈里执行，
+ * 一旦 await 就可能错过这次弹出。消息本身是异步投递的，而用户点菜单项至少在数百毫秒之后，
+ * 后台在点击之前一定已经处理完这条消息（后台收到后只做一次内存写入）。
+ */
+function pushCopySelection() {
+  const entries = [];
+  const pushTab = (tab) => {
+    if (!tab || tab.id === undefined || tab.id === null) {
+      return;
+    }
+    entries.push({ title: tab.title || "", url: tab.url || "" });
+  };
+  if (multiSelect.value && selectedCount.value > 0) {
+    pinnedGroups.value.forEach((group) => {
+      group.tabs.forEach((tab) => {
+        if (selectedTabIds[String(tab.id)]) {
+          pushTab(tab);
+        }
+      });
+    });
+    items.value.forEach((item) => {
+      if (selectedTabIds[item.id]) {
+        pushTab(item.tab);
+      }
+    });
+  }
+  request("setCopySelection", { items: entries });
+}
+
+/**
  * 右键某个标签：把上下文交给 Firefox 的原生标签菜单。
  *
  * menus.overrideContext({ context: "tab", tabId }) 的语义是**隐藏所有默认 Firefox 菜单项**，
  * 只渲染「本扩展 + 其它扩展注册到 tab 上下文的项」——也就是说它提供的是原生菜单**外壳**
  * （原生外观、键盘导航、自动合并其它扩展的项），菜单**内容**由后台注册的那些项提供。
  * 因此这里只覆盖上下文，绝不 preventDefault：让 Firefox 自己把菜单弹出来。
+ *
+ * 多选模式下的多行复制依赖"弹出前把选中集合推给后台"，见 pushCopySelection。
  */
 function openTabContextMenu(tab) {
   if (!tab || !Number.isFinite(Number(tab.id))) {
     return;
   }
+  pushCopySelection();
   // 使用 contextMenus 别名时 API 挂在 chrome.contextMenus 下；若浏览器暴露 chrome.menus 也一并兼容。
   const api = (typeof chrome.menus !== "undefined" &&
     chrome.menus &&

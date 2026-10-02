@@ -50,6 +50,14 @@ let moveToWindowItems = [];
 // 否则会形成 onShown → update → refresh → onShown 的死循环。
 let lastTabMenuSignature = "";
 
+// 侧边栏推来的"当前选中项"，供「复制标题 / 复制链接」输出多行。
+//
+// 为什么需要它：原生菜单的 onClicked 只拿得到**被右键的那一个标签**，后台完全不知道
+// 侧边栏的选中集合，所以多行复制必须由侧边栏在弹出菜单前主动推来（`setCopySelection`）。
+// 这里只做暂存与一次性消费，TTL 是兜底（正常路径由 menus.onHidden 与"复制后立即清空"负责）。
+const COPY_SELECTION_TTL_MS = 10000;
+let copySelection = null;
+
 function clearActionPopup() {
   if (chrome.action && chrome.action.setPopup) {
     chrome.action.setPopup({ popup: "" });
@@ -342,15 +350,96 @@ function tabCopyTitle(tab) {
   return tab && tab.url ? String(tab.url) : "";
 }
 
+/**
+ * 侧边栏推送当前选中项（多选模式），供「复制标题 / 复制链接」输出多行。
+ *
+ * 使用场景：侧边栏在 `contextmenu` 处理里、调用 `menus.overrideContext` **之前**调用它，
+ * 且**不等待**返回——overrideContext 必须在事件的同步调用栈里执行，而用户点菜单项至少
+ * 在数百毫秒之后，消息足够在此之前送达并被处理。
+ *
+ * 传空数组等价于清空：侧边栏没有选中项时也要推，才能把上一次的暂存清掉。
+ *
+ * 为什么不做窗口校验：侧边栏的固定标签区是**跨窗口聚合**的，右键一个其它窗口的固定标签时
+ * `tab.windowId` 与该侧边栏所属窗口并不相同；而"是否使用选中集合"的判据是"这次菜单由侧边栏弹出"，
+ * 与被右键的是哪个标签无关（用户已确认：右键项不在选中集合里时同样复制全部已选）。
+ * 因此这里只用"新鲜度 + 菜单关闭即清空 + 复制后一次性消费"来界定生命周期。
+ *
+ * @param {{items?: Array<{title?: string, url?: string}>}} payload
+ */
+function setCopySelection(payload) {
+  const rawItems = payload && Array.isArray(payload.items) ? payload.items : [];
+  const items = rawItems
+    .map((item) => ({
+      title: item && item.title ? String(item.title) : "",
+      url: item && item.url ? String(item.url) : "",
+    }))
+    .filter((item) => item.title || item.url);
+  if (items.length === 0) {
+    copySelection = null;
+    return;
+  }
+  copySelection = { items, at: Date.now() };
+}
+
+/** 清空暂存的选中项（菜单关闭时调用；菜单不提供"这次是谁弹的"信息，只能整体作废）。 */
+function clearCopySelection() {
+  copySelection = null;
+}
+
+/**
+ * 按侧边栏的显示顺序把选中项拼成多行文本。
+ * 标题：为空回退 URL（与单标签口径一致）；链接：为空的行直接跳过——空行会让粘贴结果多出莫名其妙的空行。
+ */
+function buildCopyLines(items, kind) {
+  const lines = [];
+  (Array.isArray(items) ? items : []).forEach((item) => {
+    const url = item && item.url ? String(item.url) : "";
+    if (kind === "title") {
+      const title = item && item.title ? String(item.title) : "";
+      const line = title || url;
+      if (line) {
+        lines.push(line);
+      }
+      return;
+    }
+    if (url) {
+      lines.push(url);
+    }
+  });
+  return lines;
+}
+
+/**
+ * 计算本次复制要写入剪贴板的文本。
+ *
+ * 优先使用侧边栏推来的选中集合（未过期时）→ 多选模式下复制全部已选；
+ * 否则回退到被右键的那一个标签（Firefox 自带标签栏右键、单标签场景都走这条路径）。
+ * 命中集合时**立即清空**（一次性消费）：这次菜单的复制动作已完成，残留状态只会污染下一次弹出。
+ *
+ * @param {object} tab 被右键的标签（onClicked 的第二参）
+ * @param {"title"|"url"} kind 复制的是标题还是链接
+ */
+function takeCopyText(tab, kind) {
+  const stored = copySelection;
+  if (stored && Date.now() - stored.at <= COPY_SELECTION_TTL_MS) {
+    const lines = buildCopyLines(stored.items, kind);
+    copySelection = null;
+    // 集合非空但全被过滤（标题与 URL 都空）时也回退单标签，避免"点了没反应"。
+    if (lines.length > 0) {
+      return lines.join("\n");
+    }
+  }
+  return kind === "title" ? tabCopyTitle(tab) : tab && tab.url ? String(tab.url) : "";
+}
+
 /** 复制标签标题。 */
 async function copyTabTitle(tab) {
-  await writeClipboard(tabCopyTitle(tab), "复制标题");
+  await writeClipboard(takeCopyText(tab, "title"), "复制标题");
 }
 
 /** 复制标签链接。 */
 async function copyTabUrl(tab) {
-  const url = tab && tab.url ? String(tab.url) : "";
-  await writeClipboard(url, "复制链接");
+  await writeClipboard(takeCopyText(tab, "url"), "复制链接");
 }
 
 // ---------------------------------------------------------------------------
@@ -499,8 +588,10 @@ async function handleContextMenuClick(info, tab) {
 
 export {
   clearActionPopup,
+  clearCopySelection,
   handleContextMenuClick,
   handleContextMenuShown,
   handleWindowsChanged,
   rebuildContextMenus,
+  setCopySelection,
 };

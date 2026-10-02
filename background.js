@@ -24,10 +24,12 @@ import {
 } from "./background/discard.js";
 import {
   clearActionPopup,
+  clearCopySelection,
   handleContextMenuClick,
   handleContextMenuShown,
   handleWindowsChanged,
   rebuildContextMenus,
+  setCopySelection,
 } from "./background/context_menu.js";
 import {
   createList,
@@ -179,6 +181,15 @@ if (chrome.contextMenus.onShown) {
   });
 }
 
+// 菜单关闭即作废侧边栏推来的选中集合：原生菜单不告诉后台"这次是谁弹的"，
+// 因此只能在菜单生命周期结束时整体清空，再加上复制消费与 TTL 兜底（见 background/context_menu.js）。
+// onHidden 是 Firefox 才有的能力（与这组 tab 菜单项同一适用范围）。
+if (chrome.contextMenus.onHidden) {
+  chrome.contextMenus.onHidden.addListener(() => {
+    clearCopySelection();
+  });
+}
+
 chrome.alarms.onAlarm.addListener((alarm) => {
   handleDiscardAlarm(alarm);
   handleRecentAlarm(alarm);
@@ -280,6 +291,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .then((lists) => sendResponse({ ok: true, lists }))
       .catch((error) => sendResponse({ ok: false, error: String(error) }));
     return true;
+  }
+
+  // 侧边栏在弹出原生标签右键菜单前推来当前选中项，供「复制标题 / 复制链接」输出多行。
+  // 纯内存暂存、不做校验失败以外的处理：侧边栏只关心"推到了"，失败也无处提示（菜单已弹出）。
+  if (action === "setCopySelection") {
+    setCopySelection({ items: Array.isArray(message.items) ? message.items : [] });
+    sendResponse({ ok: true });
+    return false;
   }
 
   if (action === "saveTabs") {
