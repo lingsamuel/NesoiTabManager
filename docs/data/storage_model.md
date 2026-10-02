@@ -131,6 +131,13 @@
 - 用途：判断快照里的 `tabId`（`items[].i`）是否还在同一浏览器会话内可信。
 - 会话存储跨 SW 回收存活、浏览器重启即清空，因此"令牌一致"恰好等价于"仍是同一批 tabId"。
 
+### 树结构调试（treeDebugConfig / treeDebugLog）
+- `treeDebugConfig`（`storage.local`）：`{ enabled, printTree }`。管理页「插件设置 → 调试」写入；
+  后台经 `storage.onChanged` 立即生效。`printTree` 挂在 `enabled` 之下，总开关关掉时子开关一律视为关闭。
+- `treeDebugLog`（`storage.session`）：调试日志的环形缓冲（最近 800 条），随浏览器会话结束清空。
+  后台被回收后日志仍在，管理页「复制调试日志」据此整段取走。日志只含 id / 下标 / 父子关系 / 变化原因，
+  不含 URL；标签标题只在 `printTree` 打开时才附带。详见 `docs/ui/tree_style_tabs.md` 的「调试」。
+
 ### 树折叠状态（treeCollapsed）
 - 存放在 `chrome.storage.session` 的 `treeCollapsed` 键。
 - 结构：`{ [windowId]: [tabId, ...] }`。

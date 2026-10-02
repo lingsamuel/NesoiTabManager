@@ -492,9 +492,14 @@
         :settings-status="settingsStatus"
         :discard-config-status="discardConfigStatus"
         :recent-config-status="recentConfigStatus"
+        :debug-config="debugConfig"
+        :debug-config-status="debugConfigStatus"
         :on-save-ai-config="saveAiConfig"
         :on-save-discard-config="saveDiscardConfig"
         :on-save-recent-config="saveRecentConfig"
+        :on-save-debug-config="saveDebugConfig"
+        :on-copy-debug-log="copyDebugLog"
+        :on-clear-debug-log="clearDebugLog"
       />
     </main>
   </div>
@@ -578,6 +583,9 @@ const recentConfig = reactive({
   startupMaxGraceSec: 900,
 });
 const recentConfigStatus = reactive({ message: "", type: "" });
+// 树结构调试开关。默认全关；「打印树结构与变化原因」输出量很大，只在复现问题时打开。
+const debugConfig = reactive({ enabled: false, printTree: false });
+const debugConfigStatus = reactive({ message: "", type: "" });
 
 // 各标签列表页的筛选关键词状态（实时值 + 防抖后的过滤值），页面间相互独立。
 const windowsFilter = useFilterQuery();
@@ -1477,6 +1485,63 @@ async function saveSelectedTabs() {
   closeSaveModal();
 }
 
+/**
+ * 读取调试开关。
+ * 开关存在 storage.local 且由后台读取，因此这里只负责把它同步到界面。
+ */
+async function loadDebugConfig() {
+  const response = await request("getTreeDebugConfig");
+  if (!response || !response.ok) {
+    return;
+  }
+  const config = response.config || {};
+  debugConfig.enabled = Boolean(config.enabled);
+  debugConfig.printTree = Boolean(config.printTree);
+}
+
+async function saveDebugConfig() {
+  const response = await request("saveTreeDebugConfig", {
+    config: { enabled: Boolean(debugConfig.enabled), printTree: Boolean(debugConfig.printTree) },
+  });
+  if (!response || !response.ok) {
+    debugConfigStatus.message = (response && response.error) || "保存失败。";
+    debugConfigStatus.type = "error";
+    return;
+  }
+  const config = response.config || {};
+  debugConfig.enabled = Boolean(config.enabled);
+  debugConfig.printTree = Boolean(config.printTree);
+  debugConfigStatus.message = debugConfig.enabled
+    ? `调试已开启${debugConfig.printTree ? "（含树结构与变化原因）" : ""}。请在扩展后台控制台查看 [Nesoi树·…] 开头的日志。`
+    : "调试已关闭。";
+  debugConfigStatus.type = "ok";
+}
+
+/** 把后台缓冲的调试日志整段复制到剪贴板，便于直接贴出来核对。 */
+async function copyDebugLog() {
+  const response = await request("getTreeDebugLog");
+  const text = (response && response.text) || "";
+  if (!text) {
+    debugConfigStatus.message = "还没有日志：请先开启调试并复现一次。";
+    debugConfigStatus.type = "error";
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    debugConfigStatus.message = `已复制 ${text.split("\n").length} 行调试日志。`;
+    debugConfigStatus.type = "ok";
+  } catch (error) {
+    debugConfigStatus.message = `复制失败（浏览器拒绝了剪贴板访问）：${String(error && error.message ? error.message : error)}`;
+    debugConfigStatus.type = "error";
+  }
+}
+
+async function clearDebugLog() {
+  await request("clearTreeDebugLog");
+  debugConfigStatus.message = "调试日志已清空。";
+  debugConfigStatus.type = "ok";
+}
+
 onMounted(async () => {
   if (isOverlay.value) {
     await loadLists();
@@ -1493,6 +1558,7 @@ onMounted(async () => {
   await loadAiConfig();
   await loadDiscardConfig();
   await loadRecentConfig();
+  await loadDebugConfig();
   await loadRecentTabs();
 });
 </script>

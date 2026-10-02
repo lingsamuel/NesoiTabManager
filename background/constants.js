@@ -33,4 +33,8 @@ export const TREE_FLUSH_ALARM = "treeFlush";
 // closedGroups 记本插件自己发起的批量关闭（供「撤销关闭」整组恢复）。
 export const CLOSED_LOG_KEY = "closedTabLog";
 export const CLOSED_GROUPS_KEY = "closedGroups";
+// 树结构调试开关：{ enabled, printTree }。放 storage.local，跨浏览器重启保留，便于持续排查。
+export const TREE_DEBUG_KEY = "treeDebugConfig";
+// 调试日志的环形缓冲：放 storage.session，后台被回收后日志仍在，供管理页取走。
+export const TREE_DEBUG_LOG_KEY = "treeDebugLog";
 export const HAS_SESSION_STORAGE = Boolean(chrome.storage && chrome.storage.session);

@@ -198,7 +198,7 @@ export function getDepth(state, tabId, cache = null) {
  * 整条链都没有存活祖先才落顶层（父标签必须真实存在是硬性不变量）。
  * 与快照对齐里的 findNearestAliveAncestor、关闭标签时的 applyRemovePromotion 同一语义。
  */
-export function sanitizeTreeState(state, orderedTabIds, pinnedIds = null) {
+export function sanitizeTreeState(state, orderedTabIds, pinnedIds = null, onRepair = null) {
   const indexById = new Map();
   for (let i = 0; i < orderedTabIds.length; i += 1) {
     indexById.set(orderedTabIds[i], i);
@@ -206,6 +206,12 @@ export function sanitizeTreeState(state, orderedTabIds, pinnedIds = null) {
   // 「已不在本窗口的父」→ 最近的存活祖先。一次校验里会被大量复用：没有它时，
   // 一长串已关闭的父会让每个子标签都把父链重走一遍，退化成 O(n²)。
   const liveAncestorCache = new Map();
+  // 每次改写都带上原因：调试模式下要能回答"这个标签为什么换了父"。
+  const report = (tabId, from, to, reason) => {
+    if (typeof onRepair === "function") {
+      onRepair({ tabId, from: from == null ? null : from, to: to == null ? null : to, reason });
+    }
+  };
   let repaired = 0;
   for (let i = 0; i < orderedTabIds.length; i += 1) {
     const tabId = orderedTabIds[i];
@@ -236,7 +242,13 @@ export function sanitizeTreeState(state, orderedTabIds, pinnedIds = null) {
       resolved = next == null ? null : nearestLiveAncestor(state, next, indexById, liveAncestorCache);
       guard += 1;
     }
+    const reason = parentIndex < 0
+      ? "父标签已不在本窗口"
+      : isPinnedParent
+        ? "父标签是固定标签"
+        : "父标签排在自己之后（物理顺序不合法）";
     state.parentById.set(tabId, resolved == null ? null : resolved);
+    report(tabId, parentId, resolved, reason);
     repaired += 1;
   }
   // 第二趟：固定标签一律顶层（放在解析之后，理由见上）。
@@ -247,6 +259,7 @@ export function sanitizeTreeState(state, orderedTabIds, pinnedIds = null) {
         continue;
       }
       if (state.parentById.has(tabId) && state.parentById.get(tabId) != null) {
+        report(tabId, state.parentById.get(tabId), null, "固定标签不能有父标签");
         state.parentById.set(tabId, null);
         repaired += 1;
       }
@@ -370,14 +383,15 @@ function pickInitialParent(tab, index, indexById, pinnedIds, activeTabId) {
  *      才收到 tabs.onRemoved，内存里没有树可改），此时沿快照的父链向上找最近的存活祖先，
  *      与关闭标签时的 promote intelligently 一致，避免整棵子树被凭空抬成顶层。
  *
- * @param {{activeTabId?: number|null, sessionToken?: string}} options
+ * @param {{activeTabId?: number|null, sessionToken?: string, onRepair?: Function}} options
  *   sessionToken 由后台从 `storage.session` 读出；只有它与快照里的 `sid` 一致时才信任 `i`。
+ *   onRepair 是调试回调：不变量校验改写了哪个标签的父、原因是什么（见「调试」）。
  * @returns {{state: object, exact: boolean, matched: number, added: number, removed: number}}
  *   exact 为 true 表示快照与实际完全一一对应、未使用任何兜底推断，且快照里的 URL 仍然准确
  *   （URL 是跨重启唯一的配对依据，导航过就必须回写）——此时无需回写磁盘。
  */
 export function alignSnapshotToTabs(orderedTabs, snapshot, options = {}) {
-  const { activeTabId = null, sessionToken = "" } = options;
+  const { activeTabId = null, sessionToken = "", onRepair = null } = options;
   const total = orderedTabs.length;
   const items = snapshot && Array.isArray(snapshot.items) ? snapshot.items : [];
 
@@ -619,7 +633,8 @@ export function alignSnapshotToTabs(orderedTabs, snapshot, options = {}) {
   const repaired = sanitizeTreeState(
     state,
     orderedTabs.map((tab) => tab.id),
-    pinnedIds
+    pinnedIds,
+    onRepair
   );
   const removed = items.length - matchedCount;
   return {
@@ -634,6 +649,8 @@ export function alignSnapshotToTabs(orderedTabs, snapshot, options = {}) {
     matched: matchedCount,
     added,
     removed,
+    // 被不变量校验改写的父子关系数量（调试日志用：>0 说明这次重建动过结构）。
+    repaired,
   };
 }
 
@@ -843,9 +860,11 @@ function byteLength(text) {
  * - 其余：C[0] 挂到 P 下接替 T，C[1..] 挂到 C[0] 下。
  * 之所以在"唯一子标签"时提升全部，是为了让整棵子树原地接替，避免凭空多出一层缩进。
  *
+ * @param {null|((info: object) => void)} onDecision 调试回调：报告本次提升用的是哪条规则、
+ *   以及每个子标签最终挂到了谁（见 docs/ui/tree_style_tabs.md 的「调试」）。
  * @returns {number} 被重新挂载的子标签数量
  */
-export function applyRemovePromotion(state, removedId) {
+export function applyRemovePromotion(state, removedId, onDecision = null) {
   const parentId = state.parentById.has(removedId) ? state.parentById.get(removedId) : null;
   // childIdsById 只是索引：以 parentById 为准过滤一次。索引里可能残留"其实已经不是它的子"的
   // 标签（任何绕过 setParent 的直接写都会造成），不过滤就会把它们当成子标签提升进树——
@@ -862,10 +881,23 @@ export function applyRemovePromotion(state, removedId) {
     : (state.childIdsById.has(parentId)
       ? state.childIdsById.get(parentId).filter((id) => id !== removedId && state.parentById.get(id) === parentId).length
       : 0);
+  const report = (rule, assignments) => {
+    if (typeof onDecision === "function") {
+      onDecision({
+        removedId,
+        parentId,
+        children: children.slice(),
+        siblingCountBefore,
+        rule,
+        assignments,
+      });
+    }
+  };
 
   dropTab(state, removedId);
 
   if (children.length === 0) {
+    report("no-children", []);
     return 0;
   }
 
@@ -873,6 +905,7 @@ export function applyRemovePromotion(state, removedId) {
     for (const childId of children) {
       setParent(state, childId, parentId);
     }
+    report("only-child-of-parent", children.map((childId) => ({ childId, parentId })));
     return children.length;
   }
 
@@ -881,6 +914,10 @@ export function applyRemovePromotion(state, removedId) {
   for (const childId of rest) {
     setParent(state, childId, firstChild);
   }
+  report(parentId == null ? "closed-was-root" : "first-child-takes-place", [
+    { childId: firstChild, parentId },
+    ...rest.map((childId) => ({ childId, parentId: firstChild })),
+  ]);
   return children.length;
 }
 
@@ -892,7 +929,8 @@ export function applyRemovePromotion(state, removedId) {
  * - 传入的 prevTabId / nextTabId 是**移动之后**紧邻该标签的前后标签（同窗口、非固定）；
  * - state 中已包含旧父信息（即该标签移动前的树，且尚未应用新位置）。
  *
- * @returns {{parentId: number|null, invalid: boolean, unchanged: boolean}}
+ * @returns {{parentId: number|null, invalid: boolean, unchanged: boolean, reason: string}}
+ *   reason 是命中的规则名（调试用，便于回答"这个标签为什么换了父"）。
  */
 export function inferParentFromNewPosition(params) {
   const {
@@ -916,19 +954,22 @@ export function inferParentFromNewPosition(params) {
     : (state.parentById.has(nextTabId) ? state.parentById.get(nextTabId) : null);
 
   if (oldParentId == null && (prevTabId == null || nextParentId == null)) {
-    return { parentId: null, invalid: false, unchanged: true };
+    return { parentId: null, invalid: false, unchanged: true, reason: "顶层标签保持顶层" };
   }
 
   let newParentId = oldParentId;
   let changed = false;
+  let reason = "未命中任何规则（保持原父）";
 
   if (oldParentId != null && prevTabId != null && oldParentId === prevTabId) {
     // 紧跟在原父标签之后：维持原有挂载，不因位置的细微变化反复改树。
     newParentId = oldParentId;
+    reason = "紧跟在原父之后，保持原父";
   } else if (prevTabId == null) {
     // 移到最前 → 顶层。
     newParentId = null;
     changed = oldParentId != null;
+    reason = "移到最前 → 顶层";
   } else if (nextTabId == null) {
     // 移到最后：只有当前一个标签的父标签仍在自己的祖先链上时才保持挂载，否则脱离成顶层。
     newParentId = null;
@@ -943,10 +984,12 @@ export function inferParentFromNewPosition(params) {
       guard += 1;
     }
     changed = newParentId !== oldParentId;
+    reason = newParentId == null ? "移到末尾且原父不在前一个标签的祖先链上 → 顶层" : "移到末尾，前一个标签的父仍在祖先链上 → 保持该父";
   } else if (prevParentId === nextParentId) {
     // 移入已有树中间：与两侧同级。
     newParentId = prevParentId;
     changed = newParentId !== oldParentId;
+    reason = "两侧邻居同父 → 与它们同级";
   } else if (
     getDepth(state, prevTabId, depthCache) > getDepth(state, nextTabId, depthCache) &&
     nextParentId !== movedTabId
@@ -956,6 +999,7 @@ export function inferParentFromNewPosition(params) {
     const delta = Math.abs(toIndex - fromIndex);
     newParentId = delta < 2 ? prevParentId : (oldParentId != null ? oldParentId : nextParentId);
     changed = newParentId !== oldParentId;
+    reason = delta < 2 ? "移到某棵子树末尾（位移<2，按键盘/程序移动处理）→ 前一个标签的父" : "移到某棵子树末尾（拖拽）→ 优先保留原父";
   } else if (
     getDepth(state, prevTabId, depthCache) < getDepth(state, nextTabId, depthCache) &&
     nextParentId === prevTabId
@@ -963,6 +1007,7 @@ export function inferParentFromNewPosition(params) {
     // 移到已有树的首个子位置。
     newParentId = prevTabId;
     changed = newParentId !== oldParentId;
+    reason = "移到某棵已有树的首个子位置 → 前一个标签";
   }
 
   // 环校验：新父不能是自己或自己的后代，否则视为无效移动（不修改树）。
@@ -970,10 +1015,10 @@ export function inferParentFromNewPosition(params) {
     newParentId != null &&
     (newParentId === movedTabId || isDescendantOf(state, movedTabId, newParentId))
   ) {
-    return { parentId: oldParentId, invalid: true, unchanged: false };
+    return { parentId: oldParentId, invalid: true, unchanged: false, reason: "新父是自己或自己的后代 → 无效移动，不改树" };
   }
 
-  return { parentId: newParentId, invalid: false, unchanged: !changed };
+  return { parentId: newParentId, invalid: false, unchanged: !changed, reason };
 }
 
 /**

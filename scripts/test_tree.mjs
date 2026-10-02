@@ -713,6 +713,45 @@ async function main() {
   core.applyRemovePromotion(leakState, 2);
   assertEqual(leakState.parentById.get(3), null, "16：关闭 B 不会把顶层 C 提升到 A 下");
 
+  // --- 场景 17：调试模式（打印树结构与变化原因）---
+  // 用户要能凭日志回答"这个标签为什么换了父"，因此这里断言一次关闭的完整现场：
+  // 关闭前的树、每条变化的原因（含用到的规则）、关闭后的树、前后差异。
+  console.log("场景 17：调试模式打印关闭前后的树与变化原因");
+  const debug = await import("../background/tree_debug.js");
+  const a17 = addTab({ windowId: 21, url: "https://a17.example.com/", title: "A17" });
+  const b17 = addTab({ windowId: 21, url: "https://b17.example.com/", title: "B17", openerTabId: a17.id });
+  const c17 = addTab({ windowId: 21, url: "https://c17.example.com/", title: "C17", openerTabId: b17.id });
+  await tree.handleTreeTabCreated(a17);
+  await tree.handleTreeTabCreated(b17);
+  await tree.handleTreeTabCreated(c17);
+  await tick(10);
+  // 关键：必须先把窗口 21 的树加载进内存，否则关闭事件会被判成"内存里没有树"（那也是一种要打印的情况）。
+  await tree.getTreeStructure([21]);
+  debug.clearTreeDebugLog();
+  debug.applyTreeDebugConfig({ enabled: true, printTree: true });
+  tree.beginTreeCloseDebug(b17.id, { windowId: 21 });
+  tabs = tabs.filter((tab) => tab.id !== b17.id);
+  reindex();
+  tree.handleTreeTabRemoved(b17.id, { windowId: 21, isWindowClosing: false });
+  tree.endTreeCloseDebug();
+  const debugText = debug.getTreeDebugLogText();
+  assertEqual(debugText.includes("关闭前的树"), true, "17：日志含关闭前的树");
+  assertEqual(debugText.includes("变化原因"), true, "17：日志含变化原因段落");
+  assertEqual(debugText.includes("提升 #"), true, "17：日志说明了提升的是哪个标签");
+  assertEqual(debugText.includes("规则："), true, "17：日志说明了命中的提升规则");
+  assertEqual(debugText.includes("关闭后的树"), true, "17：日志含关闭后的树");
+  assertEqual(debugText.includes(`#${c17.id}`), true, "17：日志里能看到被提升的子标签");
+  const after17 = await tree.getTreeStructure([21]);
+  assertEqual(after17.structures[21].parents[c17.id], a17.id, "17：前提——唯一子标签被提升到祖父");
+
+  // 关掉调试后不得再产生日志（默认全关，避免影响正常使用）
+  debug.clearTreeDebugLog();
+  debug.applyTreeDebugConfig({ enabled: false, printTree: false });
+  tree.beginTreeCloseDebug(b17.id, { windowId: 21 });
+  tree.handleTreeTabRemoved(a17.id, { windowId: 21, isWindowClosing: false });
+  tree.endTreeCloseDebug();
+  assertEqual(debug.getTreeDebugLogText(), "", "17：调试关闭后不产生任何日志");
+
   console.log("");
   console.log(`共 ${checks} 项断言，失败 ${failures} 项`);
   if (failures > 0) {

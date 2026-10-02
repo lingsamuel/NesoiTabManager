@@ -28,6 +28,14 @@ import {
 } from "./storage.js";
 import { delay } from "./utils.js";
 import {
+  formatTreeState,
+  diffTreeStates,
+  isTreeDebugPrintEnabled,
+  logFlow,
+  logTree,
+  logTreeBlock,
+} from "./tree_debug.js";
+import {
   alignSnapshotToTabs,
   applyRemovePromotion,
   buildChildIndex,
@@ -131,6 +139,88 @@ let changesSinceFlush = 0;
 let flushInProgress = false;
 const moduleStartedAt = Date.now();
 let recentStructuralEvents = [];
+
+// ---------------------------------------------------------------------------
+// 调试：树状态快照与"本次关闭"的变化原因收集
+// ---------------------------------------------------------------------------
+//
+// 设计取舍：变化原因由具体的算法/事件分支在**发生的那一刻**记录（提升规则、不变量修正、
+// 位置推断……），这里只负责"归拢到一次关闭的前后对比里"。之所以围绕"一次关闭"组织，
+// 是因为用户能稳定复现的入口就是关闭标签：打印关闭前的树 → 变化原因 → 关闭后的树，
+// 足以验证"到底是谁动了层级"。
+
+// 当前正在记录的关闭调试会话（同一时刻只可能有一次关闭在处理）。
+let activeCloseDebug = null;
+
+/** 取某窗口内存树的调试快照（没有内存树时返回 null）。 */
+export function captureTreeDebugState(windowId) {
+  const tree = trees.get(Number(windowId));
+  if (!tree) {
+    return null;
+  }
+  const entries = [];
+  for (const [id, parentId] of tree.parentById) {
+    entries.push({
+      id: Number(id),
+      parentId: parentId == null ? null : Number(parentId),
+      index: tree.indexById && tree.indexById.has(id) ? tree.indexById.get(id) : -1,
+    });
+  }
+  return { windowId: Number(windowId), at: Date.now(), entries };
+}
+
+/**
+ * 记录一条"树为什么变了"。调试会话进行中则并入本次关闭的汇总，否则立刻单独打印。
+ * 注意：必须在变化发生**之后**调用（报告的是结果），并且不要传用户数据。
+ */
+export function noteTreeChangeReason(text) {
+  if (activeCloseDebug) {
+    activeCloseDebug.reasons.push(text);
+    return;
+  }
+  logTree(`[事件] ${text}`);
+}
+
+/** 关闭标签前调用：抓住"关闭前"的树，并开启原因收集。 */
+export function beginTreeCloseDebug(tabId, removeInfo = {}) {
+  if (!isTreeDebugPrintEnabled()) {
+    return null;
+  }
+  const windowId = Number(removeInfo.windowId);
+  const before = captureTreeDebugState(windowId);
+  activeCloseDebug = {
+    tabId: Number(tabId),
+    windowId,
+    before,
+    reasons: [],
+    hadTree: Boolean(before),
+  };
+  return activeCloseDebug;
+}
+
+/** 关闭标签的处理链走完后调用：打印"关闭前树 + 变化原因 + 关闭后树"。 */
+export function endTreeCloseDebug() {
+  const session = activeCloseDebug;
+  if (!session) {
+    return;
+  }
+  activeCloseDebug = null;
+  const after = captureTreeDebugState(session.windowId);
+  const lines = [];
+  lines.push(
+    `===== 关闭标签 #${session.tabId}（窗口 ${session.windowId}）=====` +
+      (session.hadTree ? "" : " · 关闭时内存里没有这棵树")
+  );
+  lines.push(`--- 关闭前的树（${session.before ? session.before.entries.length : 0} 个标签）---`);
+  lines.push(formatTreeState(session.before));
+  lines.push("--- 变化原因 ---");
+  lines.push(session.reasons.length > 0 ? session.reasons.map((item, index) => `${index + 1}. ${item}`).join("\n") : "（没有产生任何结构性变化）");
+  lines.push(`--- 关闭后的树（${after ? after.entries.length : 0} 个标签）---`);
+  lines.push(formatTreeState(after));
+  lines.push("--- 前后差异 ---");
+  lines.push(diffTreeStates(session.before, after).join("\n"));
+  logTreeBlock("", lines);
+}
 
 // ---------------------------------------------------------------------------
 // 对外初始化
@@ -448,7 +538,14 @@ async function loadTree(windowId) {
     storageGet(`${TREE_KEY_PREFIX}${windowId}`),
     getTreeSessionToken(),
   ]);
-  const result = alignSnapshotToTabs(tabs, snapshot || null, { sessionToken });
+  const snapshotItems = snapshot && Array.isArray(snapshot.items) ? snapshot.items : [];
+  const sidMatches = Boolean(sessionToken) && Boolean(snapshot) && snapshot.sid === sessionToken;
+  // 调试：重建来源是排查"层级为何变化"的第一现场，必须说清用了哪条身份依据。
+  const repairs = [];
+  const result = alignSnapshotToTabs(tabs, snapshot || null, {
+    sessionToken,
+    onRepair: (info) => repairs.push(info),
+  });
   const state = {
     windowId,
     parentById: result.state.parentById,
@@ -459,6 +556,17 @@ async function loadTree(windowId) {
   };
   rebuildIndexes(state, tabs);
   trees.set(windowId, state);
+  logFlow(
+    `重建窗口 ${windowId}：标签 ${tabs.length}，` +
+      `快照 ${snapshotItems.length > 0 ? `有(${snapshotItems.length} 项，sid${sidMatches ? "一致→按 tabId 精确配对" : "不一致→按顺序+URL 猜测"})` : "无→只能按 opener 建树"}，` +
+      `匹配 ${result.matched} 新增 ${result.added} 修正 ${result.repaired} exact=${result.exact}`
+  );
+  if (repairs.length > 0) {
+    logTreeBlock(
+      `[重建时的不变量修正] 窗口 ${windowId} 共 ${repairs.length} 条`,
+      repairs.map((item) => `#${item.tabId}：父 ${item.from ?? "顶层"} → ${item.to ?? "顶层"}（${item.reason}）`)
+    );
+  }
   if (!result.exact) {
     // 快照与实际不一致（首次使用、或恢复后结构有变化）：需要回写一次纠正后的结构。
     markDirty(windowId);
@@ -662,6 +770,7 @@ export async function handleTreeTabCreated(tab) {
     }
     // 其余情况推迟到稍后统一对齐，避免一次开很多标签时反复做 O(n) 对齐。
     // "顶层"由对齐时的 opener 兜底自然满足（该标签没有 opener）。
+    noteTreeChangeReason(`新建 #${Number(tab.id)}：内存里没有树 → 推迟到统一对齐（父关系由 opener 兜底）`);
     scheduleEnsureTrees([windowId]);
     return;
   }
@@ -672,8 +781,12 @@ export async function handleTreeTabCreated(tab) {
     const placedParentId = placement.parentId;
     if (placedParentId !== null && tree.parentById.has(placedParentId)) {
       setParent(tree, createdId, placedParentId);
+      noteTreeChangeReason(`新建 #${createdId}：按插件落位标记挂到 #${placedParentId}（本插件主动创建）`);
     } else {
       attachAsRoot(tree, createdId);
+      noteTreeChangeReason(
+        `新建 #${createdId}：插件落位标记要求顶层${placedParentId !== null ? `（但目标父 #${placedParentId} 已不在树里）` : ""}`
+      );
     }
     const forcedIndex = Number(tab.index);
     if (Number.isFinite(forcedIndex)) {
@@ -696,8 +809,14 @@ export async function handleTreeTabCreated(tab) {
   const parentId = await pickParentForNewTab(tree, tab);
   if (parentId != null) {
     setParent(tree, Number(tab.id), parentId);
+    noteTreeChangeReason(
+      `新建 #${Number(tab.id)}：挂到 #${parentId}（` +
+        (Number(tab.openerTabId) === Number(parentId) ? "合法 openerTabId" : "创建时刻的活动标签") +
+        `）`
+    );
   } else if (!tree.parentById.has(Number(tab.id))) {
     tree.parentById.set(Number(tab.id), null);
+    noteTreeChangeReason(`新建 #${Number(tab.id)}：没有可用父标签（opener 与活动标签都不合法）→ 顶层`);
   }
   const atIndex = Number(tab.index);
   if (Number.isFinite(atIndex)) {
@@ -755,6 +874,7 @@ export function handleTreeTabRemoved(tabId, removeInfo = {}) {
   }
   if (startupActive) {
     pendingWindows.add(windowId);
+    noteTreeChangeReason(`关闭 #${tabId}：处于启动静默期 → 本次结构变化推迟到静默期结束后整体重建`);
     return;
   }
   const tree = trees.get(windowId);
@@ -766,14 +886,25 @@ export function handleTreeTabRemoved(tabId, removeInfo = {}) {
     // 因此这里挂到正在进行的加载上，等树装好后再补做一次提升，语义与关闭时就地提升完全一致。
     const loading = loadingTrees.get(windowId);
     if (loading) {
+      noteTreeChangeReason(`关闭 #${tabId}：内存里没有树，但有一次加载正在进行 → 挂到它上面，装好后补做提升`);
       loading.then(
         () => {
           const loaded = trees.get(windowId);
           if (loaded) {
             applyRemovalToTree(loaded, tabId, windowId);
+            logTreeBlock(`[加载完成后补做的提升] 窗口 ${windowId}`, [
+              formatTreeState(captureTreeDebugState(windowId)),
+            ]);
           }
         },
         () => {}
+      );
+    } else {
+      // 必须把"事件被丢弃"说清楚：后续任何一次重建都会从快照重新推导，
+      // 而快照里这个已关闭的标签还在，子标签的归属就由对齐算法决定。
+      noteTreeChangeReason(
+        `关闭 #${tabId}：内存里没有树、也没有进行中的加载 → 本次关闭就地丢弃；` +
+          `下一次重建会从快照推导（快照里这个标签仍在，其子标签的归属由对齐算法决定）`
       );
     }
     return;
@@ -790,12 +921,27 @@ export function handleTreeTabRemoved(tabId, removeInfo = {}) {
 function applyRemovalToTree(tree, tabId, windowId) {
   const id = Number(tabId);
   if (!tree.parentById.has(id)) {
+    noteTreeChangeReason(`关闭 #${id}：它已经不在内存树里（多半是加载发生在关闭之后）→ 无需提升`);
     return;
   }
   tree.indexById.delete(id);
   // 提升"第一个子标签"前先按物理顺序排序，保证结果确定且符合直觉。
   sortChildrenByIndex(tree, id);
-  applyRemovePromotion(tree, id);
+  applyRemovePromotion(tree, id, (info) => {
+    const ruleText = {
+      "no-children": "该标签没有子标签 → 无需提升",
+      "only-child-of-parent": "它是父标签的唯一子标签 → 子标签全部接到父标签下",
+      "first-child-takes-place": "父标签还有其他子标签 → 第一个子标签接替它的位置，其余挂到第一个子标签下",
+      "closed-was-root": "它自己就是顶层标签 → 第一个子标签接替为顶层，其余挂到第一个子标签下",
+    }[info.rule] || info.rule;
+    const assignmentText = info.assignments.length > 0
+      ? info.assignments.map((item) => `#${item.childId}→${item.parentId ?? "顶层"}`).join("，")
+      : "无";
+    noteTreeChangeReason(
+      `提升 #${id}：父=${info.parentId ?? "顶层"}，子标签=[${info.children.map((child) => `#${child}`).join(",") || "无"}]，` +
+        `同父其他子标签数=${info.siblingCountBefore}｜规则：${ruleText}｜结果：${assignmentText}`
+    );
+  });
   markDirty(windowId);
 }
 
@@ -839,9 +985,19 @@ export async function handleTreeTabMoved(tabId, moveInfo = {}) {
     depthCache: new Map(),
   });
   if (result.invalid || result.unchanged) {
+    // 无效移动不改树；"判定为没变"也要记录，否则调试时会以为移动事件没到。
+    noteTreeChangeReason(
+      `位置推断 #${tabId}（idx ${fromIndex}→${toIndex}）：${result.reason}｜` +
+        `前一个=#${prevTab ? prevTab.id : "无"}，后一个=#${nextTab ? nextTab.id : "无"}｜${result.invalid ? "无效移动，不改树" : "结果与原来相同，不改树"}`
+    );
     return;
   }
+  const oldParentId = tree.parentById.has(Number(tabId)) ? tree.parentById.get(Number(tabId)) : null;
   setParent(tree, Number(tabId), result.parentId);
+  noteTreeChangeReason(
+    `位置推断 #${tabId}（idx ${fromIndex}→${toIndex}）：父 ${oldParentId ?? "顶层"} → ${result.parentId ?? "顶层"}｜` +
+      `规则：${result.reason}｜前一个=#${prevTab ? prevTab.id : "无"}，后一个=#${nextTab ? nextTab.id : "无"}`
+  );
   markDirty(windowId);
 }
 
@@ -1093,14 +1249,27 @@ async function flushDirtyWindows() {
           pinnedIds.add(Number(tab.id));
         }
       }
-      sanitizeTreeState(tree, orderedIds, pinnedIds);
+      // 落盘时的纠偏会**静默**改写内存树（用户看不到任何刷新），是排查"层级自己变了"的重点，
+      // 因此每一条修正都要带原因打出来。
+      const flushRepairs = [];
+      sanitizeTreeState(tree, orderedIds, pinnedIds, (info) => flushRepairs.push(info));
       rebuildIndexes(tree, tabs);
       const result = encodeSnapshot(tabs, tree, { maxBytes: SNAPSHOT_MAX_BYTES, sessionToken });
+      if (flushRepairs.length > 0) {
+        logTreeBlock(
+          `[落盘前的不变量修正] 窗口 ${windowId} 共 ${flushRepairs.length} 条`,
+          flushRepairs.map((item) => `#${item.tabId}：父 ${item.from ?? "顶层"} → ${item.to ?? "顶层"}（${item.reason}）`)
+        );
+      }
       if (!result.payload) {
+        logFlow(`落盘窗口 ${windowId}：跳过（快照超出上限，${result.bytes} 字节）`);
         console.warn(`树结构快照超出存储上限，已跳过写入：窗口 ${windowId}`);
         continue;
       }
       await storageSet({ [`${TREE_KEY_PREFIX}${windowId}`]: result.payload });
+      logFlow(
+        `落盘窗口 ${windowId}：写入 ${tabs.length} 项（${result.bytes} 字节${result.degraded ? "，已去掉标题" : ""}）`
+      );
       index[windowId] = Date.now();
       indexChanged = true;
     }
@@ -1497,16 +1666,31 @@ export function applyRestoredParent(windowId, tabId, parentId, options = {}) {
     return tree.indexById.get(targetId) ?? -1;
   };
   let target = parentId === null || parentId === undefined ? null : Number(parentId);
-  if (target !== null &&
-      (!Number.isFinite(target) ||
-        options.childPinned ||
-        target === id ||
-        !tree.parentById.has(target) ||
-        isDescendantOf(tree, id, target) ||
-        indexOf(target) >= indexOf(id))) {
+  // 拒绝原因要能被调试日志看见：撤销关闭"层级没恢复"时，第一步就是确认父标签是不是被这里否掉。
+  let rejectedReason = "";
+  if (target !== null) {
+    if (!Number.isFinite(target)) {
+      rejectedReason = "父标签参数无效";
+    } else if (options.childPinned) {
+      rejectedReason = "被恢复的标签是固定标签";
+    } else if (target === id) {
+      rejectedReason = "父标签是自己";
+    } else if (!tree.parentById.has(target)) {
+      rejectedReason = "父标签不在树上（可能已被关闭）";
+    } else if (isDescendantOf(tree, id, target)) {
+      rejectedReason = "父标签是自己的后代（会成环）";
+    } else if (indexOf(target) >= indexOf(id)) {
+      rejectedReason = `父标签排在它之后（idx ${indexOf(target)} >= ${indexOf(id)}）`;
+    }
+  }
+  if (rejectedReason) {
     target = null;
   }
   setParent(tree, id, target);
+  noteTreeChangeReason(
+    `恢复父关系 #${id}：记录里的父=${parentId === null || parentId === undefined ? "顶层" : `#${parentId}`} → ` +
+      (rejectedReason ? `退化为顶层（${rejectedReason}）` : `#${target}`)
+  );
   markDirty(windowId);
   return true;
 }

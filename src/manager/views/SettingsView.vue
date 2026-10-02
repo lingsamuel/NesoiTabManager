@@ -238,6 +238,47 @@
         </div>
       </div>
     </section>
+    <section class="panel">
+      <div class="panel-header">
+        <h2>调试</h2>
+      </div>
+      <div class="settings-grid">
+        <div class="form-row checkbox-row full">
+          <label>
+            <input type="checkbox" v-model="debugConfig.enabled" />
+            调试模式（把树结构的关键流程写入后台日志）
+          </label>
+        </div>
+        <div class="form-row checkbox-row full">
+          <label :class="{ disabled: !debugConfig.enabled }">
+            <input type="checkbox" v-model="debugConfig.printTree" :disabled="!debugConfig.enabled" />
+            打印树结构与变化原因（关闭标签时打印：关闭前的树 → 每条变化的原因 → 关闭后的树）
+          </label>
+        </div>
+        <div class="form-row full">
+          <div class="hint">
+            日志输出在扩展后台控制台（about:debugging → 本扩展 → 检查 → 控制台）。
+            第二条开关会打印标签标题以便人工对照，属于用户数据，排查完请关掉。
+            另外最近若干行会留在会话存储里，可以直接点「复制调试日志」整段贴出来。
+          </div>
+        </div>
+        <div class="form-row full">
+          <button class="primary btn-icon" @click="onSaveDebugConfig">
+            <span class="icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path d="M6 20h12V8l-4-4H6zM9 20v-6h6v6" />
+              </svg>
+            </span>
+            保存配置
+          </button>
+          <button class="ghost btn-icon" @click="onCopyDebugLog">复制调试日志</button>
+          <button class="ghost btn-icon" @click="onClearDebugLog">清空日志</button>
+        </div>
+        <div class="form-row full">
+          <div class="status" :class="debugConfigStatus.type">{{ debugConfigStatus.message }}</div>
+        </div>
+      </div>
+    </section>
   </section>
 </template>
 
@@ -255,6 +296,10 @@ defineProps({
     type: Object,
     default: () => ({}),
   },
+  debugConfig: {
+    type: Object,
+    default: () => ({}),
+  },
   settingsStatus: {
     type: Object,
     default: () => ({ message: "", type: "" }),
@@ -267,6 +312,10 @@ defineProps({
     type: Object,
     default: () => ({ message: "", type: "" }),
   },
+  debugConfigStatus: {
+    type: Object,
+    default: () => ({ message: "", type: "" }),
+  },
   onSaveAiConfig: {
     type: Function,
     default: null,
@@ -276,6 +325,18 @@ defineProps({
     default: null,
   },
   onSaveRecentConfig: {
+    type: Function,
+    default: null,
+  },
+  onSaveDebugConfig: {
+    type: Function,
+    default: null,
+  },
+  onCopyDebugLog: {
+    type: Function,
+    default: null,
+  },
+  onClearDebugLog: {
     type: Function,
     default: null,
   },
