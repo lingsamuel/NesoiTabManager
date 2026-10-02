@@ -663,6 +663,83 @@ async function main() {
   assertEqual(retryRestore.ok, true, "重试后恢复成功");
   assertEqual(retryRestore.restored, 2, "两个标签都回来了");
 
+  // --- 场景 11：树尚未加载时创建的标签，也必须写下每标签会话值 ---
+  // 触发条件：后台刚被回收。标签创建的树加载防抖是 500ms，而会话值刷新防抖是 250ms，
+  // 旧实现在这个空档里从内存树读不到父标签 → 静默不写。
+  // 后果：该标签永远没有会话值，之后用原生 Ctrl+Shift+T 恢复它时判不出原父，只能落顶层。
+  console.log("场景 11：树尚未加载时也要补写每标签会话值");
+  chrome.sessions.setTabValue = chromeSessions.setTabValue;
+  chrome.sessions.getTabValue = chromeSessions.getTabValue;
+  windows.push({ id: 3 });
+  const w3root = addTab({ windowId: 3, url: "https://w3-root.example/", title: "W3R" });
+  const w3leaf = addTab({
+    windowId: 3,
+    url: "https://w3-leaf.example/",
+    openerTabId: w3root.id,
+    title: "W3L",
+  });
+  await emitAsync(listeners.created, { ...w3leaf }); // 走真实接线：树处理 + handleTabStructureChanged
+  await tick(400); // 等 250ms 的会话值防抖；树此时只能靠 ensureTreeFor 按需加载
+  const w3Value = tabValues.get(Number(w3leaf.id));
+  assertEqual(
+    w3Value && w3Value["nesoi:tree-ref"] ? w3Value["nesoi:tree-ref"].parentId : null,
+    w3root.id,
+    "11：树未加载时创建的标签也写下了父引用"
+  );
+
+  // --- 场景 12：历史损坏（快照里被写成顶层）用每标签会话值自动救援 ---
+  console.log("场景 12：历史损坏的顶层标签按会话值自动挂回原父");
+  windows.push({ id: 4 });
+  const r4root = addTab({ windowId: 4, url: "https://repair-root.example/", title: "RR" });
+  const r4child = addTab({ windowId: 4, url: "https://repair-child.example/", title: "RC" });
+  // 模拟旧版本写坏的快照：原父信息已丢，两个标签都是顶层
+  storageData.local["treeStructure:4"] = {
+    v: 2,
+    at: Date.now(),
+    n: 2,
+    items: [
+      { u: "https://repair-root.example/", t: "RR", p: -1, i: r4root.id },
+      { u: "https://repair-child.example/", t: "RC", p: -1, i: r4child.id },
+    ],
+  };
+  // Firefox 每标签会话值里还留着原父（本会话写入）
+  tabValues.set(Number(r4child.id), {
+    "nesoi:tree-ref": { parentId: r4root.id, at: Date.now() },
+  });
+  // 注意：救援是 loadTree 里并行触发的后台任务，在模拟器里可能在首次读取返回前就跑完了，
+  // 因此这里只断言结果。能证明"救援确实生效"的是：种子快照里 RC 的 p 是 -1（顶层），
+  // 而最终它挂回了 RR；同时本会话的修复标记被写了下来（同一会话不再重复扫描）。
+  await tree.getTreeStructure([4]);
+  await tick(80); // 等后台救援跑完
+  const parents4 = parentsOf(await tree.getTreeStructure([4]), 4);
+  assertEqual(parents4[r4child.id], r4root.id, "12：RC 被自动挂回原父");
+  assertTrue(
+    Boolean(storageData.session.treeRepairDone && storageData.session.treeRepairDone[4]),
+    "12：本会话的修复标记已记录"
+  );
+
+  console.log("场景 12b：上一次浏览器会话留下的会话值不可用于修复");
+  windows.push({ id: 5 });
+  const r5root = addTab({ windowId: 5, url: "https://stale-root.example/", title: "SR" });
+  const r5child = addTab({ windowId: 5, url: "https://stale-child.example/", title: "SC" });
+  storageData.local["treeStructure:5"] = {
+    v: 2,
+    at: Date.now(),
+    n: 2,
+    items: [
+      { u: "https://stale-root.example/", t: "SR", p: -1, i: r5root.id },
+      { u: "https://stale-child.example/", t: "SC", p: -1, i: r5child.id },
+    ],
+  };
+  // 时间戳早于本会话起点 ⇒ 那次会话里的 tabId 与现在无关（可能已被复用），必须忽略
+  tabValues.set(Number(r5child.id), {
+    "nesoi:tree-ref": { parentId: r5root.id, at: Date.now() - 24 * 60 * 60 * 1000 },
+  });
+  await tree.getTreeStructure([5]);
+  await tick(80);
+  const parents5 = parentsOf(await tree.getTreeStructure([5]), 5);
+  assertEqual(parents5[r5child.id], undefined, "12b：上一次会话的会话值不会改结构");
+
   console.log("");
   console.log(`共 ${checks} 项断言，失败 ${failures} 项`);
   if (failures > 0) {

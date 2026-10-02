@@ -12,7 +12,9 @@
 //
 // 复杂度约定：所有导出函数必须为 O(n) 或 O(n log n)，禁止出现 indexOf 套循环式的 O(n²)。
 
-export const TREE_SNAPSHOT_VERSION = 1;
+// 快照结构版本：v2 起每个 item 多一个 `i`（写入时的 tabId），快照顶层多一个 `sid`（会话令牌）。
+// v1 快照没有这两个字段，读取时 `sid` 对不上、`i` 不是整数，自然退回纯 URL 对齐，无需迁移。
+export const TREE_SNAPSHOT_VERSION = 2;
 // 顶层标签在快照中的父下标。
 export const SNAPSHOT_ROOT_PARENT = -1;
 
@@ -339,11 +341,18 @@ function pickInitialParent(tab, index, indexById, pinnedIds, activeTabId) {
 /**
  * 把持久化快照对齐到当前实际标签序列（会话恢复）。
  *
- * 为什么不能用 tabId：Chrome 重启后标签 id 全部改变，只能靠「顺序 + URL」重新建立对应关系。
+ * 身份分两层，这也是本算法的核心取舍：
+ * - **同一浏览器会话内**（Service Worker 被回收、但浏览器没重启）：`tabId` 稳定且不复用，
+ *   快照里的 `i` + 顶层 `sid`（会话令牌）就是**权威身份**。此时先按 id 精确配对，
+ *   URL 变了（地址栏搜索/导航/重定向）、标签被 discard 拿不到 URL、多个标签 URL 相同，
+ *   都不再影响身份——"什么都没关，只是导航了一次，层级却丢了"正是只认 URL 造成的。
+ * - **跨浏览器重启**：tabId 全部重新分配，`sid` 也对不上，只能退回「顺序 + URL」对齐
+ *   （见下面的四步）。v1 旧快照没有 `i` / `sid`，同样走这条路。
+ *
  * 为什么不用 TST 的 findStructureOffset：它用 indexOf 找起点再逐项比较，在大量重复 URL
  * （例如几百个 about:blank）下会退化成 O(n²)。
  *
- * 本实现分四步，目标是既容忍头部/中部成批增删，也容忍局部乱序：
+ * URL 对齐分四步，目标是既容忍头部/中部成批增删，也容忍局部乱序：
  *   1. 偏移估计：用快照开头若干项在 URL 索引里定位，得到整体偏移量，
  *      解决"恢复时头部被插入了一批新标签"这类整体位移；
  *   2. 逐项局部配对：以「期望下标 = j + 偏移」为中心在很小的邻域内找同 URL 的未使用项，
@@ -354,11 +363,14 @@ function pickInitialParent(tab, index, indexById, pinnedIds, activeTabId) {
  *      才收到 tabs.onRemoved，内存里没有树可改），此时沿快照的父链向上找最近的存活祖先，
  *      与关闭标签时的 promote intelligently 一致，避免整棵子树被凭空抬成顶层。
  *
+ * @param {{activeTabId?: number|null, sessionToken?: string}} options
+ *   sessionToken 由后台从 `storage.session` 读出；只有它与快照里的 `sid` 一致时才信任 `i`。
  * @returns {{state: object, exact: boolean, matched: number, added: number, removed: number}}
- *   exact 为 true 表示快照与实际完全一一对应且未使用任何兜底推断——此时无需回写磁盘。
+ *   exact 为 true 表示快照与实际完全一一对应、未使用任何兜底推断，且快照里的 URL 仍然准确
+ *   （URL 是跨重启唯一的配对依据，导航过就必须回写）——此时无需回写磁盘。
  */
 export function alignSnapshotToTabs(orderedTabs, snapshot, options = {}) {
-  const { activeTabId = null } = options;
+  const { activeTabId = null, sessionToken = "" } = options;
   const total = orderedTabs.length;
   const items = snapshot && Array.isArray(snapshot.items) ? snapshot.items : [];
 
@@ -371,6 +383,17 @@ export function alignSnapshotToTabs(orderedTabs, snapshot, options = {}) {
       removed: 0,
     };
   }
+
+  // 会话令牌一致 ⇒ 快照里的 tabId 与当前标签是同一批身份，可以当权威依据。
+  const trustTabIds = Boolean(sessionToken) && snapshot.sid === sessionToken;
+  const indexByTabId = new Map();
+  if (trustTabIds) {
+    for (let i = 0; i < total; i += 1) {
+      indexByTabId.set(Number(orderedTabs[i].id), i);
+    }
+  }
+  // 快照里的 URL 是否仍然准确（任一被 id 命中的项 URL 对不上就置位）。
+  let staleSnapshotContent = false;
 
   // URL → 该 URL 在 orderedTabs 中的所有下标（自然升序），供前向搜索与偏移估计使用。
   const positionsByUrl = new Map();
@@ -394,6 +417,25 @@ export function alignSnapshotToTabs(orderedTabs, snapshot, options = {}) {
   const cursorByUrl = new Map();
 
   for (let j = 0; j < items.length; j += 1) {
+    // 同一浏览器会话内：快照的 tabId 就是权威身份，直接命中，不参与 URL 猜测。
+    // 命中后同样用「本次命中修正偏移」，让后面那些没有 id 的项（快照之后新建的标签、
+    // 或旧版快照项）继续以"就近"为准则配对。
+    if (trustTabIds && Number.isInteger(items[j].i)) {
+      const idIndex = indexByTabId.get(items[j].i);
+      if (idIndex !== undefined && !used[idIndex]) {
+        used[idIndex] = 1;
+        matchOfSnapshotIndex[j] = idIndex;
+        matchedCount += 1;
+        offset = idIndex - j;
+        // URL 变了（导航/重定向/地址栏搜索）→ 快照里的 URL 已过期。
+        // 它本身不影响本次结构，但**跨重启只能靠 URL 配对**，因此必须回写一次。
+        if ((orderedTabs[idIndex].url || "") !== (items[j].u || "")) {
+          staleSnapshotContent = true;
+        }
+        continue;
+      }
+    }
+
     const url = items[j].u || "";
     const expected = j + offset;
     // 该 URL 在实际序列里只出现一次时不存在"配错位置"的可能：邻域里命中的候选必然就是它本人。
@@ -575,7 +617,13 @@ export function alignSnapshotToTabs(orderedTabs, snapshot, options = {}) {
   const removed = items.length - matchedCount;
   return {
     state,
-    exact: matchedCount === items.length && added === 0 && repaired === 0 && !usedFallback,
+    // 结构与内容都仍然准确才叫 exact：URL 过期（导航过）时必须回写，否则下一次重启就配不上。
+    exact:
+      matchedCount === items.length &&
+      added === 0 &&
+      repaired === 0 &&
+      !usedFallback &&
+      !staleSnapshotContent,
     matched: matchedCount,
     added,
     removed,
@@ -703,9 +751,15 @@ function estimateInitialOffset(items, orderedTabs, positionsByUrl, total) {
 /**
  * 生成某窗口的持久化快照。
  *
- * 只存 url / title 与「父在数组中的下标」：Chrome 重启后 tabId 会变化，tabId 无法用于恢复；
- * 标题只用于对齐时的辅助判断（本算法实际只依赖 URL），所以体积超限时可以安全丢弃。
+ * 每项存 `u`(url) / `t`(title) / `p`(父在数组中的下标) / `i`(写入时的 tabId)：
+ * - `u` 是**跨浏览器重启**唯一的配对依据，因此是主身份；
+ * - `i` 只在**同一浏览器会话内**有效（tabId 稳定且不复用），配合快照顶层的 `sid`（会话令牌）
+ *   在 SW 被回收后做精确配对——地址栏导航换了 URL 也不会让层级丢失。跨重启时 `sid` 对不上，
+ *   读取端会完全忽略 `i`，因此 `i` 永远不会被误当成跨会话的身份。
+ * - 标题只用于诊断，对齐算法不依赖它，所以体积超限时可以安全丢弃（`i` 不能丢）。
  *
+ * @param {{includeTitles?: boolean, maxBytes?: number, now?: number, sessionToken?: string}} options
+ *   sessionToken 为空（拿不到会话存储）时不写 `sid`，读取端也就不会启用 id 配对。
  * @returns {{payload: object|null, bytes: number, degraded: boolean}}
  */
 export function encodeSnapshot(orderedTabs, state, options = {}) {
@@ -713,6 +767,7 @@ export function encodeSnapshot(orderedTabs, state, options = {}) {
     includeTitles = true,
     maxBytes = 4 * 1024 * 1024,
     now = Date.now(),
+    sessionToken = "",
   } = options;
 
   const build = (withTitles) => {
@@ -732,18 +787,22 @@ export function encodeSnapshot(orderedTabs, state, options = {}) {
           parentIndex = candidate;
         }
       }
-      const item = { u: tab.url || "", p: parentIndex };
+      const item = { u: tab.url || "", p: parentIndex, i: Number(tab.id) };
       if (withTitles) {
         item.t = tab.title || "";
       }
       items[i] = item;
     }
-    return {
+    const payload = {
       v: TREE_SNAPSHOT_VERSION,
       at: now,
       n: orderedTabs.length,
       items,
     };
+    if (sessionToken) {
+      payload.sid = sessionToken;
+    }
+    return payload;
   };
 
   let payload = build(includeTitles);

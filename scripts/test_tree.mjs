@@ -636,6 +636,71 @@ async function main() {
   core.sanitizeTreeState(behind, [1, 3, 2], null);
   assertEqual(behind.parentById.get(3), null, "13e：父排在子之后且无更高祖先 → 顶层");
 
+  // --- 场景 14：同一浏览器会话内标签导航换了 URL，层级必须保留 ---
+  // 触发条件：后台被回收后，用户在某个子标签的地址栏里搜索/跳转（URL 变了），
+  // 这次导航本身触发了首次对齐。旧实现只认 URL：该标签的 URL 对不上快照 →
+  // 被判成"已关闭"+有一个"新增标签"，于是它自己被抬成顶层，父子关系整条丢失。
+  // 回归点：同一会话内 tabId 是权威身份（快照 sid 与会话令牌一致），导航不影响层级。
+  console.log("场景 14：导航换 URL 后后台被回收（会话内 tabId 可信 → 层级保留）");
+  windows.push({ id: 11 });
+  const a14 = addTab({ windowId: 11, url: "https://a14.example.com/", title: "A" });
+  await tree.getTreeStructure([11]); // 先把树加载起来（此时窗口里只有 A）
+  // B/C/D 都没有 opener：它们的父关系只存在于本插件的树里（"新标签挂到活动标签下"规则），
+  // 这正是"重载时只能靠快照认身份"的场景——旧实现会把它们判成新增标签并抬成顶层。
+  tree.handleTreeTabActivated({ windowId: 11, tabId: a14.id });
+  const b14 = addTab({ windowId: 11, url: "https://b14.example.com/", title: "B" });
+  await tree.handleTreeTabCreated(b14);
+  tree.handleTreeTabActivated({ windowId: 11, tabId: b14.id });
+  const c14 = addTab({ windowId: 11, url: "https://c14.example.com/", title: "C" });
+  await tree.handleTreeTabCreated(c14);
+  const d14 = addTab({ windowId: 11, url: "https://d14.example.com/", title: "D" });
+  await tree.handleTreeTabCreated(d14);
+  await tree.handleTreeSuspend();
+  await tick(20);
+  // 地址栏 paste and go：B 的 URL 变成搜索页
+  tabs.find((tab) => tab.id === b14.id).url = "https://search14.example.com/?q=hello";
+  // 后台被回收：新模块实例（内存树为空），但 storage.session 的会话令牌与 tabId 都还在
+  const tree14 = await import(`../background/tree.js?reclaim=${Date.now()}`);
+  tree14.initializeTreeSystem();
+  const parents14 = parentsOf(await tree14.getTreeStructure([11]), 11);
+  assertEqual(parents14[b14.id], a14.id, "14：导航后 B 仍挂在 A 下");
+  assertEqual(parents14[c14.id], b14.id, "14：导航后 C 仍挂在 B 下");
+  assertEqual(parents14[d14.id], b14.id, "14：导航后 D 仍挂在 B 下");
+  // URL 变了 ⇒ 快照内容已过期，必须回写（URL 是跨重启唯一的配对依据）
+  await tree14.handleTreeSuspend();
+  await tick(20);
+  const saved14 = storageData.local["treeStructure:11"];
+  const b14Item = saved14.items.find((item) => item.i === b14.id);
+  assertEqual(b14Item.u, "https://search14.example.com/?q=hello", "14：快照回写了导航后的 URL");
+
+  // --- 场景 15：跨浏览器重启时快照里的 tabId 不可信（会话令牌失效）→ 忽略 id，仍按 URL 配对 ---
+  console.log("场景 15：跨浏览器重启时忽略快照里的 tabId");
+  const live15 = [
+    { id: 400, url: "https://a15.example.com/", pinned: false },
+    { id: 401, url: "https://search15.example.com/?q=hello", pinned: false },
+    { id: 402, url: "https://c15.example.com/", pinned: false },
+  ];
+  // 快照：A 顶层、B 挂 A、C 挂 B；B 的 URL 是导航前的旧值（跨重启后只能靠 URL 认它）
+  const snap15 = {
+    v: 2,
+    at: Date.now(),
+    n: 3,
+    sid: "session-before-restart",
+    items: [
+      { u: "https://a15.example.com/", p: -1, i: 400 },
+      { u: "https://b15.example.com/", p: 0, i: 401 },
+      { u: "https://c15.example.com/", p: 1, i: 402 },
+    ],
+  };
+  // 令牌一致（同一会话）：按 id 命中，B 的 URL 变了也照样挂回 A
+  const trusted15 = core.alignSnapshotToTabs(live15, snap15, { sessionToken: "session-before-restart" });
+  assertEqual(trusted15.state.parentById.get(401), 400, "15：令牌一致时 B 按 tabId 挂回 A");
+  assertEqual(trusted15.state.parentById.get(402), 401, "15：令牌一致时 C 按 tabId 挂回 B");
+  // 令牌不一致（浏览器已重启，tabId 可能复用）：必须完全忽略 i，退回 URL 对齐
+  const untrusted15 = core.alignSnapshotToTabs(live15, snap15, { sessionToken: "session-after-restart" });
+  assertEqual(untrusted15.state.parentById.get(401), null, "15：令牌不一致时 B 的旧 URL 对不上 → 顶层");
+  assertEqual(untrusted15.state.parentById.get(402), 400, "15：令牌不一致时 C 就近提升到祖父 A");
+
   console.log("");
   console.log(`共 ${checks} 项断言，失败 ${failures} 项`);
   if (failures > 0) {

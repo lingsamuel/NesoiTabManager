@@ -134,6 +134,32 @@ function main() {
     assertInvariants(`对齐(${name})`, scenarioTabs, aligned);
   }
 
+  // 3b) 同一浏览器会话内（后台被回收）：按 tabId 精确配对，URL 变了也不影响身份。
+  // 这是"地址栏导航一次就丢层级"那个 bug 的回归基准：既要快，也要 100% 配对。
+  const sessionSnapshot = encodeSnapshot(tabs, state, { now: 1, sessionToken: "bench-session" }).payload;
+  const sessionResult = time("align", () =>
+    alignSnapshotToTabs(tabs, sessionSnapshot, { sessionToken: "bench-session" })
+  );
+  report(
+    `${sessionResult.label} · 同会话按 tabId`,
+    sessionResult.ms,
+    LIMITS.align,
+    `配对 ${sessionResult.value.matched} / 新增 ${sessionResult.value.added} / 缺失 ${sessionResult.value.removed}`
+  );
+  assertInvariants("对齐(同会话按 tabId)", tabs, sessionResult.value.state);
+  const navigatedTabs = tabs.map((tab, index) =>
+    index % 100 === 0 ? { ...tab, url: `https://changed.example/${index}` } : tab
+  );
+  const navigatedResult = time("align", () =>
+    alignSnapshotToTabs(navigatedTabs, sessionSnapshot, { sessionToken: "bench-session" })
+  );
+  report(
+    `${navigatedResult.label} · 同会话 + 100 个标签改过 URL`,
+    navigatedResult.ms,
+    LIMITS.align,
+    `配对 ${navigatedResult.value.matched} / 新增 ${navigatedResult.value.added} / 缺失 ${navigatedResult.value.removed}`
+  );
+
   // 4) DFS 扁平化（含折叠一半的父标签）
   const stateForFlatten = buildTreeFromTabs(tabs);
   const collapsedIds = new Set();

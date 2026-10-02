@@ -17,6 +17,13 @@ export const TREE_INDEX_KEY = "treeStructureWindows";
 export const TREE_VIEW_MODE_KEY = "treeViewMode";
 // 折叠状态：仅当前浏览器会话有效，存放在 storage.session。
 export const TREE_COLLAPSED_KEY = "treeCollapsed";
+// 树结构的会话令牌：用来判断快照里记录的 tabId 是否还在同一浏览器会话内可信。
+// 放在 storage.session —— Service Worker / 事件页被回收后它仍在（tabId 也仍然有效），
+// 浏览器重启后它自动清空（tabId 已重新分配，快照里的 id 不能再当身份用）。
+export const TREE_SESSION_TOKEN_KEY = "treeSessionToken";
+// 层级自动修复的每会话标记：记录哪些窗口已经用每标签会话值扫过一遍。
+// 与令牌一样放 storage.session —— 浏览器重启后清空，于是新会话会重新扫一次。
+export const TREE_REPAIR_KEY = "treeRepairDone";
 export const TREE_FLUSH_ALARM = "treeFlush";
 // 撤销关闭：关闭记录只存活于当前浏览器会话，因此同样放 storage.session。
 // closedTabLog 记单个标签的关闭现场（供浏览器原生「重新打开已关闭的标签页」恢复父子关系），

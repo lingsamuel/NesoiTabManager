@@ -21,7 +21,9 @@
 import {
   CLOSED_GROUPS_KEY,
   CLOSED_LOG_KEY,
+  HAS_SESSION_STORAGE,
   TREE_COLLAPSED_KEY,
+  TREE_REPAIR_KEY,
 } from "./constants.js";
 import { getCachedTabInfo } from "./recent_tabs.js";
 import { storageSessionGet, storageSessionSet } from "./storage.js";
@@ -31,9 +33,12 @@ import {
   ensureTreeFor,
   getChildTabIds,
   getTabStructureInfo,
+  getTrackedParentId,
+  getTreeSessionStartedAt,
   moveTabsInternallyTo,
   refreshTreeIndexes,
   setRestoreCandidateProvider,
+  setStructureRepairProvider,
   waitUntilTabsTracked,
 } from "./tree.js";
 import { delay } from "./utils.js";
@@ -58,6 +63,10 @@ const RESTORE_TAB_TIMEOUT_MS = 4000;
 // 批量关闭的分批大小与间隔（与前端 helpers.removeTabsInBatches 同一口径）。
 const REMOVE_BATCH_SIZE = 100;
 const REMOVE_BATCH_GAP_MS = 150;
+// 层级自动修复：每次并发读取多少个标签的会话值，以及单窗口单会话最多检查多少个标签。
+// 修复是"尽力而为的一次性救援"，因此用批量并发压低后台开销，并用上限防御 10K 级窗口。
+const REPAIR_BATCH_SIZE = 24;
+const REPAIR_MAX_TABS = 4000;
 
 // ---------------------------------------------------------------------------
 // 状态
@@ -86,6 +95,11 @@ const PENDING_CREATED_URL_TTL_MS = 10000;
 // 结构变化 → 刷新 Firefox 每标签会话值的防抖任务：windowId -> Set<tabId>。
 const pendingTabRefTabs = new Map();
 let tabRefTimer = null;
+
+// 层级自动修复：本次 SW 生命周期内已经排过队的窗口（内存去重，避免并发重复扫描）。
+const repairQueuedWindows = new Set();
+// storage.session 里"本浏览器会话已扫描过的窗口"表的内存副本。
+let repairDoneMap = null;
 
 function isFiniteId(value) {
   return Number.isFinite(Number(value));
@@ -166,6 +180,8 @@ function persist() {
 export function initializeClosedGroups() {
   // 同步注册判定钩子：tabs.onCreated 可能在载入完成前就到达。
   setRestoreCandidateProvider(claimRestoreCandidate);
+  // 树每次从快照重建后，都可能需要一次"历史损坏救援"（见 repairTreeFromTabRefs）。
+  setStructureRepairProvider(repairTreeFromTabRefs);
   return ensureClosedGroupsLoaded();
 }
 
@@ -254,19 +270,24 @@ export function handleTabStructureChanged(windowId, tabIds = null) {
  * Chrome 只能靠 URL 猜，Firefox 能精确区分"撤销关闭"与"用户手动打开了同一个 URL"，
  * 并顺带给出比关闭记录更新的父标签。写不进去（标签已关闭）会被静默忽略——
  * 恢复端拿不到值时退回默认规则，不会破坏任何现有结构。
+ *
+ * **必须先确保树已加载**：本函数从内存树读父标签，而它是在结构事件后防抖触发的；
+ * 若此刻窗口的树还没进内存（后台刚被回收、或标签创建与树加载的 500ms 防抖撞在一起），
+ * 旧实现会对每个标签静默 return，于是这些标签永远没有会话值——表现为
+ * 「原生撤销关闭后标签回到顶层、而不是原父之下」。因此这里统一先 ensureTreeFor。
  */
 async function flushTabRefs() {
   tabRefTimer = null;
   const tasks = [...pendingTabRefTabs.entries()];
   pendingTabRefTabs.clear();
   for (const [windowId, pending] of tasks) {
-    let ids;
-    if (pending.all) {
-      const tree = await ensureTreeFor(windowId);
-      ids = tree ? [...tree.parentById.keys()] : [];
-    } else {
-      ids = [...pending.ids];
+    // 两种情况都要先把树准备好：pending.all 需要遍历树里的标签，pending.ids 也需要
+    // getTabStructureInfo 能查到父标签。树加载失败（窗口已不存在）时直接跳过。
+    const tree = await ensureTreeFor(windowId);
+    if (!tree) {
+      continue;
     }
+    const ids = pending.all ? [...tree.parentById.keys()] : [...pending.ids];
     await Promise.all(
       ids.map(async (tabId) => {
         const info = getTabStructureInfo(tabId, windowId);
@@ -276,6 +297,113 @@ async function flushTabRefs() {
         await setTabValue(tabId, TAB_REF_KEY, { parentId: info.parentId, at: Date.now() });
       })
     );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 层级自动修复（用每标签会话值救援历史版本写坏的结构）
+// ---------------------------------------------------------------------------
+
+/** 读取"本浏览器会话已扫描过的窗口"表（storage.session；重启后自动清空，于是会再扫一次）。 */
+async function loadRepairDoneMap() {
+  if (!repairDoneMap) {
+    const stored = await storageSessionGet(TREE_REPAIR_KEY);
+    repairDoneMap = stored && typeof stored === "object" ? { ...stored } : {};
+  }
+  return repairDoneMap;
+}
+
+/**
+ * 用 Firefox 每标签会话值，把"历史版本写坏成顶层"的标签挂回原父。
+ *
+ * 背景：旧版本在"父标签已被关闭、树却不在内存里"等情况下会把整棵子树写成顶层（`p = -1`），
+ * 那份快照里的原父信息已经丢了，靠快照自己无法还原。而 Firefox 的 `sessions.setTabValue`
+ * 是按 tabId 存的父引用，能跨 Service Worker 回收、也随标签一起恢复，因此是唯一可用的救援来源。
+ *
+ * 安全边界（任意一条不满足就跳过）：
+ * - 只在 Firefox（有每标签会话值）且能写 `storage.session` 时执行；
+ * - 只处理**当前是顶层**的非固定标签（已经有父的说明结构完好，不去动它）；
+ * - 会话值必须写于**本浏览器会话内**（早于会话起点的值来自上一次会话，那里的 tabId 可能已被复用）；
+ * - 最终仍由 `applyRestoredParent` 走不变量校验：父必须存活、同窗口、非固定、排在自己之前、不成环。
+ *
+ * 开销与频次：按窗口记在 `storage.session`，**每个浏览器会话最多扫一次**；批量并发读取，
+ * 单窗口上限 `REPAIR_MAX_TABS`。整段是后台尽力而为，任何异常都只记日志、不影响正常结构。
+ *
+ * @param {number} windowId 刚重建完树的窗口
+ * @param {chrome.tabs.Tab[]} tabs 该窗口的标签列表（与树同时刻查询得到）
+ * @param {boolean} hadSnapshot 是否是从磁盘快照重建的（全新窗口没有可修复的内容）
+ */
+async function repairTreeFromTabRefs(windowId, tabs, hadSnapshot) {
+  if (!hadSnapshot || !supportsTabRefs() || !HAS_SESSION_STORAGE) {
+    return;
+  }
+  const winId = Number(windowId);
+  if (!Number.isFinite(winId) || !Array.isArray(tabs) || tabs.length === 0) {
+    return;
+  }
+  if (repairQueuedWindows.has(winId)) {
+    return;
+  }
+  repairQueuedWindows.add(winId);
+  try {
+    const done = await loadRepairDoneMap();
+    if (done[winId]) {
+      return;
+    }
+    const sessionStartedAt = await getTreeSessionStartedAt();
+    const indexMap = new Map(tabs.map((tab) => [Number(tab.id), Number(tab.index)]));
+    const candidates = [];
+    for (const tab of tabs) {
+      const id = Number(tab.id);
+      if (!Number.isFinite(id) || tab.pinned) {
+        continue;
+      }
+      // 只修顶层标签；用 O(1) 的 getTrackedParentId，避免"遍历整窗标签"退化成 O(n²)。
+      if (getTrackedParentId(winId, id) !== null) {
+        continue;
+      }
+      candidates.push(id);
+      if (candidates.length >= REPAIR_MAX_TABS) {
+        break;
+      }
+    }
+    let repaired = 0;
+    for (let offset = 0; offset < candidates.length; offset += REPAIR_BATCH_SIZE) {
+      const batch = candidates.slice(offset, offset + REPAIR_BATCH_SIZE);
+      const results = await Promise.all(
+        batch.map(async (tabId) => {
+          const stored = await getTabValue(tabId, TAB_REF_KEY);
+          if (!stored || typeof stored !== "object") {
+            return false;
+          }
+          const parentId = Number(stored.parentId);
+          if (!Number.isFinite(parentId)) {
+            return false;
+          }
+          // 上一次浏览器会话留下的值不可信：那里的 tabId 与本会话无关（可能已被复用）。
+          if (Number(stored.at) < sessionStartedAt) {
+            return false;
+          }
+          if (!applyRestoredParent(winId, tabId, parentId, { childPinned: false, indexMap })) {
+            return false;
+          }
+          // applyRestoredParent 在校验失败时会降级为顶层，因此以"真的挂上了"为准来计数。
+          return getTrackedParentId(winId, tabId) != null;
+        })
+      );
+      repaired += results.filter(Boolean).length;
+    }
+    // 标记本会话已扫过：无论是否修好都不再重复扫（避免每次树重建都做一轮 O(n) IPC）。
+    done[winId] = Date.now();
+    repairDoneMap = done;
+    await storageSessionSet({ [TREE_REPAIR_KEY]: done });
+    if (repaired > 0) {
+      logDebug("repairTreeFromTabRefs", { windowId: winId, candidates: candidates.length, repaired });
+    }
+  } catch (error) {
+    // 尽力而为：修复失败只影响"能不能救回历史损坏"，不影响任何正常结构。
+  } finally {
+    repairQueuedWindows.delete(winId);
   }
 }
 

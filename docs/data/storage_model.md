@@ -90,20 +90,33 @@
 ### 树结构快照（treeStructure:&lt;windowId&gt;）
 - 存放在 `chrome.storage.local`，**每个窗口一个键**，键名前缀 `treeStructure:`。
 - 结构：
-  - `v`：结构版本。
+  - `v`：结构版本（v2 起含 `i` / `sid`）。
   - `at`：写入时间戳（毫秒）。
   - `n`：标签数。
-  - `items`：按浏览器 `index` 升序的数组，每项 `{ u: url, t: title, p: parentIndex }`；`p` 为父标签在 `items` 中的下标，`-1` 表示顶层。
+  - `sid`：写入时的会话令牌（`storage.session` 的 `treeSessionToken.token`）。
+  - `items`：按浏览器 `index` 升序的数组，每项 `{ u: url, t: title, p: parentIndex, i: tabId }`；
+    `p` 为父标签在 `items` 中的下标，`-1` 表示顶层；`i` 是写入时的标签 id。
 - 说明：
-  - 不存 `tabId`（Chrome 重启后会变化），改为「顺序 + URL/标题」在会话恢复时对齐。
+  - `u` 是**跨浏览器重启**唯一的配对依据（重启后 tabId 全部重新分配）；`i` 只在同一浏览器会话内有效，
+    与 `sid` 配合用于"后台被回收后精确重建父子"：地址栏导航改了 URL、标签被 discard、URL 重复都不影响身份。
+  - `sid` 与会话令牌不一致（浏览器重启、或环境没有会话存储）时，读取端完全忽略 `i`，退回按 URL 对齐。
   - 按窗口分键，使一次写入只覆盖发生变化的窗口，避免重写整份快照。
-  - 序列化超过 4MB 时降级为不写 `t`，只用 URL 对齐。
+  - 序列化超过 4MB 时降级为不写 `t`（`u` / `p` / `i` 不能丢）。
   - 写入经过空闲防抖与批量抑制（见 `docs/ui/tree_style_tabs.md`）。10K 标签单窗口约 1~2MB。
 
 ### 树结构窗口索引（treeStructureWindows）
 - 存放在 `chrome.storage.local` 的 `treeStructureWindows` 键。
 - 结构：`{ [windowId]: updatedAt }`。
 - 用途：记录哪些窗口存在快照键，便于窗口关闭时清理，避免使用 `storage.local.get(null)` 全量读取。
+
+### 树结构会话令牌（treeSessionToken）
+- 存放在 `chrome.storage.session` 的 `treeSessionToken` 键，结构 `{ token, at }`（`at` 为会话起点时间戳）。
+- 用途：判断快照里的 `tabId`（`items[].i`）是否还在同一浏览器会话内可信；同时作为"每标签会话值是不是本次会话写的"的判据。
+- 会话存储跨 SW 回收存活、浏览器重启即清空，因此"令牌一致"恰好等价于"仍是同一批 tabId"。
+
+### 层级修复标记（treeRepairDone）
+- 存放在 `chrome.storage.session` 的 `treeRepairDone` 键，结构 `{ [windowId]: at }`。
+- 用途：记录本会话已用每标签会话值扫描过哪些窗口，避免每次树重建都重复做一轮 O(n) IPC 救援。
 
 ### 树折叠状态（treeCollapsed）
 - 存放在 `chrome.storage.session` 的 `treeCollapsed` 键。
@@ -150,7 +163,7 @@
 - AI 分组：`aiGroupTabs` -> 生成分组 -> `saveGroupedTabs` 写入新列表。
 - 自动冻结：定时扫描 -> `discardSession` + `historyBatches` 更新。
 - 近期标签页：监听 tabs 事件 -> 更新 `recentTabsOpenAt`；“已阅”更新 `recentTabsState.lastReviewedAt`；提醒定时器读取统计并触发气泡。
-- 树结构：tabs 事件（创建/关闭/移动/跨窗口） -> 后台内存树更新 -> 脏窗口空闲防抖 -> `treeStructure:<windowId>` 覆盖写 + `treeStructureWindows` 索引更新。
+- 树结构：tabs 事件（创建/关闭/移动/跨窗口） -> 后台内存树更新 -> 脏窗口空闲防抖 -> `treeStructure:<windowId>` 覆盖写（含会话令牌 `sid` 与每项 `i`）+ `treeStructureWindows` 索引更新；树从快照重建后触发一次层级自动修复（`treeRepairDone` 记本会话是否已扫过）。
 - 树视图：管理页 `getTreeStructure` 读取内存树 -> 本地 DFS 扁平化 + 折叠（`treeCollapsed`） -> 渲染。
 - 撤销关闭：批量关闭前写 `closedGroups`（关闭组）或关闭时写 `closedTabLog`（单标签） -> 撤销时按记录重开标签、
   重建父子关系、`chrome.tabs.move` 移回原物理位置。详见 `docs/ui/tree_style_tabs.md` 的「撤销关闭与树恢复」。
