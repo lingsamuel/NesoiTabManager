@@ -571,12 +571,15 @@
   }
 
   async function loadLists() {
-    const response = await request("getLists");
+    // 悬浮组件只需要列表名与 id：用 getListSummaries 而不是 getLists，
+    // 后者会把 favicon 去重后的 iconKey 重新展开成完整（可能数 MB）的 base64，
+    // 而这段代码运行在**每个网页**里，白白搬运这些数据代价很高。
+    const response = await request("getListSummaries");
     if (!response.ok) {
       renderLists([]);
       return;
     }
-    renderLists(response.lists || []);
+    renderLists(response.summaries || []);
   }
 
   function flashHandle(message) {

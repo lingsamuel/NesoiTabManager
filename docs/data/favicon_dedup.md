@@ -95,7 +95,8 @@
 侧边栏「保存到列表」弹出清单只需要列表名与条目数（`SidebarApp.openSaveMenu`），
 但它当前调用的是 `getLists`。去重后 `getLists` 会为渲染把图标**重新展开**，对"只要名字"的调用方是纯粹的浪费
 （一次消息可能携带数 MB 的 base64）。
-因此新增轻量消息 **`getListSummaries`**：返回 `[{ id, name, count }]`，侧边栏保存清单改用它；管理页与弹窗仍用 `getLists`（它们确实要渲染图标）。
+因此新增轻量消息 **`getListSummaries`**：返回 `[{ id, name, count }]`，侧边栏保存清单与网页悬浮组件改用它；
+管理页、弹窗与导出仍用 `getLists`（它们确实要渲染图标）。
 
 ## 边界情况
 | 情况 | 行为 |

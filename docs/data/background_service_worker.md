@@ -36,7 +36,7 @@
 ## 消息协议（runtime message）
 - `activateTab`：激活指定标签页（参数 `tabId`、`windowId`），用于管理页点击跳转。
 - `getLists`：读取全部列表（返回值会把 `iconKey` 解析回 `favIconUrl`，结构对调用方保持不变）。
-- `getListSummaries`：只读取列表的 `{ id, name, count }`，供侧边栏「保存到列表」弹出清单使用，
+- `getListSummaries`：只读取列表的 `{ id, name, count }`，供侧边栏「保存到列表」弹出清单与网页悬浮组件使用，
   避免为了几个列表名把去重后的图标重新展开成数 MB 的 base64。
 - `setCopySelection`：侧边栏在弹出原生标签右键菜单前推来当前选中项（`{ items: [{ title, url }] }`，
   无选中项时推空数组以清空暂存），供「复制标题 / 复制链接」输出多行；

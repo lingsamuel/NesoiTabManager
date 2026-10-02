@@ -35,7 +35,8 @@ import {
   createList,
   deleteList,
   deleteListItems,
-  getLists,
+  getListsForUi,
+  getListSummaries,
   importLists,
   moveListItems,
   renameList,
@@ -286,9 +287,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // 面向 UI 的读取出口：把条目的 iconKey 解析回 favIconUrl，调用方看到的结构与去重前一致。
   if (action === "getLists") {
-    getLists()
+    getListsForUi()
       .then((lists) => sendResponse({ ok: true, lists }))
+      .catch((error) => sendResponse({ ok: false, error: String(error) }));
+    return true;
+  }
+
+  // 轻量列表摘要：侧边栏保存清单与网页悬浮组件只需要名字与数量，
+  // 避免把去重后的图标数据整份展开传输。
+  if (action === "getListSummaries") {
+    getListSummaries()
+      .then((summaries) => sendResponse({ ok: true, summaries }))
       .catch((error) => sendResponse({ ok: false, error: String(error) }));
     return true;
   }

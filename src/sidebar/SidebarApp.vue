@@ -1146,6 +1146,9 @@ function onSaveMenuKeydown(event) {
  * 每次打开都重新取一次列表：侧边栏与其它入口（管理页 / 右键菜单）共用同一份存储，
  * 缓存一份列表很容易让用户看到已经删掉的列表。
  *
+ * 用 `getListSummaries` 而不是 `getLists`：清单只需要列表名与条目数，
+ * 而 favicon 去重后 `getLists` 会把 iconKey 重新展开成完整（可能数 MB）的 base64。
+ *
  * @param {"save"|"saveClose"} mode 两个按钮的唯一差别是保存后是否关闭标签
  */
 async function openSaveMenu(mode) {
@@ -1157,13 +1160,13 @@ async function openSaveMenu(mode) {
   saveMenu.loading = true;
   saveMenu.creating = false;
   saveMenu.newListName = "";
-  const response = await request("getLists");
+  const response = await request("getListSummaries");
   // 等待期间用户可能已经关掉清单或点了另一个按钮，过期的结果直接丢弃。
   if (saveMenu.mode !== mode) {
     return;
   }
   saveMenu.loading = false;
-  saveMenu.lists = response.ok && Array.isArray(response.lists) ? response.lists : [];
+  saveMenu.lists = response.ok && Array.isArray(response.summaries) ? response.summaries : [];
 }
 
 function startNewList() {
@@ -1852,7 +1855,7 @@ onBeforeUnmount(() => {
               class="sb-save-item"
               @click="saveSelectedToList(list.id)"
             >
-              {{ list.name }}（{{ list.items ? list.items.length : 0 }}）
+              {{ list.name }}（{{ list.count }}）
             </button>
             <div v-if="saveMenu.creating" class="sb-save-new">
               <input

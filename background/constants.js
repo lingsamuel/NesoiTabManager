@@ -1,4 +1,7 @@
 export const STORAGE_KEY = "lists";
+// 全局图标表：{ [iconKey]: favIconUrl }。列表条目只存 iconKey，图标数据在这里只留一份，
+// 避免同一张 data: favicon 被逐条重复保存（见 docs/data/favicon_dedup.md）。
+export const FAVICONS_KEY = "favIcons";
 export const AI_CONFIG_KEY = "aiConfig";
 export const DISCARD_CONFIG_KEY = "discardConfig";
 export const DISCARD_ALARM = "discardSweep";
