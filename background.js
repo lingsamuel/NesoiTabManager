@@ -24,8 +24,8 @@ import {
 } from "./background/discard.js";
 import {
   clearActionPopup,
-  clearCopySelection,
   handleContextMenuClick,
+  handleContextMenuHidden,
   handleContextMenuShown,
   handleWindowsChanged,
   rebuildContextMenus,
@@ -187,7 +187,7 @@ if (chrome.contextMenus.onShown) {
 // onHidden 是 Firefox 才有的能力（与这组 tab 菜单项同一适用范围）。
 if (chrome.contextMenus.onHidden) {
   chrome.contextMenus.onHidden.addListener(() => {
-    clearCopySelection();
+    handleContextMenuHidden();
   });
 }
 

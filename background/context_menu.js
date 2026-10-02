@@ -387,6 +387,18 @@ function clearCopySelection() {
 }
 
 /**
+ * 菜单关闭后的暂存清理（由 background.js 接到 `menus.onHidden` 上）。
+ *
+ * 为什么要延后一个短任务才清：`onClicked` 与 `onHidden` 的先后顺序浏览器没有明确保证，
+ * 立即清空有可能把这次点击正要使用的选中集合清掉——表现就是"多选复制退化成单行"。
+ * 延后 50ms 足够让同一轮点击的 `onClicked` 先执行；而用户不可能在 50ms 内再弹出下一个菜单，
+ * 所以对"菜单关闭即作废、避免残留状态被标签栏右键误用"这个目的没有影响。
+ */
+function handleContextMenuHidden() {
+  setTimeout(clearCopySelection, 50);
+}
+
+/**
  * 按侧边栏的显示顺序把选中项拼成多行文本。
  * 标题：为空回退 URL（与单标签口径一致）；链接：为空的行直接跳过——空行会让粘贴结果多出莫名其妙的空行。
  */
@@ -590,6 +602,7 @@ export {
   clearActionPopup,
   clearCopySelection,
   handleContextMenuClick,
+  handleContextMenuHidden,
   handleContextMenuShown,
   handleWindowsChanged,
   rebuildContextMenus,

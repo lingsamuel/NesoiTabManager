@@ -427,6 +427,23 @@ async function main() {
   Date.now = realNow;
   assertDeepEqual(calls.clipboard.slice(-1), ["示例"], "超过 TTL 的暂存不再生效");
 
+  console.log("场景 11：菜单关闭后的清理必须延后（onClicked / onHidden 顺序无保证）");
+  // 若 onHidden 先到就立刻清空，这次点击会退化成一行的「示例」——多选复制偶发失效。
+  menu.setCopySelection({ items: selection });
+  menu.handleContextMenuHidden();
+  await menu.handleContextMenuClick({ menuItemId: "nesoi-tab:copyTitle" }, tab);
+  assertDeepEqual(
+    calls.clipboard.slice(-1),
+    ["甲\nhttps://a.example.com/2\n丙"],
+    "onHidden 先到也不会清掉本次点击要用的集合"
+  );
+  // 延后窗口过去后必须真的清空，否则标签栏右键会误用侧边栏的选中集合。
+  menu.setCopySelection({ items: selection });
+  menu.handleContextMenuHidden();
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  await menu.handleContextMenuClick({ menuItemId: "nesoi-tab:copyTitle" }, tab);
+  assertDeepEqual(calls.clipboard.slice(-1), ["示例"], "延后清理生效，集合已作废");
+
   menu.clearCopySelection();
   assertEqual(true, true, "clearCopySelection 可调用");
 
