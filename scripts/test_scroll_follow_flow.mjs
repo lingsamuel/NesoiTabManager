@@ -10,6 +10,9 @@
 // 另外还覆盖侧边栏的**行内展示态**（发声/静音喇叭按钮、"需要关注"圆点）：它同样是
 // "chrome 事件 → 本地增量补丁 → 重新渲染"这条链路。判定逻辑有纯函数测试（test_audio_state.mjs），
 // 但"补丁有没有真的写进组件状态、有没有误触发整窗重查、点击有没有调到 tabs.update"只有把真组件跑起来才能验。
+// 以及**普通模式下 Shift+点击 = 隐式进入多选**（区间起点是当前活动标签、不激活被点标签、
+// 活动标签被过滤/跨区域时退化为只选中被点项）：这条链由"组件点击 → 父级开多选 → 区间计算 → 重新渲染"拼成，
+// 正是最容易只改对一半的地方（例如开了多选却仍然激活了标签）。
 // 做法：在 Node 里把**真实的** .vue 组件跑起来——用 vue/compiler-sfc 即时编译 .vue，
 // 用 Vue 的 createRenderer 提供假 DOM（只实现 SidebarApp 真正用到的那点几何语义：
 // clientHeight、scrollTop 及其夹取），再用假 chrome 控制标签列表与事件顺序。
@@ -358,8 +361,22 @@ function findButtonByText(text, node = root) {
   return null;
 }
 
-/** 找到标题为 title 的那一行，返回它的 class 数组（用来确认高亮是否跟着切换）。 */
-function rowClassOfTitle(title) {
+/** 收集所有带指定 class 的节点（按文档顺序），用于固定标签方块等"同类元素有多个"的断言。 */
+function collect(className, node = root, result = []) {
+  if (node._class && node._class.includes(className)) result.push(node);
+  for (const child of node.children || []) collect(className, child, result);
+  return result;
+}
+
+/** 取节点的纯文本：插值产生的文本可能落在 children 上，整段文本也可能直接落在 node.text 上。 */
+function nodeText(node) {
+  if (!node) return "";
+  if (node.text !== undefined) return node.text;
+  return (node.children || []).map((child) => child.text || "").join("");
+}
+
+/** 按标题找到那一行的 DOM 节点（多选测试要直接调用它的点击处理，只拿 class 不够）。 */
+function rowNodeOfTitle(title) {
   const walk = (node) => {
     if (node._class && node._class.includes("sb-title")) {
       // 纯文本子节点会走 hostSetElementText，落在 node.text 上；插值产生的文本节点落在 children 上。
@@ -369,7 +386,7 @@ function rowClassOfTitle(title) {
       if (text === title) {
         let cursor = node.parent;
         while (cursor) {
-          if (cursor._class && cursor._class.includes("sb-row")) return cursor._class;
+          if (cursor._class && cursor._class.includes("sb-row")) return cursor;
           cursor = cursor.parent;
         }
       }
@@ -381,6 +398,18 @@ function rowClassOfTitle(title) {
     return null;
   };
   return walk(root);
+}
+
+/** 找到标题为 title 的那一行，返回它的 class 数组（用来确认高亮/选中是否跟着切换）。 */
+function rowClassOfTitle(title) {
+  const node = rowNodeOfTitle(title);
+  return node ? node._class : null;
+}
+
+/** 标题为 title 的行是否带某个状态 class（行没被渲染时返回 false，而不是抛错）。 */
+function rowHasClass(title, className) {
+  const classes = rowClassOfTitle(title);
+  return Boolean(classes && classes.includes(className));
 }
 
 console.log("场景 1：初始化（活动标签在第 24 行，远在视口之外）");
@@ -620,6 +649,136 @@ console.log("场景 8：行内展示态（发声/静音/关注）走本地增量
   }
   await sleep(60);
   check(find("sb-pin-muted") === null, "取消静音后圆点消失");
+}
+
+console.log("场景 8.6：普通模式下 Shift+点击 → 自动进入多选并选中「活动标签 → 被点项」");
+{
+  // 此刻活动标签是「Ctrl+T 新标签」（非固定标签的最后一行）；把视野挪到列表底部，
+  // 让活动行与目标行都真的被虚拟列表渲染出来（虚拟列表只渲染可见区间）。
+  const treeRowCount = browserTabs.filter((tab) => !tab.pinned).length;
+  scrollContainer.scrollTop = treeRowCount * ITEM_HEIGHT; // 会被夹取到最大滚动位置
+  scrollContainer.props.onScroll();
+  await sleep(60);
+
+  check(find("sb-bulk") === null, "普通模式下没有批量操作条");
+  const messagesBefore = messageLog.length;
+
+  const targetRow = rowNodeOfTitle("标签 60"); // 非固定标签的第 59 行
+  check(Boolean(targetRow && typeof targetRow.props.onClick === "function"), "找到区间终点行「标签 60」");
+  if (targetRow) targetRow.props.onClick({ shiftKey: true });
+  await sleep(60);
+
+  const multiButton = findButtonByText("多选");
+  check(Boolean(find("sb-bulk")), "Shift+点击后自动出现批量操作条（已进入多选模式）");
+  check(Boolean(multiButton && multiButton._class.includes("active")), "工具栏「多选」按钮同步点亮");
+  // 活动标签在第 61 行、被点项在第 59 行 → 第 59..61 行全部选中
+  check(rowHasClass("标签 60", "selected"), "区间终点行被选中");
+  check(rowHasClass("新建的标签页", "selected"), "区间中间行被选中");
+  check(rowHasClass("Ctrl+T 新标签", "selected"), "区间起点（活动标签）被选中");
+  check(!rowHasClass("标签 43", "selected"), "区间之外、同样可见的行不受影响");
+  check(rowHasClass("Ctrl+T 新标签", "current"), "被点标签没有被激活（活动标记仍在原标签上）");
+  check(!messageLog.slice(messagesBefore).includes("activateTab"), "Shift+点击不会激活/跳转标签");
+  check(nodeText(find("sb-bulk-count")) === "已选 3 项", "批量条显示「已选 3 项」", nodeText(find("sb-bulk-count")));
+}
+
+console.log("场景 8.7：再次 Shift+点击 → 锚点回到被点项，可继续扩选");
+{
+  const row = rowNodeOfTitle("标签 43"); // 第 42 行
+  check(Boolean(row && typeof row.props.onClick === "function"), "找到新的终点行「标签 43」");
+  if (row) row.props.onClick({ shiftKey: true });
+  await sleep(60);
+  check(rowHasClass("标签 43", "selected"), "第二次 Shift+点击的终点被选中");
+  check(rowHasClass("Ctrl+T 新标签", "selected"), "并集语义：上一次区间仍然保留");
+  check(
+    nodeText(find("sb-bulk-count")) === "已选 20 项",
+    "第 42..61 行共 20 项（不是从活动标签重算）",
+    nodeText(find("sb-bulk-count"))
+  );
+}
+
+console.log("场景 8.8：活动标签被过滤隐藏 → 退化为只选中被点项");
+{
+  findButtonByText("多选").props.onClick(); // 退出多选模式（同时清空选择）
+  await sleep(60);
+  check(find("sb-bulk") === null, "退出多选后批量操作条消失");
+
+  findButtonByText("过滤").props.onClick();
+  await sleep(60);
+  const input = findByTag("input");
+  check(Boolean(input && typeof input.props.onInput === "function"), "找到搜索框");
+  input.props.onInput({ target: { value: "标签 1" } }); // 只匹配「标签 1」「标签 10..19」，活动标签不在其中
+  await sleep(400);
+  scrollContainer.scrollTop = 0;
+  scrollContainer.props.onScroll();
+  await sleep(60);
+
+  const row = rowNodeOfTitle("标签 10");
+  check(Boolean(row && typeof row.props.onClick === "function"), "过滤后目标行「标签 10」仍然渲染");
+  const messagesBefore = messageLog.length;
+  if (row) row.props.onClick({ shiftKey: true });
+  await sleep(60);
+  check(Boolean(find("sb-bulk")), "活动标签不可见时仍然会进入多选模式");
+  check(
+    nodeText(find("sb-bulk-count")) === "已选 1 项",
+    "活动标签不在渲染顺序里 → 只选中被点项",
+    nodeText(find("sb-bulk-count"))
+  );
+  check(!messageLog.slice(messagesBefore).includes("activateTab"), "依然不激活标签");
+}
+
+console.log("场景 8.9：固定标签方块同样支持隐式进入多选");
+{
+  findButtonByText("多选").props.onClick(); // 回到普通模式
+  await sleep(60);
+  findButtonByText("跳转").props.onClick();
+  const input = findByTag("input");
+  input.props.onInput({ target: { value: "" } }); // 清空关键词，恢复完整列表
+  await sleep(400);
+  // 把活动标签切到固定标签上（浏览器事件 → 侧边栏本地打补丁，不触发整窗重查）
+  for (const listener of listeners.activated) {
+    listener({ tabId: 777, windowId: WINDOW_ID });
+  }
+  await sleep(60);
+  scrollContainer.scrollTop = 0;
+  scrollContainer.props.onScroll();
+  await sleep(60);
+
+  check(find("sb-bulk") === null, "仍是普通模式");
+  const messagesBefore = messageLog.length;
+  const pin = find("sb-pin");
+  check(Boolean(pin && typeof pin.props.onClick === "function"), "找到固定标签方块");
+  if (pin) pin.props.onClick({ shiftKey: true });
+  await sleep(60);
+  const pinAfter = find("sb-pin");
+  check(Boolean(find("sb-bulk")), "Shift+点击固定方块同样自动进入多选");
+  check(Boolean(pinAfter && pinAfter._class.includes("selected")), "活动固定方块被选中（锚点就在固定区序列里）");
+  check(!rowHasClass("标签 5", "selected"), "树区域的行没有被牵连选中");
+  check(!messageLog.slice(messagesBefore).includes("activateTab"), "固定方块没有被激活");
+}
+
+console.log("场景 8.10：活动标签与被点项分处两区 → 只选中被点项");
+{
+  findButtonByText("多选").props.onClick(); // 回到普通模式
+  await sleep(60);
+  scrollContainer.scrollTop = 0;
+  scrollContainer.props.onScroll();
+  await sleep(60);
+  const messagesBefore = messageLog.length;
+
+  const row = rowNodeOfTitle("标签 5");
+  check(Boolean(row && typeof row.props.onClick === "function"), "找到树区域目标行「标签 5」");
+  if (row) row.props.onClick({ shiftKey: true });
+  await sleep(60);
+  check(Boolean(find("sb-bulk")), "仍然进入多选模式");
+  check(
+    nodeText(find("sb-bulk-count")) === "已选 1 项",
+    "活动标签（固定标签）不在树区域序列里 → 只选中被点项",
+    nodeText(find("sb-bulk-count"))
+  );
+  check(rowHasClass("标签 5", "selected"), "被点的树行被选中");
+  const pinAfter = find("sb-pin");
+  check(Boolean(pinAfter && !pinAfter._class.includes("selected")), "固定标签方块没有被选中");
+  check(!messageLog.slice(messagesBefore).includes("activateTab"), "依然不激活标签");
 }
 
 console.log("场景 9：管理页「打开的窗口」跳转模式下输入关键词 → 同样要跳转");

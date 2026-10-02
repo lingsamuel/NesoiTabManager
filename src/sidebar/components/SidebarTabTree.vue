@@ -52,6 +52,7 @@ const props = defineProps({
     default: null,
   },
   // 多选模式：开启后点击行不再激活标签，而是切换选中（见 SidebarApp 的「多选模式」）。
+  // 注意：**普通模式下 Shift+点击也会走 select**（隐式进入多选），所以判断不能只看本 prop。
   multiSelect: {
     type: Boolean,
     default: false,
@@ -111,12 +112,16 @@ function onAuxClick(tab, event) {
 /**
  * 行点击：
  * - 普通模式 = 激活该标签（原有行为）；
- * - 多选模式 = 切换选中，并把 shiftKey 一并上报，由父级按"锚点 + 区间"规则处理
- *   （区间必须按父级持有的完整行顺序算，组件里只有单个 item，算不了）。
+ * - 多选模式 = 切换选中，并把 shiftKey 一并上报，由父级按"锚点 + 区间"规则处理；
+ * - 普通模式 + Shift = **隐式进入多选模式**：同样只上报 select（带 shiftKey），
+ *   由父级先打开多选、再以"当前活动标签"为起点圈出区间；这一下点击**不激活**标签。
+ *
+ * 区间必须按父级持有的完整行顺序算（组件里只有单个 item，算不了），因此这里只上报被点项。
  */
 function onRowClick(item, event) {
-  if (props.multiSelect) {
-    emit("select", { id: item.id, tab: item.tab, shiftKey: Boolean(event && event.shiftKey) });
+  const shiftKey = Boolean(event && event.shiftKey);
+  if (props.multiSelect || shiftKey) {
+    emit("select", { id: item.id, tab: item.tab, shiftKey });
     return;
   }
   emit("activate", item.tab);

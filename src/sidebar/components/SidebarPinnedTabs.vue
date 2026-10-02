@@ -26,6 +26,7 @@ const props = defineProps({
     default: () => [],
   },
   // 多选模式：开启后点击固定标签方块不再激活标签，而是切换选中（见 SidebarApp 的「多选模式」）。
+  // 注意：**普通模式下 Shift+点击也会走 select**（隐式进入多选），所以判断不能只看本 prop。
   multiSelect: {
     type: Boolean,
     default: false,
@@ -60,11 +61,13 @@ function onAuxClick(tab, event) {
 
 /**
  * 方块点击：普通模式 = 激活该标签；多选模式 = 切换选中（shiftKey 上报给父级算区间）。
+ * 普通模式 + Shift 同样是"隐式进入多选"：只上报 select，由父级打开多选并以当前活动标签为起点圈选。
  * 固定标签区是跨窗口聚合的独立序列，区间只能在同一区域内计算，因此这里只上报"被点项"。
  */
 function onPinClick(tab, event) {
-  if (props.multiSelect) {
-    emit("select", { id: Number(tab.id), tab, shiftKey: Boolean(event && event.shiftKey) });
+  const shiftKey = Boolean(event && event.shiftKey);
+  if (props.multiSelect || shiftKey) {
+    emit("select", { id: Number(tab.id), tab, shiftKey });
     return;
   }
   emit("activate", tab);

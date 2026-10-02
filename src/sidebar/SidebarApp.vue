@@ -72,6 +72,17 @@ const multiSelect = ref(false);
 const selectedTabIds = reactive({});
 // 连续选择的锚点：最近一次被置为选中的那一项（规则与"锚点失效退化"见 manager/utils/selection.js）。
 const selectionAnchor = ref(null);
+
+/**
+ * 当前活动标签的 id（字符串形式）；窗口里暂时取不到活动标签时为 null。
+ * 只用于"普通模式下 Shift+点击 = 隐式进入多选"这条入口：那一次的区间起点是活动标签本身，
+ * 而不是 selectionAnchor（普通模式下选择集合保证为空，没有可用的历史锚点）。
+ */
+const activeTabId = computed(() => {
+  const tab = tabs.value.find((entry) => entry.active);
+  return tab && tab.id !== undefined && tab.id !== null ? String(tab.id) : null;
+});
+
 // 保存到列表的弹出清单状态。
 const saveMenu = reactive({
   mode: "",
@@ -908,6 +919,21 @@ function clearSidebarSelection() {
 }
 
 /**
+ * 普通模式下 Shift+点击的入口：自动打开多选模式，并返回本次区间的锚点（当前活动标签）。
+ *
+ * 锚点必须是活动标签而不是 selectionAnchor：普通模式下的选择集合保证为空（退出多选时已清空），
+ * 用户按住 Shift 的意图是"从我正在看的标签一直选到点的那里"。
+ *
+ * 返回 null 或返回一个不在被点项所在区域渲染顺序里的 id 时，applySelectionClick 的区间计算
+ * 会失败并退化为"只选中被点项"——正好覆盖活动标签被折叠隐藏 / 被过滤掉 / 属于另一个区域
+ * / 窗口暂时没有活动标签这几种情况，不必在这里各写一遍判断。
+ */
+function beginMultiSelectFromActiveTab() {
+  multiSelect.value = true;
+  return activeTabId.value;
+}
+
+/**
  * 树区域的选择动作。
  * 区间必须用**树区域自己的**渲染顺序计算：固定标签区是另一个（跨窗口聚合的）序列，
  * 锚点落在另一个区域时 orderedKeys 里找不到它，区间会自动退化为普通点击。
@@ -916,11 +942,18 @@ function onTreeSelect(payload) {
   if (!payload) {
     return;
   }
+  const shiftKey = Boolean(payload.shiftKey);
+  // 普通模式下的 Shift+点击先隐式进入多选，并把这次区间的起点强制设为当前活动标签；
+  // 已在多选模式里的 Shift+点击沿用既有锚点（最近一次被置为选中的项），可连续扩选。
+  let anchor = selectionAnchor.value;
+  if (!multiSelect.value && shiftKey) {
+    anchor = beginMultiSelectFromActiveTab();
+  }
   selectionAnchor.value = applySelectionClick(selectedTabIds, {
     key: payload.id,
-    shiftKey: Boolean(payload.shiftKey),
+    shiftKey,
     orderedKeys: treeOrderedIds.value,
-    anchor: selectionAnchor.value,
+    anchor,
   });
 }
 
@@ -929,11 +962,16 @@ function onPinnedSelect(payload) {
   if (!payload) {
     return;
   }
+  const shiftKey = Boolean(payload.shiftKey);
+  let anchor = selectionAnchor.value;
+  if (!multiSelect.value && shiftKey) {
+    anchor = beginMultiSelectFromActiveTab();
+  }
   selectionAnchor.value = applySelectionClick(selectedTabIds, {
     key: payload.id,
-    shiftKey: Boolean(payload.shiftKey),
+    shiftKey,
     orderedKeys: pinnedOrderedIds.value,
-    anchor: selectionAnchor.value,
+    anchor,
   });
 }
 
@@ -1553,7 +1591,7 @@ onBeforeUnmount(() => {
           type="button"
           class="sb-tool"
           :class="{ active: multiSelect }"
-          :title="multiSelect ? '退出多选模式（点击行不再跳转）' : '多选模式：点击标签页为选中，便于批量管理'"
+          :title="multiSelect ? '退出多选模式（点击行不再跳转）' : '多选模式：点击标签页为选中，便于批量管理（也可直接 Shift+点击圈选）'"
           @click="toggleMultiSelect"
         >
           多选
