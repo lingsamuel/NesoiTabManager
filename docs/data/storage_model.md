@@ -110,13 +110,9 @@
 - 用途：记录哪些窗口存在快照键，便于窗口关闭时清理，避免使用 `storage.local.get(null)` 全量读取。
 
 ### 树结构会话令牌（treeSessionToken）
-- 存放在 `chrome.storage.session` 的 `treeSessionToken` 键，结构 `{ token, at }`（`at` 为会话起点时间戳）。
-- 用途：判断快照里的 `tabId`（`items[].i`）是否还在同一浏览器会话内可信；同时作为"每标签会话值是不是本次会话写的"的判据。
+- 存放在 `chrome.storage.session` 的 `treeSessionToken` 键，值为一个随机字符串（会话令牌）。
+- 用途：判断快照里的 `tabId`（`items[].i`）是否还在同一浏览器会话内可信。
 - 会话存储跨 SW 回收存活、浏览器重启即清空，因此"令牌一致"恰好等价于"仍是同一批 tabId"。
-
-### 层级修复标记（treeRepairDone）
-- 存放在 `chrome.storage.session` 的 `treeRepairDone` 键，结构 `{ [windowId]: at }`。
-- 用途：记录本会话已用每标签会话值扫描过哪些窗口，避免每次树重建都重复做一轮 O(n) IPC 救援。
 
 ### 树折叠状态（treeCollapsed）
 - 存放在 `chrome.storage.session` 的 `treeCollapsed` 键。
@@ -163,7 +159,7 @@
 - AI 分组：`aiGroupTabs` -> 生成分组 -> `saveGroupedTabs` 写入新列表。
 - 自动冻结：定时扫描 -> `discardSession` + `historyBatches` 更新。
 - 近期标签页：监听 tabs 事件 -> 更新 `recentTabsOpenAt`；“已阅”更新 `recentTabsState.lastReviewedAt`；提醒定时器读取统计并触发气泡。
-- 树结构：tabs 事件（创建/关闭/移动/跨窗口） -> 后台内存树更新 -> 脏窗口空闲防抖 -> `treeStructure:<windowId>` 覆盖写（含会话令牌 `sid` 与每项 `i`）+ `treeStructureWindows` 索引更新；树从快照重建后触发一次层级自动修复（`treeRepairDone` 记本会话是否已扫过）。
+- 树结构：tabs 事件（创建/关闭/移动/跨窗口） -> 后台内存树更新 -> 脏窗口空闲防抖 -> `treeStructure:<windowId>` 覆盖写（含会话令牌 `sid` 与每项 `i`）+ `treeStructureWindows` 索引更新。
 - 树视图：管理页 `getTreeStructure` 读取内存树 -> 本地 DFS 扁平化 + 折叠（`treeCollapsed`） -> 渲染。
 - 撤销关闭：批量关闭前写 `closedGroups`（关闭组）或关闭时写 `closedTabLog`（单标签） -> 撤销时按记录重开标签、
   重建父子关系、`chrome.tabs.move` 移回原物理位置。详见 `docs/ui/tree_style_tabs.md` 的「撤销关闭与树恢复」。

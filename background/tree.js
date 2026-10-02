@@ -121,22 +121,6 @@ export function setRestoreCandidateProvider(provider) {
   restoreCandidateProvider = typeof provider === "function" ? provider : null;
 }
 
-// 「历史损坏救援」的钩子：由 closed_groups.js 在初始化时注册。
-//
-// 为什么用钩子：救援要读 Firefox 的每标签会话值、并复用撤销关闭那套校验，属于另一层职责；
-// 而触发点必须在这里——只有本文件知道"树刚从快照重建完成"这个时刻。
-// 钩子内部自带"每浏览器会话每窗口只跑一次"的守卫，因此这里每次重建都调用是安全的。
-let structureRepairProvider = null;
-
-/**
- * 注册「用每标签会话值救援历史损坏结构」的钩子（只能由 closed_groups.js 调用）。
- *
- * @param {null|((windowId: number, tabs: chrome.tabs.Tab[], hadSnapshot: boolean) => void)} provider
- */
-export function setStructureRepairProvider(provider) {
-  structureRepairProvider = typeof provider === "function" ? provider : null;
-}
-
 let startupActive = false;
 let startupQuietTimer = null;
 let startupMaxTimer = null;
@@ -429,7 +413,7 @@ async function ensureTree(windowId) {
 // 会话令牌的内存缓存：同一次 SW 生命周期里只读/写一次 storage.session。
 // 必须在模块级缓存（而不是每次读盘）——它只用于"快照里的 tabId 是否还可信"这一个判断，
 // 值在整个浏览器会话内不变，重复读取纯属浪费。
-let sessionStatePromise = null;
+let sessionTokenPromise = null;
 
 /**
  * 取（必要时创建）本次浏览器会话的树结构令牌。
@@ -437,39 +421,25 @@ let sessionStatePromise = null;
  * 语义：`storage.session` 能跨 Service Worker / 事件页回收存活，但浏览器一重启就清空。
  * 因此"令牌一致"恰好等价于"快照里的 tabId 与当前标签属于同一批身份"，可以放心按 id 配对；
  * 令牌不一致（浏览器重启、或环境没有会话存储）时读取端会完全忽略 id，退回按 URL 对齐。
- * `at` 是会话起点（令牌的创建时刻），供"每标签会话值是不是本次会话写的"这类判断使用。
  *
- * @returns {Promise<{token: string, at: number}>} 拿不到会话存储时 token 为空串（表示"不可信"，不是错误）。
+ * 兼容读取早期写下的 `{ token, at }` 形态，新值一律写纯字符串。
+ *
+ * @returns {Promise<string>} 拿不到会话存储时返回空串（表示"不可信"，不是错误）。
  */
-function getTreeSessionState() {
-  if (!sessionStatePromise) {
-    sessionStatePromise = (async () => {
+function getTreeSessionToken() {
+  if (!sessionTokenPromise) {
+    sessionTokenPromise = (async () => {
       const stored = await storageSessionGet(TREE_SESSION_TOKEN_KEY);
-      if (stored && typeof stored === "object" && typeof stored.token === "string" && stored.token) {
-        return { token: stored.token, at: Number(stored.at) || 0 };
+      const existing = typeof stored === "string" ? stored : stored && typeof stored.token === "string" ? stored.token : "";
+      if (existing) {
+        return existing;
       }
-      const now = Date.now();
-      const state = { token: `s${now.toString(36)}${Math.random().toString(36).slice(2, 10)}`, at: now };
-      await storageSessionSet({ [TREE_SESSION_TOKEN_KEY]: state });
-      return state;
-    })().catch(() => ({ token: "", at: 0 }));
+      const token = `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+      await storageSessionSet({ [TREE_SESSION_TOKEN_KEY]: token });
+      return token;
+    })().catch(() => "");
   }
-  return sessionStatePromise;
-}
-
-/** 本次浏览器会话的令牌字符串；空串表示"不可信"（跨重启或没有会话存储）。 */
-async function getTreeSessionToken() {
-  return (await getTreeSessionState()).token;
-}
-
-/**
- * 本次浏览器会话的起点时间戳（毫秒）。
- *
- * 使用场景：Firefox 的每标签会话值（`sessions.setTabValue`）会随标签跨浏览器重启恢复，
- * 但其中的 tabId 在上一次会话里才有效。判断一个会话值是否属于本次会话，就靠它。
- */
-export async function getTreeSessionStartedAt() {
-  return (await getTreeSessionState()).at;
+  return sessionTokenPromise;
 }
 
 async function loadTree(windowId) {
@@ -492,15 +462,6 @@ async function loadTree(windowId) {
   if (!result.exact) {
     // 快照与实际不一致（首次使用、或恢复后结构有变化）：需要回写一次纠正后的结构。
     markDirty(windowId);
-  }
-  // 刚从快照重建完结构：历史版本可能把某些标签写成了顶层，趁现在用每标签会话值救援一次。
-  // 钩子内部自带"每浏览器会话每窗口只跑一次"的守卫，且只在拿得到会话值的浏览器上生效。
-  if (structureRepairProvider) {
-    try {
-      structureRepairProvider(windowId, tabs, Boolean(snapshot && snapshot.items && snapshot.items.length > 0));
-    } catch (error) {
-      // 救援是尽力而为，失败不影响正常结构。
-    }
   }
   return state;
 }
@@ -1467,24 +1428,6 @@ export function getTabStructureInfo(tabId, windowId) {
     prevId,
     nextId,
   };
-}
-
-/**
- * 只取某标签在内存树里的父标签 id（`null` = 顶层）。
- *
- * 与 `getTabStructureInfo` 的区别：不做 O(n) 的前后邻居扫描，是 O(1) 的，
- * 因此可以被"遍历整窗标签"的批量逻辑（例如层级自动修复）安全使用。
- *
- * @returns {number|null|undefined} undefined 表示树未加载或该标签未登记在树里
- */
-export function getTrackedParentId(windowId, tabId) {
-  const tree = trees.get(Number(windowId));
-  const id = Number(tabId);
-  if (!tree || !Number.isFinite(id) || !tree.parentById.has(id)) {
-    return undefined;
-  }
-  const parentId = tree.parentById.get(id);
-  return parentId == null ? null : parentId;
 }
 
 /** 取某标签的直接子标签（关闭它之后这些子标签会被提升，需要刷新它们的持久引用）。 */

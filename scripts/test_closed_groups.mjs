@@ -687,65 +687,12 @@ async function main() {
     "11：树未加载时创建的标签也写下了父引用"
   );
 
-  // --- 场景 12：历史损坏（快照里被写成顶层）用每标签会话值自动救援 ---
-  console.log("场景 12：历史损坏的顶层标签按会话值自动挂回原父");
-  windows.push({ id: 4 });
-  const r4root = addTab({ windowId: 4, url: "https://repair-root.example/", title: "RR" });
-  const r4child = addTab({ windowId: 4, url: "https://repair-child.example/", title: "RC" });
-  // 模拟旧版本写坏的快照：原父信息已丢，两个标签都是顶层
-  storageData.local["treeStructure:4"] = {
-    v: 2,
-    at: Date.now(),
-    n: 2,
-    items: [
-      { u: "https://repair-root.example/", t: "RR", p: -1, i: r4root.id },
-      { u: "https://repair-child.example/", t: "RC", p: -1, i: r4child.id },
-    ],
-  };
-  // Firefox 每标签会话值里还留着原父（本会话写入）
-  tabValues.set(Number(r4child.id), {
-    "nesoi:tree-ref": { parentId: r4root.id, at: Date.now() },
-  });
-  // 注意：救援是 loadTree 里并行触发的后台任务，在模拟器里可能在首次读取返回前就跑完了，
-  // 因此这里只断言结果。能证明"救援确实生效"的是：种子快照里 RC 的 p 是 -1（顶层），
-  // 而最终它挂回了 RR；同时本会话的修复标记被写了下来（同一会话不再重复扫描）。
-  await tree.getTreeStructure([4]);
-  await tick(80); // 等后台救援跑完
-  const parents4 = parentsOf(await tree.getTreeStructure([4]), 4);
-  assertEqual(parents4[r4child.id], r4root.id, "12：RC 被自动挂回原父");
-  assertTrue(
-    Boolean(storageData.session.treeRepairDone && storageData.session.treeRepairDone[4]),
-    "12：本会话的修复标记已记录"
-  );
-
-  console.log("场景 12b：上一次浏览器会话留下的会话值不可用于修复");
-  windows.push({ id: 5 });
-  const r5root = addTab({ windowId: 5, url: "https://stale-root.example/", title: "SR" });
-  const r5child = addTab({ windowId: 5, url: "https://stale-child.example/", title: "SC" });
-  storageData.local["treeStructure:5"] = {
-    v: 2,
-    at: Date.now(),
-    n: 2,
-    items: [
-      { u: "https://stale-root.example/", t: "SR", p: -1, i: r5root.id },
-      { u: "https://stale-child.example/", t: "SC", p: -1, i: r5child.id },
-    ],
-  };
-  // 时间戳早于本会话起点 ⇒ 那次会话里的 tabId 与现在无关（可能已被复用），必须忽略
-  tabValues.set(Number(r5child.id), {
-    "nesoi:tree-ref": { parentId: r5root.id, at: Date.now() - 24 * 60 * 60 * 1000 },
-  });
-  await tree.getTreeStructure([5]);
-  await tick(80);
-  const parents5 = parentsOf(await tree.getTreeStructure([5]), 5);
-  assertEqual(parents5[r5child.id], undefined, "12b：上一次会话的会话值不会改结构");
-
-  // --- 场景 13：撤销认领把"已经在树里的标签"直接改顶层时，不能留下子索引残留 ---
+  // --- 场景 12：撤销认领把"已经在树里的标签"直接改顶层时，不能留下子索引残留 ---
   // 触发条件：新建标签的 URL 与刚关闭的标签相同（插件会走"撤销认领"把它先按顶层登记），
   // 而对齐恰好已经把它挂到 opener 之下。旧实现直接写父映射，等于把它的 id 留在 opener 的
   // childIdsById 里；之后 opener 被关闭时，这个其实早已顶层的标签会被当成它的子标签提升进树
   // ——正是"关闭一个标签，几个毫不相干的标签突然被重排"。
-  console.log("场景 13：撤销认领不得留下子索引残留");
+  console.log("场景 12：撤销认领不得留下子索引残留");
   // 用 Chrome 路径（没有每标签会话值）：认领只按 URL 匹配，命中后套用关闭记录里的父（这里是 null），
   // 因此"登记为顶层"这一步不会被随后套用的父关系掩盖，能干净地暴露子索引残留。
   delete chrome.sessions.setTabValue;
@@ -764,12 +711,12 @@ async function main() {
   await emitAsync(listeners.created, { ...x8 });
   await tick(20);
   parents8 = parentsOf(await tree.getTreeStructure([8]), 8);
-  assertEqual(parents8[x8.id], undefined, "13：认领后 X 是顶层（没有被套用默认规则）");
+  assertEqual(parents8[x8.id], undefined, "12：认领后 X 是顶层（没有被套用默认规则）");
   // 关闭 B8：不得把 X 提升到 P8 之下
   await closeTabs([b8.id]);
   await tick(20);
   parents8 = parentsOf(await tree.getTreeStructure([8]), 8);
-  assertEqual(parents8[x8.id], undefined, "13：关闭 B8 不会把顶层的 X 提升进树");
+  assertEqual(parents8[x8.id], undefined, "12：关闭 B8 不会把顶层的 X 提升进树");
 
   console.log("");
   console.log(`共 ${checks} 项断言，失败 ${failures} 项`);
