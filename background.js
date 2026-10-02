@@ -35,9 +35,11 @@ import {
   createList,
   deleteList,
   deleteListItems,
+  getListsExport,
   getListsForUi,
   getListSummaries,
   importLists,
+  migrateListsFavicons,
   moveListItems,
   renameList,
   saveGroupedTabs,
@@ -97,6 +99,10 @@ chrome.runtime.onInstalled.addListener(() => {
   resetDiscardSession().then(() => initializeDiscardSystem());
   initializeRecentSystem({ forceStartup: true });
   initializeTreeSystem({ forceStartup: true });
+  // 升级后把旧列表数据里逐条重复的 favicon 真正收进图标表（幂等，无旧结构时不做任何写入）。
+  migrateListsFavicons().catch((error) => {
+    console.warn("列表 favicon 迁移失败：", String(error && error.message ? error.message : error));
+  });
 });
 
 chrome.runtime.onStartup.addListener(() => {
@@ -107,6 +113,10 @@ chrome.runtime.onStartup.addListener(() => {
   initializeRecentSystem({ forceStartup: true });
   // 浏览器启动会恢复大量标签页：树系统据此进入静默期，避免逐事件对齐与写盘。
   initializeTreeSystem({ forceStartup: true });
+  // 兜底：浏览器在扩展更新时没有触发 onInstalled（例如更新期间没有运行）也不会漏掉迁移。
+  migrateListsFavicons().catch((error) => {
+    console.warn("列表 favicon 迁移失败：", String(error && error.message ? error.message : error));
+  });
 });
 
 // 激活指定标签页：先把其所在窗口前置，再激活该标签。
@@ -304,6 +314,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // 导出载荷：条目只带 iconKey、图标集中在顶层 favIcons 表里，不再逐条内联（否则重复 N 份）。
+  if (action === "exportLists") {
+    getListsExport()
+      .then((payload) => sendResponse({ ok: true, payload }))
+      .catch((error) => sendResponse({ ok: false, error: String(error) }));
+    return true;
+  }
+
   // 侧边栏在弹出原生标签右键菜单前推来当前选中项，供「复制标题 / 复制链接」输出多行。
   // 纯内存暂存、不做校验失败以外的处理：侧边栏只关心"推到了"，失败也无处提示（菜单已弹出）。
   if (action === "setCopySelection") {
@@ -439,7 +457,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: false, error: "导入格式无效。" });
       return false;
     }
-    importLists(rawLists, mode)
+    // favIcons 是 v2 导出文件顶层的图标表；旧文件没有这一项，传 undefined 即可。
+    importLists(rawLists, mode, message.favIcons)
       .then((result) => sendResponse({ ok: true, result }))
       .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
     return true;

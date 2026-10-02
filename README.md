@@ -51,7 +51,8 @@
 - 使用 `chrome.tabs`、`chrome.storage`、`chrome.contextMenus`、`chrome.sessions`。
 - 列表数据存放在 `chrome.storage.local`。
 - 保存列表时 favicon 会去重：图标集中在 `favIcons` 表中只存一份，条目只保留短键 `iconKey`；
-  读取时再解析回 `favIconUrl`，因此导出格式与界面渲染保持不变。详见 `docs/data/favicon_dedup.md`。
+  读取时再解析回 `favIconUrl`（界面渲染不变），**导出的 JSON 同样是紧凑结构**（图标只出现一次），
+  旧数据在扩展更新/浏览器启动时自动迁移。详见 `docs/data/favicon_dedup.md`。
 - `chrome.storage.session` 为 Chrome 专有能力，Firefox 下自动降级。
 - UI 构建使用 Vite + Vue，输出到 `ui/` 目录。
 - AI 分组需要在“插件设置”里配置完整 API 端点、Key、模型、API 格式与单次上限。

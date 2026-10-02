@@ -344,12 +344,18 @@ function useLists({ request, statusTarget, filterQuery, filterMode }) {
   }
 
   async function exportLists() {
-    const response = await request("getLists");
+    // 用 exportLists 而不是 getLists：后者会把 iconKey 逐条展开回 favIconUrl，
+    // 同一个图标会被重复写 N 份——导出文件必须与库里的去重结果一样紧凑。
+    const response = await request("exportLists");
     if (!response.ok) {
       setListStatus(response.error || "导出失败。", "error");
       return;
     }
-    const payload = JSON.stringify({ lists: response.lists || [] }, null, 2);
+    const payload = JSON.stringify(
+      response.payload || { version: 2, lists: [], favIcons: {} },
+      null,
+      2
+    );
     const blob = new Blob([payload], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -368,9 +374,13 @@ function useLists({ request, statusTarget, filterQuery, filterMode }) {
     try {
       const text = await file.text();
       const data = JSON.parse(text);
+      // 兼容两种文件：
+      // - v2（当前）：{ version, lists, favIcons }，条目只带 iconKey，必须把图标表一并交给后台；
+      // - v1（旧版本导出的自包含格式）：{ lists }，条目内联 favIconUrl，没有 favIcons。
       const lists = Array.isArray(data) ? data : data.lists;
+      const favIcons = Array.isArray(data) ? {} : data.favIcons;
       const mode = importReplace.value ? "replace" : "merge";
-      const response = await request("importLists", { lists, mode });
+      const response = await request("importLists", { lists, mode, favIcons });
       if (!response.ok) {
         setListStatus(response.error || "导入失败。", "error");
         return;

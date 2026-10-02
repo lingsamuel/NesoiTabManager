@@ -32,8 +32,10 @@
   - `u:<去掉 fragment 的 URL>`：其它形态；
   - `""`：无图标。
 - 与 `lists` 在**同一次 `storageSet`** 中写入；每次写列表时顺带裁剪掉不再被引用的表项（GC）。
-- 旧数据里的 `favIconUrl` 采用**懒迁移**：读取时原样返回，下一次列表写操作时转成 `iconKey` 并登记入表。
-- 导出的 JSON 仍是内联 `favIconUrl` 的自包含格式，不包含 `favIcons`（见 `docs/data/favicon_dedup.md`）。
+- 旧数据里的 `favIconUrl` 采用**懒迁移 + 主动迁移**：读取时原样返回，下一次列表写操作时转成 `iconKey` 并登记入表；
+  扩展安装/更新与浏览器启动时还会各检查一次并整份重写，避免"只看不写"的用户永远留着重复数据。
+- 导出使用独立消息 `exportLists`：返回"条目只带 `iconKey` + 顶层 `favIcons` 表"的紧凑载荷（v2 格式），
+  **不再逐条内联 `favIconUrl`**；导入同时接受 v2 与旧的内联格式（见 `docs/data/favicon_dedup.md`）。
 
 ### AI 配置（aiConfig）
 - 存放在 `chrome.storage.local` 的 `aiConfig` 键。

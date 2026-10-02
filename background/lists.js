@@ -1,7 +1,7 @@
 import { storageGet, storageSet } from "./storage.js";
-import { FAVICONS_KEY, STORAGE_KEY } from "./constants.js";
+import { EXPORT_FORMAT_VERSION, FAVICONS_KEY, STORAGE_KEY } from "./constants.js";
 import { closeTabsAsGroup } from "./closed_groups.js";
-import { normalizeListsForWrite, resolveLists } from "./favicons.js";
+import { listsNeedMigration, normalizeListsForWrite, resolveLists } from "./favicons.js";
 import {
   ensureUniqueListName,
   generateId,
@@ -65,10 +65,17 @@ async function getLists() {
  *
  * 顺序不能颠倒：先归一化才能把新条目里的 `favIconUrl` 登记进表，裁剪也就不会把它当成孤儿删掉；
  * 两次写入合并成一次，避免"列表已写、图标表未写"时前端看到一堆没有图标的条目。
+ *
+ * @param {Array} lists 即将落盘的列表
+ * @param {object} [extraIcons] 额外的图标表（导入文件里带来的），先并入当前表再归一化，
+ *   否则导入条目引用的 iconKey 会因为"表里没有"被当成脏键清掉，图标全部丢失。
  */
-async function writeListsOnce(lists) {
+async function writeListsOnce(lists, extraIcons) {
   const storedIcons = await storageGet(FAVICONS_KEY);
-  const normalized = normalizeListsForWrite(lists, storedIcons);
+  const base = storedIcons && typeof storedIcons === "object" ? storedIcons : {};
+  const merged =
+    extraIcons && typeof extraIcons === "object" ? { ...base, ...extraIcons } : base;
+  const normalized = normalizeListsForWrite(lists, merged);
   await storageSet({
     [STORAGE_KEY]: normalized.lists,
     [FAVICONS_KEY]: normalized.favIcons,
@@ -80,8 +87,8 @@ async function writeListsOnce(lists) {
 // 用一个 promise 链把整段串起来；失败不毒化队列（异常只交给对应调用方）。
 let writeChain = Promise.resolve();
 
-async function setLists(lists) {
-  const task = writeChain.then(() => writeListsOnce(lists));
+async function setLists(lists, extraIcons) {
+  const task = writeChain.then(() => writeListsOnce(lists, extraIcons));
   writeChain = task.then(
     () => undefined,
     () => undefined
@@ -91,11 +98,47 @@ async function setLists(lists) {
 
 /**
  * 面向 UI 的读取出口：把 `iconKey` 解析回 `favIconUrl`（并删掉 `iconKey`）。
- * 返回结构与未做去重时完全一致，管理页 / 弹窗 / 导出都不需要改动。
+ * 返回结构与未做去重时完全一致，管理页 / 弹窗的渲染代码不需要改动。
+ * **导出不走这里**：逐条展开会让同一个图标按条目数重复 N 份。
  */
 async function getListsForUi() {
   const [lists, storedIcons] = await Promise.all([getLists(), storageGet(FAVICONS_KEY)]);
   return resolveLists(lists, storedIcons);
+}
+
+/**
+ * 导出用的载荷（只读，不写盘）。
+ *
+ * 与 `getListsForUi` 的关键区别：条目保持 `iconKey`、图标集中在顶层 `favIcons` 表里只出现一次，
+ * 因此文件体积与"库里的去重结果"一致，而不是按条目数把 base64 重复 N 份。
+ * 这里对内存副本做一次归一化，所以**升级前的旧数据导出的文件同样是紧凑的**（不会写回存储）。
+ */
+async function getListsExport() {
+  const [lists, storedIcons] = await Promise.all([getLists(), storageGet(FAVICONS_KEY)]);
+  const normalized = normalizeListsForWrite(lists, storedIcons);
+  return {
+    version: EXPORT_FORMAT_VERSION,
+    lists: normalized.lists,
+    favIcons: normalized.favIcons,
+  };
+}
+
+/**
+ * 一次性迁移已落盘的旧列表数据：把条目里的 `favIconUrl` 收进图标表、条目只留 `iconKey`。
+ *
+ * 为什么需要它：懒迁移只在"下一次写列表"时发生，用户升级后如果只是查看/导出列表，
+ * 存储里的旧数据会一直逐条重复，看上去就像"根本没去重"。这里在扩展安装/更新与浏览器启动时各检查一次，
+ * 先用一次廉价的字段探测（没有任何旧结构就直接返回），有旧结构才真正重写一遍；幂等。
+ *
+ * @returns {Promise<boolean>} 是否真的执行了迁移
+ */
+async function migrateListsFavicons() {
+  const lists = await getLists();
+  if (!listsNeedMigration(lists)) {
+    return false;
+  }
+  await setLists(lists);
+  return true;
 }
 
 /**
@@ -238,8 +281,9 @@ function sanitizeImportedList(rawList) {
     rawList && rawList.description ? rawList.description : ""
   );
   const items = Array.isArray(rawList.items) ? rawList.items : [];
-  // 两个字段都原样保留：导出文件是自包含的（内联 favIconUrl），而写盘路径会统一归一化，
-  // 因此这里不需要判断用的是哪种格式——有 favIconUrl 就登记进图标表，只带 iconKey 的则沿用。
+  // 两种格式都接受：
+  // - v2 导出（`iconKey` + 顶层 `favIcons` 表）→ 沿用 iconKey，由写盘路径把导入文件里的表并进来；
+  // - v1 导出 / 其它来源（内联 `favIconUrl`）→ 写盘时归一化成 iconKey 并登记。
   const sanitizedItems = items
     .map((item) => ({
       url: item && item.url ? String(item.url) : "",
@@ -257,13 +301,34 @@ function sanitizeImportedList(rawList) {
   };
 }
 
-async function importLists(rawLists, mode) {
+/** 清洗导入文件里的图标表：只接受"非空字符串 → 非空字符串"，其余一律忽略。 */
+function sanitizeImportedFavicons(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return {};
+  }
+  const result = {};
+  Object.entries(raw).forEach(([key, value]) => {
+    if (typeof key === "string" && key && typeof value === "string" && value) {
+      result[key] = value;
+    }
+  });
+  return result;
+}
+
+/**
+ * @param {Array} rawLists 导入的列表（v1 内联 favIconUrl / v2 iconKey 都可）
+ * @param {"merge"|"replace"} mode
+ * @param {object} [rawFavIcons] v2 文件顶层的图标表；必须并入本次写盘，
+ *   否则条目里的 iconKey 在表里查不到，会被当成脏键清掉、图标全部丢失
+ */
+async function importLists(rawLists, mode, rawFavIcons) {
   const incoming = rawLists.map(sanitizeImportedList).filter(Boolean);
   if (incoming.length === 0) {
     throw new Error("没有可导入的有效列表。");
   }
+  const extraIcons = sanitizeImportedFavicons(rawFavIcons);
   if (mode === "replace") {
-    await setLists(incoming);
+    await setLists(incoming, extraIcons);
     return { imported: incoming.length, mode };
   }
   const existing = await getLists();
@@ -275,7 +340,7 @@ async function importLists(rawLists, mode) {
     existingIds.add(list.id);
     existing.push(list);
   });
-  await setLists(existing);
+  await setLists(existing, extraIcons);
   return { imported: incoming.length, mode };
 }
 
@@ -365,7 +430,9 @@ async function saveGroupedTabs(groups) {
 export {
   getLists,
   getListsForUi,
+  getListsExport,
   getListSummaries,
+  migrateListsFavicons,
   setLists,
   renameList,
   deleteList,

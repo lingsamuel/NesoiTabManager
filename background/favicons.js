@@ -154,6 +154,21 @@ function normalizeListsForWrite(lists, storedIcons) {
   return { lists: nextLists, favIcons };
 }
 
+/**
+ * 判断列表里是否还有"旧结构"条目（带 `favIconUrl` 字段的落盘形态）。
+ *
+ * 用途：启动/更新时决定要不要做一次幂等的落盘迁移。归一化之后的条目只有 `iconKey`、
+ * 完全没有 `favIconUrl` 字段，因此这里用"字段是否存在"判断，而不是"值是否为空"——
+ * 后者会把"本来就没有图标"的条目永远当成待迁移，每次启动都白写一遍。
+ */
+function listsNeedMigration(lists) {
+  const source = Array.isArray(lists) ? lists : [];
+  return source.some((list) => {
+    const items = list && Array.isArray(list.items) ? list.items : [];
+    return items.some((item) => item && Object.prototype.hasOwnProperty.call(item, "favIconUrl"));
+  });
+}
+
 /** 解析单个条目要展示的图标地址：优先 iconKey，解析不到再兼容懒迁移前的 favIconUrl。 */
 function resolveItemFavicon(item, icons) {
   const key = item && item.iconKey ? String(item.iconKey) : "";
@@ -166,9 +181,9 @@ function resolveItemFavicon(item, icons) {
 /**
  * 读取出口的解析：把条目里的 `iconKey` 换回 `favIconUrl`，并删除 `iconKey`。
  *
- * 目的是让所有调用方（管理页、弹窗、侧边栏保存清单、导出）看到的结构与去重前完全一致，
- * 前端渲染与导出格式都不需要改动。**只能用于返回给 UI 的路径**：
- * 把解析结果回写存储会丢失 key、把去重成果全部作废。
+ * 目的是让渲染类调用方（管理页、弹窗）看到的结构与去重前完全一致，前端渲染代码不需要改动。
+ * **不能用于导出**：逐条展开会把同一个图标按条目数重复 N 份，导出必须走"图标表 + 引用"的紧凑结构。
+ * **只能用于返回给 UI 的路径**：把解析结果回写存储会丢失 key、把去重成果全部作废。
  */
 function resolveLists(lists, icons) {
   const source = Array.isArray(lists) ? lists : [];
@@ -186,4 +201,10 @@ function resolveLists(lists, icons) {
   });
 }
 
-export { computeIconKey, normalizeListsForWrite, resolveItemFavicon, resolveLists };
+export {
+  computeIconKey,
+  listsNeedMigration,
+  normalizeListsForWrite,
+  resolveItemFavicon,
+  resolveLists,
+};

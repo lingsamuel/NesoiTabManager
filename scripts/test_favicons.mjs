@@ -2,12 +2,18 @@
 //
 // 两层：
 // 1. 纯逻辑（background/favicons.js）：key 规则（内容指纹 / page-icon 归一 / 子域名隔离）、
-//    写盘归一化与裁剪、读取解析；
+//    写盘归一化与裁剪、读取解析、旧结构探测；
 // 2. 真实写盘路径（background/lists.js）：用最小的 chrome.storage 模拟跑一遍
-//    "保存 → 落盘只有 iconKey、表里只有一份 → 读取解析回 favIconUrl → 删列表后 GC → 旧结构懒迁移"。
+//    "保存 → 落盘只有 iconKey、表里只有一份 → 读取解析回 favIconUrl → 删列表后 GC →
+//     导出文件紧凑（图标只出现一次）→ 落盘迁移幂等 → v2 文件导入保住图标"。
 // 这一层正是"巨量重复"被消除的地方，纯函数测试覆盖不到，必须真跑 storage 往返。
 
-import { computeIconKey, normalizeListsForWrite, resolveLists } from "../background/favicons.js";
+import {
+  computeIconKey,
+  listsNeedMigration,
+  normalizeListsForWrite,
+  resolveLists,
+} from "../background/favicons.js";
 
 // ---------------------------------------------------------------------------
 // 断言
@@ -252,6 +258,19 @@ function testNormalizeAndResolve() {
   // 表项缺失（存储被手工清理）：不能抛错，返回空串让前端回退占位图。
   const missing = resolveLists([{ id: "l", items: [{ url: "u", iconKey: "d:0000000000000000" }] }], {});
   assertEqual(missing[0].items[0].favIconUrl, "", "表项缺失 → 空串（前端回退占位图）");
+
+  // 旧结构探测：决定启动时要不要做迁移，判据是"字段是否存在"而不是"值是否为空"。
+  assertEqual(
+    listsNeedMigration([{ id: "l", items: [{ url: "u", iconKey: "" }] }]),
+    false,
+    "只有 iconKey 的条目不算待迁移（无图标的空 key 不会导致每次启动都白写）"
+  );
+  assertEqual(
+    listsNeedMigration([{ id: "l", items: [{ url: "u", favIconUrl: "" }] }]),
+    true,
+    "带 favIconUrl 字段（即使为空串）就是旧结构，需要迁移"
+  );
+  assertEqual(listsNeedMigration([]), false, "空列表不需要迁移");
 }
 
 async function testListsStorageRoundTrip() {
@@ -320,6 +339,92 @@ async function testListsStorageRoundTrip() {
   // 删除列表 → 未被引用的图标被 GC。
   await lists.deleteList(raw[0].id);
   assertEqual(Object.keys(storageData.local.favIcons).length, 1, "删列表后只留仍被引用的图标");
+
+  console.log("场景 5：导出文件必须紧凑（图标只出现一次），落盘迁移幂等");
+  // 塞一条旧结构回去，模拟"升级后还没写过列表"的库。
+  storageData.local.lists[0].items.push({
+    url: "https://a.example.com/9",
+    title: "A9",
+    favIconUrl: DATA_A,
+    savedAt: "t-legacy",
+  });
+  const exported = await lists.getListsExport();
+  assertEqual(exported.version, 2, "导出载荷版本为 2");
+  assertEqual(
+    exported.lists.every((list) => list.items.every((item) => !("favIconUrl" in item))),
+    true,
+    "导出条目不含 favIconUrl（不逐条内联）"
+  );
+  assertEqual(
+    exported.lists[0].items.some((item) => item.url.endsWith("/9")),
+    true,
+    "尚未迁移的旧条目也会被导出（导出时归一化）"
+  );
+  const exportedKeys = new Set();
+  exported.lists.forEach((list) => {
+    list.items.forEach((item) => {
+      if (item.iconKey) {
+        exportedKeys.add(item.iconKey);
+      }
+    });
+  });
+  assertDeepEqual(
+    Object.keys(exported.favIcons).sort(),
+    [...exportedKeys].sort(),
+    "顶层图标表恰好覆盖条目引用的 key"
+  );
+  assertEqual(
+    exported.favIcons[computeIconKey(DATA_A)] === DATA_A,
+    true,
+    "同一个图标在文件里只出现一次（正是这次修复的核心）"
+  );
+  // 导出是只读的：不能顺手把存储改掉，否则"导出"变成了隐式写盘。
+  assertEqual(
+    "favIconUrl" in storageData.local.lists[0].items.find((item) => item.url.endsWith("/9")),
+    true,
+    "导出不改写存储"
+  );
+
+  // 真正的落盘迁移（扩展安装/更新与浏览器启动时各跑一次）。
+  assertEqual(await lists.migrateListsFavicons(), true, "检测到旧结构并执行迁移");
+  assertEqual(
+    storageData.local.lists.every((list) => list.items.every((item) => !("favIconUrl" in item))),
+    true,
+    "迁移后存储里不再有 favIconUrl（重复数据真正消失）"
+  );
+  assertEqual(await lists.migrateListsFavicons(), false, "迁移幂等：第二次不再写盘");
+
+  console.log("场景 6：v2 文件（iconKey + 顶层图标表）导入后图标不丢");
+  await lists.importLists(
+    [
+      {
+        name: "v2导入",
+        description: "",
+        items: [
+          {
+            url: "https://v2.example.com/1",
+            title: "V2",
+            iconKey: "u:https://v2.example.com/icon.png",
+            savedAt: "t",
+          },
+        ],
+      },
+    ],
+    "merge",
+    { "u:https://v2.example.com/icon.png": "https://v2.example.com/icon.png" }
+  );
+  const v2List = storageData.local.lists.find((list) => list.name === "v2导入");
+  assertEqual(
+    v2List.items[0].iconKey,
+    "u:https://v2.example.com/icon.png",
+    "v2 条目的 iconKey 被保留（图标表随文件并入）"
+  );
+  const v2Ui = await lists.getListsForUi();
+  assertEqual(
+    v2Ui.find((list) => list.name === "v2导入").items[0].favIconUrl,
+    "https://v2.example.com/icon.png",
+    "v2 导入的图标可被解析"
+  );
 }
 
 async function main() {

@@ -19,6 +19,9 @@
 - 撤销关闭：批量关闭前把整组连同结构快照写入 `chrome.storage.session`，单个关闭写入关闭记录栈；
   「撤销关闭」按记录重开标签、重建父子关系并把标签移回原物理位置；原生「重新打开已关闭的标签页」也会挂回原父节点。
   详见 `docs/ui/tree_style_tabs.md` 的「撤销关闭与树恢复」。
+- 列表 favicon 去重：条目只落盘 `iconKey`，图标集中在全局 `favIcons` 表里只存一份；写盘时归一化并顺带 GC，
+  读取出口解析回 `favIconUrl`，导出走独立的紧凑载荷；安装/更新与浏览器启动时各做一次幂等的旧数据迁移。
+  详见 `docs/data/favicon_dedup.md`。
 - 消息接口：统一处理 UI 与内容脚本的运行时消息（保存标签、列表管理、AI 分组、冻结配置、树结构等）。
 
 ## 树状结构维护
@@ -38,6 +41,8 @@
 - `getLists`：读取全部列表（返回值会把 `iconKey` 解析回 `favIconUrl`，结构对调用方保持不变）。
 - `getListSummaries`：只读取列表的 `{ id, name, count }`，供侧边栏「保存到列表」弹出清单与网页悬浮组件使用，
   避免为了几个列表名把去重后的图标重新展开成数 MB 的 base64。
+- `exportLists`：返回导出载荷 `{ version, lists, favIcons }`——条目只带 `iconKey`、图标集中在顶层表里只出现一次，
+  **不再逐条内联**（否则同一个图标会在文件里重复 N 份）；导出前对内存副本做一次归一化，因此旧数据导出的文件同样紧凑、且不写盘。
 - `setCopySelection`：侧边栏在弹出原生标签右键菜单前推来当前选中项（`{ items: [{ title, url }] }`，
   无选中项时推空数组以清空暂存），供「复制标题 / 复制链接」输出多行；
   `menus.onHidden`、复制后一次性消费与 10 秒 TTL 负责清理，详见 `docs/ui/firefox_sidebar.md`。
@@ -47,7 +52,7 @@
 - `updateListDescription`：更新列表描述。
 - `deleteListItems`：删除列表内指定索引的标签。
 - `moveListItems`：跨列表移动选中标签，可创建新列表。
-- `importLists`：导入列表（merge/replace）。
+- `importLists`：导入列表（merge/replace）；同时接受 v2（条目 `iconKey` + 顶层 `favIcons`）与旧的内联 `favIconUrl` 文件。
 - `getAiConfig` / `saveAiConfig`：读取/保存 AI 配置。
 - `aiGroupTabs`：执行 AI 分组，返回分组结果与截断数量。
 - `saveGroupedTabs`：把 AI 分组结果生成新列表。

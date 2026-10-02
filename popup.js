@@ -602,12 +602,18 @@ async function saveSelectedTabs() {
 }
 
 async function exportLists() {
-  const response = await request("getLists");
+  // 与迁移前的 `getLists` 不同：导出必须保持"条目只带 iconKey + 顶层图标表"的紧凑结构，
+  // 否则同一个 data: favicon 会按条目数重复写入文件。
+  const response = await request("exportLists");
   if (!response.ok) {
     setListStatus(response.error || "导出失败。", "error");
     return;
   }
-  const payload = JSON.stringify({ lists: response.lists || [] }, null, 2);
+  const payload = JSON.stringify(
+    response.payload || { version: 2, lists: [], favIcons: {} },
+    null,
+    2
+  );
   const blob = new Blob([payload], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
@@ -626,9 +632,12 @@ async function importLists(event) {
   try {
     const text = await file.text();
     const data = JSON.parse(text);
+    // v2 文件带顶层 favIcons（条目只有 iconKey），必须一并交给后台；
+    // v1 旧文件没有这一项，条目内联 favIconUrl，由后台归一化处理。
     const lists = Array.isArray(data) ? data : data.lists;
+    const favIcons = Array.isArray(data) ? {} : data.favIcons;
     const mode = importReplace.checked ? "replace" : "merge";
-    const response = await request("importLists", { lists, mode });
+    const response = await request("importLists", { lists, mode, favIcons });
     if (!response.ok) {
       setListStatus(response.error || "导入失败。", "error");
       return;
