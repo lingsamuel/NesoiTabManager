@@ -614,6 +614,23 @@ function getTabById(tabId) {
   });
 }
 
+/**
+ * 把标签登记为顶层。
+ *
+ * 不能直接写 `parentById.set(id, null)`：如果这个标签**已经在树里**（典型情形是对齐刚好把它
+ * 挂到了 opener 之下，而创建事件随后才到），直接改父映射会把它的 id 留在前一个父的
+ * `childIdsById` 里。那个父之后被关闭时，提升逻辑会把这个其实早已顶层的标签当成它的子标签
+ * 提升进树——表现为"关掉一个标签，几个毫不相干的标签突然换了位置"。
+ */
+function attachAsRoot(tree, tabId) {
+  const id = Number(tabId);
+  if (!tree.parentById.has(id)) {
+    tree.parentById.set(id, null);
+    return;
+  }
+  setParent(tree, id, null);
+}
+
 // ---------------------------------------------------------------------------
 // tabs 事件
 // ---------------------------------------------------------------------------
@@ -649,7 +666,7 @@ export async function handleTreeTabCreated(tab) {
     if (placedParentId !== null && tree.parentById.has(placedParentId)) {
       setParent(tree, createdId, placedParentId);
     } else {
-      tree.parentById.set(createdId, null);
+      attachAsRoot(tree, createdId);
     }
     const forcedIndex = Number(tab.index);
     if (Number.isFinite(forcedIndex)) {
@@ -666,7 +683,9 @@ export async function handleTreeTabCreated(tab) {
     const createdId = Number(tab.id);
     // 先落在顶层并登记物理下标：apply() 是异步的（Firefox 还要读每标签会话值），
     // 这段时间不能让默认规则插手；真正的父标签由 closed_groups.js 套用。
-    tree.parentById.set(createdId, null);
+    // 走 attachAsRoot 而不是直接写父映射：对齐可能刚好把它挂到 opener 之下，
+    // 直接写会把它的 id 留在那个父的 childIdsById 里（见 attachAsRoot 的说明）。
+    attachAsRoot(tree, createdId);
     const restoredIndex = Number(tab.index);
     if (Number.isFinite(restoredIndex)) {
       shiftIndexesForInsert(tree, restoredIndex);

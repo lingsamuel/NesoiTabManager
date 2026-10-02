@@ -97,6 +97,9 @@ export function dropTab(state, tabId) {
 /**
  * 收集某标签及其全部后代（不含已不存在的标签）。
  * 使用显式栈而非递归：树的深度在极端情况下可达数万层，递归会爆栈。
+ *
+ * 每个子节点都以 `parentById` 为准再校验一次：`childIdsById` 只是索引，任何"父映射里已经不是
+ * 该父的子、索引里却还留着"的残留都不该被算进子树（否则"关闭整棵子树"/跨窗口迁移会牵走无关标签）。
  */
 export function collectSubtreeIds(state, tabId) {
   const result = [];
@@ -113,7 +116,11 @@ export function collectSubtreeIds(state, tabId) {
     const children = state.childIdsById.get(current);
     if (children) {
       for (let i = 0; i < children.length; i += 1) {
-        stack.push(children[i]);
+        const childId = children[i];
+        if (state.parentById.get(childId) !== current) {
+          continue;
+        }
+        stack.push(childId);
       }
     }
   }
@@ -840,14 +847,20 @@ function byteLength(text) {
  */
 export function applyRemovePromotion(state, removedId) {
   const parentId = state.parentById.has(removedId) ? state.parentById.get(removedId) : null;
-  const children = state.childIdsById.has(removedId)
-    ? state.childIdsById.get(removedId).slice()
+  // childIdsById 只是索引：以 parentById 为准过滤一次。索引里可能残留"其实已经不是它的子"的
+  // 标签（任何绕过 setParent 的直接写都会造成），不过滤就会把它们当成子标签提升进树——
+  // 表现为"关掉一个标签，几个毫不相干的标签突然被重排"。同一父下的兄弟数量统计也要用过滤后的口径。
+  const rawChildren = state.childIdsById.has(removedId)
+    ? state.childIdsById.get(removedId)
     : [];
+  const children = rawChildren.filter(
+    (childId) => state.parentById.has(childId) && state.parentById.get(childId) === removedId
+  );
   // 关键：先统计"移除前"的兄弟数量，才能判断 T 是否为 P 的唯一子标签。
   const siblingCountBefore = parentId == null
     ? 0
     : (state.childIdsById.has(parentId)
-      ? state.childIdsById.get(parentId).filter((id) => id !== removedId).length
+      ? state.childIdsById.get(parentId).filter((id) => id !== removedId && state.parentById.get(id) === parentId).length
       : 0);
 
   dropTab(state, removedId);

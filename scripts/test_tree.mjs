@@ -701,6 +701,18 @@ async function main() {
   assertEqual(untrusted15.state.parentById.get(401), null, "15：令牌不一致时 B 的旧 URL 对不上 → 顶层");
   assertEqual(untrusted15.state.parentById.get(402), 400, "15：令牌不一致时 C 就近提升到祖父 A");
 
+  // --- 场景 16：子索引残留（childIdsById 与 parentById 不同步）不得牵动无关标签 ---
+  // 任何绕过 setParent 的直接写都会让"父映射里已经顶层、子索引里还留着"的标签出现。
+  // 关闭那个父时，旧实现会把这个其实早已顶层的标签当成子标签提升进树
+  // ——表现为"关掉一个标签，几个毫不相干的标签突然被重排"。
+  console.log("场景 16：子索引残留不得被当成子标签");
+  const leakState = core.createTreeStateFromParents(new Map([[1, null], [2, 1], [3, 2]]));
+  // 1=A（顶层）、2=B（挂 A）、3=C（挂 B）；把 C 改成顶层但不修子索引，模拟残留
+  leakState.parentById.set(3, null);
+  assertDeepEqual(core.collectSubtreeIds(leakState, 2), [2], "16：子索引残留不进子树");
+  core.applyRemovePromotion(leakState, 2);
+  assertEqual(leakState.parentById.get(3), null, "16：关闭 B 不会把顶层 C 提升到 A 下");
+
   console.log("");
   console.log(`共 ${checks} 项断言，失败 ${failures} 项`);
   if (failures > 0) {

@@ -740,6 +740,37 @@ async function main() {
   const parents5 = parentsOf(await tree.getTreeStructure([5]), 5);
   assertEqual(parents5[r5child.id], undefined, "12b：上一次会话的会话值不会改结构");
 
+  // --- 场景 13：撤销认领把"已经在树里的标签"直接改顶层时，不能留下子索引残留 ---
+  // 触发条件：新建标签的 URL 与刚关闭的标签相同（插件会走"撤销认领"把它先按顶层登记），
+  // 而对齐恰好已经把它挂到 opener 之下。旧实现直接写父映射，等于把它的 id 留在 opener 的
+  // childIdsById 里；之后 opener 被关闭时，这个其实早已顶层的标签会被当成它的子标签提升进树
+  // ——正是"关闭一个标签，几个毫不相干的标签突然被重排"。
+  console.log("场景 13：撤销认领不得留下子索引残留");
+  // 用 Chrome 路径（没有每标签会话值）：认领只按 URL 匹配，命中后套用关闭记录里的父（这里是 null），
+  // 因此"登记为顶层"这一步不会被随后套用的父关系掩盖，能干净地暴露子索引残留。
+  delete chrome.sessions.setTabValue;
+  delete chrome.sessions.getTabValue;
+  windows.push({ id: 8 });
+  const claimUrl = "https://claim-target.example/";
+  const claimRecordSeed = await openTab({ windowId: 8, url: claimUrl, title: "CR" });
+  await closeTabs([claimRecordSeed.id]); // 留下一条同 URL 的关闭记录，供后面认领
+  const p8 = addTab({ windowId: 8, url: "https://p8.example/", title: "P8" });
+  const b8 = addTab({ windowId: 8, url: "https://b8.example/", openerTabId: p8.id, title: "B8" });
+  // X 由 B 打开（opener=B8）、URL 与刚关闭的记录相同；先加进列表，再让树对齐把它挂到 B8 下
+  const x8 = addTab({ windowId: 8, url: claimUrl, openerTabId: b8.id, title: "X8" });
+  let parents8 = parentsOf(await tree.getTreeStructure([8]), 8);
+  assertEqual(parents8[x8.id], b8.id, "前置：X 由对齐按 opener 临时挂到 B8 下");
+  // 创建事件随后到达：URL 命中关闭记录 → 走撤销认领路径（先按顶层登记）
+  await emitAsync(listeners.created, { ...x8 });
+  await tick(20);
+  parents8 = parentsOf(await tree.getTreeStructure([8]), 8);
+  assertEqual(parents8[x8.id], undefined, "13：认领后 X 是顶层（没有被套用默认规则）");
+  // 关闭 B8：不得把 X 提升到 P8 之下
+  await closeTabs([b8.id]);
+  await tick(20);
+  parents8 = parentsOf(await tree.getTreeStructure([8]), 8);
+  assertEqual(parents8[x8.id], undefined, "13：关闭 B8 不会把顶层的 X 提升进树");
+
   console.log("");
   console.log(`共 ${checks} 项断言，失败 ${failures} 项`);
   if (failures > 0) {

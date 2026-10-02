@@ -381,7 +381,9 @@ async function repairTreeFromTabRefs(windowId, tabs, hadSnapshot) {
             return false;
           }
           // 上一次浏览器会话留下的值不可信：那里的 tabId 与本会话无关（可能已被复用）。
-          if (Number(stored.at) < sessionStartedAt) {
+          // 时间戳缺失/非法同样一律拒绝——拿不到"何时写的"就无法判断可信度。
+          const storedAt = Number(stored.at);
+          if (!Number.isFinite(storedAt) || storedAt < sessionStartedAt) {
             return false;
           }
           if (!applyRestoredParent(winId, tabId, parentId, { childPinned: false, indexMap })) {
