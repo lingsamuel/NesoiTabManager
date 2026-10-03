@@ -230,6 +230,8 @@ function observeDiagnosticRows() {
       }) : [];
     diagnostics.observe({
       windowId: id, source, sourceToken: applied.sourceToken, parentById,
+      // 完整物理序列留在客户端，用于关闭预期计算；不能用筛选/折叠后的行顺序代替。
+      physicalOrderIds: treeTabs.value.map((tab) => Number(tab.id)),
       entries: rows.map((row, index) => ({ id: row.id, parentId: parentById.get(row.id) ?? null,
         index, depth: row.depth, collapsed: Boolean(row.collapsed),
         title: tabById.get(row.id)?.title, url: tabById.get(row.id)?.url })),

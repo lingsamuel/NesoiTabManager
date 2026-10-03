@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 const storageListeners = [];
 const businessMessages = [];
+const removedListeners = new Set();
 let treeResponse = { ok: true, structures: {} };
 globalThis.chrome = {
+  tabs: { onRemoved: { addListener: fn => removedListeners.add(fn), removeListener: fn => removedListeners.delete(fn) } },
   runtime: { sendMessage(message, callback) {
     businessMessages.push(message);
     callback(message.action === 'getTreeStructure' ? treeResponse : { ok: true, status: {} });
@@ -32,6 +34,7 @@ await client.flush();
 assert.equal(sent.length, 0, '关闭时没有诊断 IPC');
 assert.equal(client.correlationId(), null);
 configListener({ enabled: true });
+assert.equal(removedListeners.size, 1, '启用诊断后监听前端实际关闭事件');
 const correlationId = client.correlationId();
 assert.ok(correlationId);
 client.record({ type: 'request', correlationId, title: '私密标题', nested: { url: 'https://private.invalid' } });
@@ -56,7 +59,17 @@ client.observe({ windowId: 1, source: 'rows', sourceToken: 'new-background',
 await client.flush();
 assert.ok(sent.some((batch) => batch.events?.some((event) => event.kind === 'incident' && event.payload.type === 'parent-change')),
   '真实前端客户端在后台实例切换后必须发送局部改父异常');
+const removalSnapshot = (pairs, token) => ({ windowId: 22, source: 'rows', sourceToken: token,
+  parentById: new Map(pairs), physicalOrderIds: pairs.map(([id]) => id),
+  entries: pairs.map(([id,parentId],index) => ({id,parentId,index})) });
+client.observe(removalSnapshot([[10,null],[11,10],[12,11],[13,11],[14,10]], 'a'), {aligned:true});
+for (const listener of removedListeners) listener(11, {windowId:22});
+client.observe(removalSnapshot([[10,null],[12,10],[13,12],[14,10]], 'b'), {aligned:true});
+await client.flush();
+assert.ok(!sent.some(batch => batch.events?.some(event => event.kind === 'incident' && event.payload.windowId === 22)),
+  '真实前端收到关闭事件后，应解释跨后台正常继承');
 configListener({ enabled: false });
+assert.equal(removedListeners.size, 0, '关闭诊断立即移除监听');
 const previous = sent.length;
 client.record({ type: 'disabled again' });
 await client.flush();

@@ -924,6 +924,31 @@ if (diagnosticMode) {
   await sleep(50);
   await client.flush();
   check(!diagnosticMessages.some(item => item.kind === 'incident'), '父映射对齐后正常提升仍不产生异常提示');
+
+
+  console.log('诊断场景：后台实例切换丢失登记，真实关闭监听仍能解释正确继承');
+  browserTabs = [201,202,203,204,205,206].map((id,index) => ({ id,index,windowId:WINDOW_ID,
+    title:`诊断样本 ${id}`,url:`https://example.com/${id}`,active:index===0,pinned:false }));
+  diagnosticStructure = { parents:{202:201,203:202,204:203,205:202,206:201},revision:4,revisionToken:'test-ui' };
+  for(const listener of listeners.created) listener(browserTabs[0]);
+  await sleep(350);
+  await client.flush();
+  diagnosticMessages.length=0;
+  heldStructureResponses=[];
+  browserTabs=browserTabs.filter(tab=>tab.id!==202).map((tab,index)=>({...tab,index}));
+  for(const listener of listeners.removed) listener(202,{windowId:WINDOW_ID,isWindowClosing:false});
+  await sleep(350);
+  await client.flush();
+  check(heldStructureResponses.length>0,'跨实例场景确实经过结构响应间隙');
+  diagnosticStructure={parents:{203:201,204:203,205:203,206:201},revision:1,revisionToken:'test-ui-restarted'};
+  const restartedCallbacks=heldStructureResponses;
+  heldStructureResponses=null;
+  for(const callback of restartedCallbacks) callback({ok:true,structures:{[WINDOW_ID]:diagnosticStructure}});
+  await sleep(50);
+  await client.flush();
+  check(!diagnosticMessages.some(item=>item.kind==='incident'),'跨实例正常关闭不会积累异常包');
+  check(diagnosticMessages.some(item=>item.payload.observation?.operations?.some(
+    operation=>operation.explanation==='observed-removal')),'实际侧边栏使用完整物理序列与真实关闭事件解释继承');
 }
 
 console.log("场景 9：管理页「打开的窗口」跳转模式下输入关键词 → 同样要跳转");

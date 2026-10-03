@@ -1,4 +1,6 @@
 import { compareTreeSnapshots } from './tree_diagnostics.js';
+import { diagnosticParents as snapshotParents, diagnosticDepths, observedCloseOperations } from './tree_diagnostic_closures.js';
+import { incidentReportKey } from './tree_diagnostic_reporting.js';
 
 const EXPLAINABLE = new Set(['close', 'move', 'filter', 'collapse', 'expand', 'pin', 'attach', 'detach', 'transfer']);
 const COMPLETE_PHASES = new Set(['complete', 'applied', 'after']);
@@ -16,14 +18,9 @@ function snapshotCopy(snapshot) {
     ...snapshot,
     entries: snapshot.entries.map((entry) => ({ ...entry })),
     ...(snapshot.parentById instanceof Map ? { parentById: new Map(snapshot.parentById) } : {}),
+    ...(snapshot.physicalOrderIds ? { physicalOrderIds: [...snapshot.physicalOrderIds] } : {}),
     ...(snapshot.childIdsById instanceof Map ? { childIdsById: new Map([...snapshot.childIdsById].map(([id, children]) => [id, [...children]])) } : {}),
   };
-}
-
-function snapshotParents(snapshot) {
-  const parents = new Map(snapshot?.parentById || []);
-  for (const entry of snapshot?.entries || []) parents.set(entry.id, entry.parentId ?? null);
-  return parents;
 }
 
 function permittedParentChanges(evidence, context) {
@@ -54,6 +51,8 @@ function permittedParentChanges(evidence, context) {
 function unexplainedParents(evidence, context, previous, current) {
   const allowed = permittedParentChanges(evidence, context, previous);
   const parents = snapshotParents(current);
+  const expectedDepths = operationContexts(context).find(operation =>
+    operation.explanation === 'observed-removal')?.expectedDepths;
   const inherited = new Map();
   const hasExplainedAncestor = (id) => {
     const path = [];
@@ -70,11 +69,26 @@ function unexplainedParents(evidence, context, previous, current) {
     for (const visited of path) inherited.set(visited, explained);
     return explained;
   };
-  return evidence.nodes.filter((node) => {
+  const unexplained = evidence.nodes.filter((node) => {
     if (!node.before || !node.after) return false;
     if (node.changes.includes('parent') && !allowed.has(node.id)) return true;
-    return node.changes.includes('depth') && !hasExplainedAncestor(node.id);
+    if (!node.changes.includes('depth')) return false;
+    // 推导只解释精确的投影层级，不能用祖先的合法改父掩盖错误缩进。
+    if (expectedDepths && node.after.depthSource === 'observed') {
+      return expectedDepths.get(node.id) !== node.after.depth;
+    }
+    return !hasExplainedAncestor(node.id);
   }).map((node) => node.id);
+  // 错误缩进可能一直停在旧值；即使数值没变，也必须核对关闭后的预期。
+  if (expectedDepths) {
+    const priorIds = new Set(previous?.entries.map(entry => entry.id));
+    for (const entry of current.entries) {
+      if (priorIds.has(entry.id) && Number.isFinite(entry.depth) && expectedDepths.get(entry.id) !== entry.depth) {
+        unexplained.push(entry.id);
+      }
+    }
+  }
+  return [...new Set(unexplained)];
 }
 
 function explainedOrder(context, current) {
@@ -100,7 +114,7 @@ function safeObservation(context) {
   if (Array.isArray(context.operations)) {
     observation.operations = context.operations.map((operation) => {
       const summary = {};
-      for (const field of ['type', 'correlationId', 'phase', 'revision', 'fromRevision', 'toRevision']) {
+      for (const field of ['type', 'correlationId', 'phase', 'revision', 'fromRevision', 'toRevision', 'explanation']) {
         if (typeof operation[field] === 'string' || Number.isFinite(operation[field])) summary[field] = operation[field];
       }
       return summary;
@@ -130,14 +144,17 @@ function restoredOrder(active, current) {
   return expected.every((id, index) => observed[index] === id);
 }
 
-function restoredParents(active, current, currentEvidence) {
+function restoredParents(active, current, currentEvidence, depths) {
   const entries = new Map(current.entries.map((entry) => [entry.id, entry]));
   const states = new Map(currentEvidence.nodes.map((node) => [node.id, node.after]));
   return active.ids.every((id) => {
     if (!entries.has(id)) return true;
     const expected = active.originalStates.get(id);
     const actual = states.get(id);
-    return expected && actual && expected.parentId === actual.parentId && expected.depth === actual.depth;
+    const depthRestored = active.depthIds?.has(id) && actual?.depthSource === 'observed'
+      ? depths?.get(id) === actual.depth : expected?.depth === actual?.depth;
+    const parentId = active.closedParents?.has(id) ? active.closedParents.get(id) : expected?.parentId;
+    return expected && actual && parentId === actual.parentId && depthRestored;
   });
 }
 
@@ -157,13 +174,36 @@ function setRecoveryBaseline(active, previous, evidence) {
  */
 export function createTreeDiagnosticMonitor({ emit = () => {}, incident = () => {}, preserveBaselineOnSourceChange = false } = {}) {
   const sources = new Map();
+  let sequence = 0;
   const safeEmit = (record) => { try { emit(record); } catch { /* 日志失败不能改变标签操作。 */ } };
   const safeIncident = (record) => { try { incident(record); } catch { /* 存储失败不阻断观测。 */ } };
   const keyFor = (snapshot) => JSON.stringify([snapshot.windowId, snapshot.source]);
   const report = (active, snapshot, context, status, evidence) => {
     // 未对齐的暂态只进入普通日志与内存跟踪；正常关闭的短暂悬空不能占用异常预留包。
     // 已确认问题的后续处理中观察仍更新原包，首次确认同时带上真正的首次前态。
-    if (status === 'active') active.confirmed = true;
+    if (status === 'active') {
+      active.confirmed = true;
+      const expected = operationContexts(context).find(operation => operation.explanation === 'observed-removal')?.expectedDepths;
+      if (expected) {
+        active.depthIds ||= new Set();
+        active.closedParents ||= new Map();
+        const ids = new Set(active.ids);
+        // 保存已由真实关闭确定的恢复目标，后续采样不必重新依赖旧操作登记。
+        for (const operation of operationContexts(context)) {
+          for (const assignment of operation.expectedParents || []) {
+            if (ids.has(assignment.childId)) active.closedParents.set(assignment.childId, assignment.parentId);
+          }
+        }
+        for (const entry of snapshot.entries) {
+          if (ids.has(entry.id) && Number.isFinite(entry.depth) && expected.get(entry.id) !== entry.depth) {
+            active.depthIds.add(entry.id);
+          }
+        }
+      }
+    }
+    const reportKey = incidentReportKey(active, snapshot, status, evidence);
+    if (active.lastReportKey === reportKey) return;
+    active.lastReportKey = reportKey;
     if (active.confirmed) {
       safeIncident({ signature: active.signature, windowId: snapshot.windowId, source: snapshot.source, type: active.type, ids: active.ids, status, evidence: { ...evidence, firstEvidence: active.firstEvidence, observation: safeObservation(context) } });
     }
@@ -175,6 +215,23 @@ export function createTreeDiagnosticMonitor({ emit = () => {}, incident = () => 
       if ((windowId == null || state.snapshot.windowId === windowId) && (source == null || state.snapshot.source === source)) sources.delete(key);
     }
     safeEmit({ type: 'monitor-gap', windowId: windowId ?? null, source: source ?? null, reason });
+  };
+
+  /** 仅前端实际收到的关闭可作依据；与来源基线一起释放，绝不从缺行猜关闭。 */
+  const noteRemoved = (tabId, { windowId, isWindowClosing = false } = {}) => {
+    if (isWindowClosing) { gap({ windowId, reason: 'window-closed' }); return; }
+    const event = { tabId, correlationId: `observed-close:${++sequence}` };
+    let recorded = false;
+    for (const state of sources.values()) {
+      if (state.snapshot?.windowId !== windowId || !state.alignedSnapshot) continue;
+      state.removals.push(event);
+      if (state.removals.length > 256) {
+        state.removals.shift();
+        safeEmit({ type: 'monitor-gap', windowId, source: state.snapshot.source, reason: 'removal-history-limit' });
+      }
+      recorded = true;
+    }
+    if (recorded) safeEmit({ type: 'observed-browser-removed', windowId, ids: [tabId], correlationId: event.correlationId });
   };
 
   const observe = (snapshot, context = {}) => {
@@ -198,7 +255,7 @@ export function createTreeDiagnosticMonitor({ emit = () => {}, incident = () => 
     const previous = state?.snapshot || null;
     const evidence = compareTreeSnapshots(previous, snapshot, { focusIds: context.focusIds || [] });
     if (!state) {
-      state = { snapshot: null, alignedSnapshot: null, token, active: new Map() };
+      state = { snapshot: null, alignedSnapshot: null, token, active: new Map(), removals: [] };
       sources.set(key, state);
       safeEmit({ type: 'monitor-baseline', windowId: snapshot.windowId, source: snapshot.source, missingBefore: true, totalAfter: snapshot.entries.length });
     }
@@ -208,6 +265,15 @@ export function createTreeDiagnosticMonitor({ emit = () => {}, incident = () => 
     const comparisonEvidence = context.aligned === true
       ? compareTreeSnapshots(comparisonPrevious, snapshot, { focusIds: context.focusIds || [] })
       : evidence;
+    const originalContext = context;
+    const closureContext = (baseline) => {
+      // 已有操作登记可能包含中间移动；旧基线推导不能插入真实时序。
+      if (operationContexts(originalContext).length) return originalContext;
+      return { ...originalContext, operations: [
+        ...observedCloseOperations(baseline, snapshot, state.removals), ...(originalContext.operations || []),
+      ] };
+    };
+    if (context.aligned === true) context = closureContext(comparisonPrevious);
     const changedParents = unexplainedParents(comparisonEvidence, context, comparisonPrevious, snapshot);
     const changedOrder = explainedOrder(context, snapshot) ? [] : comparisonEvidence.orderChanges.map((change) => change.id);
     const confirmedIds = new Map([
@@ -216,6 +282,8 @@ export function createTreeDiagnosticMonitor({ emit = () => {}, incident = () => 
     ]);
     const issues = groupIssues(evidence.issues);
     const recovered = new Map();
+    // 同一次采样先合并疑点再输出，避免一个包在补齐身份前后各写一份。
+    const reports = new Map();
     // 已发生的可疑换位不能因下一次快照相同而消失；恢复需要真实观察回到最初相对顺序。
     for (const [signature, active] of [...state.active]) {
       let activeEvidence = compareTreeSnapshots(active.previous, snapshot, { focusIds: active.ids });
@@ -226,9 +294,6 @@ export function createTreeDiagnosticMonitor({ emit = () => {}, incident = () => 
         if (remains) {
           // 首次处理中证据保持原样；恢复判据则绑定真正的已对齐前态。
           active.ids = eligibleIds;
-          active.signature = signatureFor(snapshot, active.type, active.ids);
-          state.active.delete(signature);
-          state.active.set(active.signature, active);
           setRecoveryBaseline(active, comparisonPrevious, comparisonEvidence);
           activeEvidence = comparisonEvidence;
         }
@@ -238,17 +303,25 @@ export function createTreeDiagnosticMonitor({ emit = () => {}, incident = () => 
       } else if (active.type === 'order-change') {
         remains = !restoredOrder(active, snapshot) && !explainedOrder(context, snapshot);
       } else {
-        const allowedNow = unexplainedParents(activeEvidence, context, active.previous, snapshot);
-        const allExplained = operationContexts(context).length > 0 && active.ids.every((id) => !allowedNow.includes(id));
-        remains = !allExplained && !restoredParents(active, snapshot, activeEvidence);
+        const activeContext = context.aligned === true ? closureContext(active.previous) : context;
+        const allowedNow = unexplainedParents(activeEvidence, activeContext, active.previous, snapshot);
+        const allExplained = operationContexts(activeContext).length > 0 && active.ids.every((id) => !allowedNow.includes(id));
+        // 有精确关闭预期时，保留旧层级也可能是错误，不能因等于旧值而宣告恢复。
+        const predicted = operationContexts(activeContext).some(operation => operation.explanation === 'observed-removal');
+        // 后续新增或其他操作可能使关闭重放不可用，但已确认的缩进错误仍须按当前投影检查。
+        const depths = active.depthIds?.size ? diagnosticDepths(snapshot) : null;
+        const invalidDepth = depths && snapshot.entries.some(entry => active.depthIds.has(entry.id) &&
+          Number.isFinite(entry.depth) && depths.get(entry.id) !== entry.depth);
+        remains = invalidDepth || (predicted ? !allExplained
+          : !allExplained && !restoredParents(active, snapshot, activeEvidence, depths));
       }
       if (!remains && context.aligned === true) {
-        report(active, snapshot, context, 'recovered', activeEvidence);
+        reports.set(active, { status: 'recovered', evidence: activeEvidence });
         state.active.delete(signature);
         if (!recovered.has(active.type)) recovered.set(active.type, new Set());
         for (const id of active.ids) recovered.get(active.type).add(id);
       } else if (remains) {
-        report(active, snapshot, context, context.aligned === true ? 'active' : 'pending', activeEvidence);
+        reports.set(active, { status: context.aligned === true ? 'active' : 'pending', evidence: activeEvidence });
       }
     }
     const candidates = [...issues].map(([type, ids]) => ({ type, ids: [...ids], structural: true }));
@@ -259,15 +332,32 @@ export function createTreeDiagnosticMonitor({ emit = () => {}, incident = () => 
       candidate.ids = candidate.ids.filter((id) => !recovered.get(candidate.type)?.has(id));
       if (!candidate.ids.length) continue;
       unexplained = true;
-      const signature = signatureFor(snapshot, candidate.type, candidate.ids);
-      if (state.active.has(signature)) continue;
-      const candidateEvidence = candidate.structural ? evidence : comparisonEvidence;
+      const existing = [...state.active.values()].filter(active => active.type === candidate.type);
+      const covered = new Set(existing.flatMap(active => active.ids));
+      const additional = candidate.ids.filter(id => !covered.has(id));
+      if (!additional.length) continue;
+      // 只合并共享同一个已对齐前态的暂态；较晚独立问题必须保留自己的恢复基线。
+      const matching = existing.find(active => active.anchor === state.alignedSnapshot &&
+        (!active.confirmed || reports.has(active)));
+      if (matching) {
+        matching.ids = [...new Set([...matching.ids, ...additional])];
+        const baseline = context.aligned === true ? comparisonPrevious : matching.previous;
+        const mergedEvidence = compareTreeSnapshots(baseline, snapshot, { focusIds: matching.ids });
+        setRecoveryBaseline(matching, baseline, mergedEvidence);
+        reports.set(matching, { status: context.aligned === true ? 'active' : 'pending', evidence: mergedEvidence });
+        continue;
+      }
+      candidate.ids = additional;
+      const signature = `${signatureFor(snapshot, candidate.type, candidate.ids)}:${++sequence}`;
+      const candidateEvidence = candidate.structural ? evidence
+        : compareTreeSnapshots(comparisonPrevious, snapshot, { focusIds: candidate.ids });
       const candidatePrevious = candidate.structural ? previous : comparisonPrevious;
       const active = {
         ...candidate,
         signature,
         firstEvidence: { ...candidateEvidence, missingBefore: !candidatePrevious, observation: safeObservation(context) },
         confirmed: false,
+        anchor: state.alignedSnapshot,
       };
       setRecoveryBaseline(active, candidatePrevious, candidateEvidence);
       // 只读观察器也必须有容量边界，不能让长时间运行产生无限原始快照。
@@ -278,8 +368,9 @@ export function createTreeDiagnosticMonitor({ emit = () => {}, incident = () => 
         safeEmit({ type: 'monitor-gap', windowId: snapshot.windowId, source: snapshot.source, reason: 'incident-tracking-limit', signature: oldest });
       }
       state.active.set(signature, active);
-      report(active, snapshot, context, context.aligned === true ? 'active' : 'pending', { ...candidateEvidence, missingBefore: !candidatePrevious });
+      reports.set(active, { status: context.aligned === true ? 'active' : 'pending', evidence: { ...candidateEvidence, missingBefore: !candidatePrevious } });
     }
+    for (const [active, pending] of reports) report(active, snapshot, context, pending.status, pending.evidence);
     if (previous && (evidence.nodes.some((node) => node.changes.length) || evidence.shifts.length)) {
       safeEmit({ type: 'tree-observation', windowId: snapshot.windowId, source: snapshot.source, correlationId: context.correlationId || null, classification: unexplained ? (context.aligned === true ? 'suspect' : 'pending') : 'explained', observation: safeObservation(context), evidence });
     }
@@ -290,5 +381,5 @@ export function createTreeDiagnosticMonitor({ emit = () => {}, incident = () => 
     }
     return evidence;
   };
-  return { observe, gap, clear: () => sources.clear() };
+  return { observe, noteRemoved, gap, clear: () => sources.clear() };
 }

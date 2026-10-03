@@ -101,6 +101,7 @@ export function createTreeDiagnosticClient({
   let reportLossOnDrain = false;
   let lossAttempted = false;
   let incidentSeq = 0;
+  let cleanupRemoved = () => {};
   const incidentSignatures = new Map();
   const monitor = createTreeDiagnosticMonitor({
     // 客户端自身未重建时，保留后台休眠/重启前的已对齐树，用于发现重建引入的改父或换位。
@@ -130,10 +131,24 @@ export function createTreeDiagnosticClient({
     state.enabled = enabled;
     state.generation += 1;
     monitor.clear();
+    cleanupRemoved();
+    cleanupRemoved = () => {};
     incidentSignatures.clear();
     queue = [];
     queuedBytes = 0;
-    if (enabled) void refreshStatus();
+    if (enabled) {
+      // 同一文档能跨后台实例保留真实关闭依据；监听不查询标签，也不维持后台常驻。
+      const event = globalThis.chrome?.tabs?.onRemoved;
+      if (event?.addListener) {
+        const listener = (tabId, info) => {
+          if (!state.enabled || disposed) return;
+          try { monitor.noteRemoved(tabId, info); } catch { /* 诊断不阻断标签事件。 */ }
+        };
+        event.addListener(listener);
+        cleanupRemoved = () => event.removeListener?.(listener);
+      }
+      void refreshStatus();
+    }
   }
 
   const cleanupConfig = subscribeConfig((config) => { configEpoch += 1; setConfig(config); });
@@ -252,6 +267,7 @@ export function createTreeDiagnosticClient({
       queue = [];
       queuedBytes = 0;
       monitor.clear();
+      cleanupRemoved();
       cleanupConfig();
       cleanupStatus();
     },
