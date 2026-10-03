@@ -337,13 +337,17 @@ export function handleClosedTabRecorded(tabId, removeInfo = {}) {
     describeStoredRef(id).then((refParent) => {
       diag(
         `关闭 #${id}：记录父=${describeParent(record.parentId)}，URL=${classifyUrl(record.url)}，` +
-          `记录下标=${record.index}，子标签数=${childIds.length}，会话值父=${refParent}`
+          `记录下标=${record.index}，前驱=${record.prevId === null ? "无" : `#${record.prevId}`}，` +
+          `后继=${record.nextId === null ? "无" : `#${record.nextId}`}，` +
+          `子标签数=${childIds.length}，会话值父=${refParent}`
       );
     });
   } else if (!supportsTabRefs()) {
     diag(
       `关闭 #${id}：记录父=${describeParent(record.parentId)}，URL=${classifyUrl(record.url)}，` +
-        `记录下标=${record.index}，子标签数=${childIds.length}（本浏览器无每标签会话值）`
+        `记录下标=${record.index}，前驱=${record.prevId === null ? "无" : `#${record.prevId}`}，` +
+        `后继=${record.nextId === null ? "无" : `#${record.nextId}`}，` +
+        `子标签数=${childIds.length}（本浏览器无每标签会话值）`
     );
   }
   return ensureClosedGroupsLoaded().then(() => {
@@ -905,27 +909,60 @@ async function alignRestoredParentBeforePromotedChildren(windowId, tabId, record
  * 两个邻居都不在了就保持浏览器给出的位置——这比按过期下标乱插更安全。
  */
 async function moveRestoredTabToRecordedPosition(tabId, windowId, record) {
-  const target = await resolveRecordedIndex(windowId, record);
-  if (target === null) {
+  const resolved = await resolveRecordedIndex(windowId, record);
+  if (resolved === null) {
+    diag(
+      `位置恢复 #${tabId}：记录里的前驱/后继都不可用 → 保持浏览器给出的位置` +
+        `（记录下标=${record.index}，浏览器放在 idx ${(await getTabInfo(tabId))?.index ?? "?"}）`
+    );
     return;
   }
   const current = await getTabInfo(tabId);
-  if (current && Number(current.index) === target) {
+  if (current && Number(current.index) === resolved.target) {
+    diag(`位置恢复 #${tabId}：已在目标位置 idx ${resolved.target}（依据=${resolved.source}）`);
     return;
   }
-  await moveTabsInternallyTo(windowId, [tabId], target);
+  diag(
+    `位置恢复 #${tabId}：idx ${current && Number.isFinite(Number(current.index)) ? current.index : "?"} → ` +
+      `${resolved.target}（依据=${resolved.source}，记录下标=${record.index}）`
+  );
+  await moveTabsInternallyTo(windowId, [tabId], resolved.target);
 }
 
+/**
+ * 解析"把恢复出来的标签放回哪个物理位置"。
+ *
+ * 依据是关闭记录里的**原前后邻居**，而不是记录里的绝对下标：这期间标签栏可能已经变了
+ * （邻居被关闭、被拖走），绝对下标会把它插到毫不相干的地方。
+ *
+ * 两个邻居**同时可用**时不能随便取一个：其中一个可能后来被用户挪到很远的位置
+ * （拖拽、跨窗口来回），直接用它的当前下标会把恢复出来的标签丢到很靠后的地方——
+ * 用户看到的就是"撤销后标签出现在不相干的末尾，子树也没还原"。因此有多个候选时，
+ * 选**最接近记录下标**的那个（记录下标取自关闭那一刻的精确下标表）。
+ *
+ * @returns {{target: number, source: string}|null} 无可用邻居时返回 null（保持浏览器给的位置）
+ */
 async function resolveRecordedIndex(windowId, record) {
+  const candidates = [];
   const next = await getTabInfo(record.nextId);
-  if (next && Number(next.windowId) === windowId) {
-    return Number(next.index);
+  if (next && Number(next.windowId) === Number(windowId) && Number.isFinite(Number(next.index))) {
+    candidates.push({ target: Number(next.index), source: `后继 #${record.nextId}` });
   }
   const prev = await getTabInfo(record.prevId);
-  if (prev && Number(prev.windowId) === windowId) {
-    return Number(prev.index) + 1;
+  if (prev && Number(prev.windowId) === Number(windowId) && Number.isFinite(Number(prev.index))) {
+    candidates.push({ target: Number(prev.index) + 1, source: `前驱 #${record.prevId}` });
   }
-  return null;
+  if (candidates.length === 0) {
+    return null;
+  }
+  const recordedIndex = Number(record.index);
+  if (!Number.isFinite(recordedIndex) || recordedIndex < 0) {
+    return candidates[0];
+  }
+  candidates.sort(
+    (left, right) => Math.abs(left.target - recordedIndex) - Math.abs(right.target - recordedIndex)
+  );
+  return candidates[0];
 }
 
 // ---------------------------------------------------------------------------

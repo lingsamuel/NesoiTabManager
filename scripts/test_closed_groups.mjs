@@ -1058,6 +1058,61 @@ async function main() {
     "19：自己的会话值被忽略后，仍按关闭记录挂回原父"
   );
 
+  // --- 场景 20：关闭记录里的"原物理邻居"必须是真的邻居（下标表要与物理顺序一致）---
+  // 这是"撤销后标签出现在不相干的位置"的根因：删除标签后不重编号，
+  // 再叠加插入，下标表的偏移会变得不一致，于是"关闭现场的前后邻居"会取到无关标签，
+  // 撤销就按这个假邻居把标签移回错误的位置（用户看到的往往是"被放到了很靠后的地方"）。
+  console.log("场景 20：关闭记录里的原物理邻居必须是真的邻居");
+  windows.push({ id: 20 });
+  await tree.getTreeStructure([20]);
+  const a20 = await openTab({ windowId: 20, url: "https://a20.example/", title: "A20" });
+  const b20 = await openTab({ windowId: 20, url: "https://b20.example/", title: "B20" });
+  // 制造"删除 + 插入"交替造成的偏移不一致：先插入一个到最前，再删掉它，再在中间插入一个。
+  const n20 = await openTab({ windowId: 20, url: "https://n20.example/", title: "N20", index: 0 });
+  await closeTabs([n20.id]);
+  const m20 = await openTab({ windowId: 20, url: "https://m20.example/", title: "M20", index: 1 });
+  const infoA20 = tree.getTabStructureInfo(a20.id, 20);
+  const realNeighbors20 = tabs
+    .filter((tab) => tab.windowId === 20)
+    .sort((left, right) => left.index - right.index);
+  const a20RealIndex = realNeighbors20.findIndex((tab) => tab.id === a20.id);
+  assertEqual(infoA20.index, a20RealIndex, "20：关闭记录里的下标与物理下标一致");
+  assertEqual(
+    infoA20.nextId,
+    a20RealIndex + 1 < realNeighbors20.length ? realNeighbors20[a20RealIndex + 1].id : null,
+    "20：关闭记录里的后继是真的后继"
+  );
+  assertEqual(
+    infoA20.prevId,
+    a20RealIndex > 0 ? realNeighbors20[a20RealIndex - 1].id : null,
+    "20：关闭记录里的前驱是真的前驱"
+  );
+  assertEqual(tabById(m20.id).index === 1, true, "20 前置：中间插入的标签确实在 idx 1");
+
+  // --- 场景 21：记录里的邻居后来被挪到很远时，位置恢复不能被它带到末尾 ---
+  console.log("场景 21：邻居被挪远时按「最接近记录下标」的锚点恢复位置");
+  windows.push({ id: 21 });
+  await tree.getTreeStructure([21]);
+  const x21 = await openTab({ windowId: 21, url: "https://x21.example/", title: "X21" });
+  const a21 = await openTab({ windowId: 21, url: "https://a21.example/", title: "A21" });
+  const n21 = await openTab({ windowId: 21, url: "https://n21.example/", title: "N21" });
+  for (let i = 0; i < 3; i += 1) {
+    await openTab({ windowId: 21, url: `https://tail21-${i}.example/`, title: `T${i}` });
+  }
+  await closeTabs([a21.id]);
+  const record21 = (storageData.session.closedTabLog || []).find((item) => item.tabId === a21.id);
+  assertEqual(record21.nextId, n21.id, "21 前置：记录的后继是 N21");
+  assertEqual(record21.prevId, x21.id, "21 前置：记录的前驱是 X21");
+  // 关闭之后把"原后继"N21 挪到末尾（模拟它后来被拖走/被别的事件挪走），且不派发 onMoved。
+  moveTabPhysicallyRaw(n21.id, 4);
+  const a21again = await openTab({ windowId: 21, url: "https://a21.example/", title: "A21" });
+  assertTrue(await waitForIndex(a21again.id, 1), "21：按最接近记录下标的前驱锚点恢复位置（idx 1）");
+  assertEqual(
+    tabById(n21.id).index > tabById(a21again.id).index,
+    true,
+    "21：被挪远的邻居没有被当成锚点（它仍在 A 之后很远）"
+  );
+
   console.log("");
   console.log(`共 ${checks} 项断言，失败 ${failures} 项`);
   if (failures > 0) {
