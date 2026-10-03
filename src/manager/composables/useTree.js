@@ -9,6 +9,7 @@
 
 import { reactive, ref } from "vue";
 import { request } from "../utils/request.js";
+import { getTreeDiagnostics } from "../utils/tree_diagnostics.js";
 import {
   HAS_SESSION_STORAGE,
   storageLocalGet,
@@ -27,6 +28,12 @@ const MODE_FLAT = "flat";
 const COLLAPSED_SAVE_DEBOUNCE_MS = 500;
 
 function useTree() {
+  const diagnostics = getTreeDiagnostics();
+  const diagnosticRequestByWindow = new Map();
+  const diagnosticOperationByWindow = new Map();
+  const diagnosticAppliedByWindow = new Map();
+  const diagnosticMismatches = new Map();
+  let diagnosticGeneration = diagnostics.state.generation;
   const mode = ref(true);
   // windowId -> { [childId]: parentId }，只包含"有父标签"的条目，缺省即顶层。
   const parentsByWindow = reactive({});
@@ -193,7 +200,22 @@ function useTree() {
    */
   async function loadForWindows(windowIds) {
     const payload = Array.isArray(windowIds) && windowIds.length > 0 ? { windowIds } : {};
+    const correlationId = diagnostics.correlationId();
+    if (diagnosticGeneration !== diagnostics.state.generation) {
+      diagnosticAppliedByWindow.clear();
+      diagnosticMismatches.clear();
+      diagnosticOperationByWindow.clear();
+      diagnosticRequestByWindow.clear();
+      diagnosticGeneration = diagnostics.state.generation;
+    }
+    if (correlationId) {
+      payload.diagnosticRequestId = correlationId;
+      diagnostics.record({ type: "request", source: "frontend-structure", correlationId,
+        windowIds: payload.windowIds || [], knownToken: knownRevisionToken });
+    }
     const response = await request("getTreeStructure", payload);
+    if (correlationId) diagnostics.record({ type: "response-received", source: "frontend-structure", correlationId,
+      success: Boolean(response?.ok) });
     if (!response || !response.ok) {
       setStatus((response && response.error) || "树状结构加载失败。", "error");
       return false;
@@ -204,15 +226,75 @@ function useTree() {
       // 只有"同一个后台实例"的版本号之间才能比较大小；令牌不同（后台重启过）时无条件接受。
       const sameInstance = incomingToken !== "" && incomingToken === knownRevisionToken;
       const knownRevision = Number(revisionByWindow[windowId] || 0);
+      const diagnosticContext = correlationId ? {
+        source: "frontend-structure", windowId: Number(windowId), correlationId,
+        incomingRevision, incomingToken, knownRevision, knownToken: knownRevisionToken, sameInstance,
+      } : null;
       if (sameInstance && Number.isFinite(incomingRevision) && incomingRevision < knownRevision) {
+        if (diagnosticContext) diagnostics.record({ ...diagnosticContext,
+          type: "response-discarded", phase: "discarded", reason: "stale-revision" });
         continue;
       }
+      const lastApplied = diagnosticAppliedByWindow.get(String(windowId));
+      const compatibleBaseline = lastApplied?.token === incomingToken && lastApplied.revision === incomingRevision;
+      if (diagnosticContext && lastApplied && !compatibleBaseline) {
+        // 版本不同时无法判断同版本前后态，保留观测间隙而非跨实例/版本拼接异常。
+        diagnostics.gap({ windowId: Number(windowId), source: "frontend-structure",
+          reason: lastApplied.token === incomingToken ? "response-version-changed" : "source-instance-changed" });
+        diagnosticAppliedByWindow.delete(String(windowId));
+        diagnosticMismatches.delete(String(windowId));
+      }
+      if (diagnosticContext && compatibleBaseline) {
+        // 处理中仍可按业务规则应用响应；诊断比较独立副本，避免该应用覆盖最早已对齐证据。
+        const before = lastApplied.parents;
+        const after = (data && data.parents) || {};
+        const changed = [];
+        let changedCount = 0;
+        for (const id of new Set([...Object.keys(before), ...Object.keys(after)])) {
+          if (before[id] === after[id]) continue;
+          changedCount += 1;
+          if (changed.length < 16) changed.push({ id: Number(id), before: before[id] ?? null, after: after[id] ?? null });
+        }
+        if (changedCount && data?.diagnosticContext?.pending) {
+          diagnostics.record({ ...diagnosticContext, type: "parent-mismatch-observation", phase: "pending",
+            evidence: { nodes: changed, changedCount, omitted: changedCount - changed.length } });
+        } else if (changedCount) {
+          const signature = `${diagnostics.sourceId}:${windowId}:${incomingToken}:${incomingRevision}:parent-mismatch`;
+          diagnosticMismatches.set(String(windowId), signature);
+          diagnostics.record({
+            ...diagnosticContext, type: "same-version-parent-mismatch", status: "active", signature,
+            evidence: { nodes: changed, changedCount, omitted: changedCount - changed.length },
+          }, "incident");
+        } else if (diagnosticMismatches.has(String(windowId)) && !data?.diagnosticContext?.pending) {
+          diagnostics.record({ ...diagnosticContext, type: "same-version-parent-mismatch", status: "recovered",
+            signature: diagnosticMismatches.get(String(windowId)), evidence: { changedCount: 0 } }, "incident");
+          diagnosticMismatches.delete(String(windowId));
+        }
+      }
+      if (diagnosticContext) diagnostics.record({ ...diagnosticContext, type: "response-accepted" });
       parentsByWindow[windowId] = (data && data.parents) || {};
       if (Number.isFinite(incomingRevision)) {
         revisionByWindow[windowId] = incomingRevision;
       }
       if (incomingToken) {
         knownRevisionToken = incomingToken;
+      }
+      if (diagnosticContext) {
+        if (!data?.diagnosticContext?.pending) {
+          diagnosticAppliedByWindow.set(String(windowId), {
+            token: incomingToken, revision: incomingRevision, parents: { ...((data && data.parents) || {}) },
+          });
+        }
+        diagnosticRequestByWindow.set(String(windowId), correlationId);
+        const operation = data?.diagnosticContext;
+        // 只保留当前响应版本的解释链；树本身的版本接受规则完全不依赖这些旁路数据。
+        if (operation?.revision === incomingRevision && Array.isArray(operation.operations)) {
+          diagnosticOperationByWindow.set(String(windowId), { ...operation, sourceToken: incomingToken });
+        } else {
+          diagnosticOperationByWindow.delete(String(windowId));
+        }
+        diagnostics.record({ ...diagnosticContext, type: "response-applied", phase: "applied",
+          parentCount: Object.keys(parentsByWindow[windowId]).length });
       }
     }
     setStatus("", "");
@@ -333,6 +415,16 @@ function useTree() {
     loadForWindows,
     onStructureChanged,
     parentsFor,
+    // 行模型的旁路采样用它串起来源；不能用此值决定是否接受业务响应。
+    diagnosticContextFor(windowId) {
+      const requestId = diagnosticRequestByWindow.get(String(windowId)) || null;
+      const operation = diagnosticOperationByWindow.get(String(windowId));
+      const revision = Number(revisionByWindow[windowId] || 0);
+      const validOperation = operation?.sourceToken === knownRevisionToken && operation.revision === revision;
+      return { ...(validOperation ? operation : {}),
+        correlationId: requestId, requestId,
+        sourceToken: knownRevisionToken, revision };
+    },
     isCollapsed,
     collapsedSetFor,
     toggleCollapse,

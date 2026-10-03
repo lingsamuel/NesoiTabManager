@@ -246,21 +246,31 @@
         <div class="form-row checkbox-row full">
           <label>
             <input type="checkbox" v-model="debugConfig.enabled" />
-            调试模式（把树结构的关键流程写入后台日志）
+            树结构诊断（持续记录局部变化与异常）
           </label>
         </div>
         <div class="form-row checkbox-row full">
           <label :class="{ disabled: !debugConfig.enabled }">
             <input type="checkbox" v-model="debugConfig.printTree" :disabled="!debugConfig.enabled" />
-            打印树结构与变化原因（关闭标签时打印：关闭前的树 → 每条变化的原因 → 关闭后的树）
+            详细诊断（记录局部结构与变化证据）
           </label>
         </div>
         <div class="form-row full">
           <div class="hint">
-            日志输出在扩展后台控制台（about:debugging → 本扩展 → 检查 → 控制台）。
-            第二条开关会打印标签标题以便人工对照，属于用户数据，排查完请关掉。
-            另外最近若干行会留在会话存储里，可以直接点「复制调试日志」整段贴出来。
+            诊断仅观察，不会修复或改变树结构。正常记录只包含编号与局部结构证据，可直接点击「复制调试日志」。
+            日志不包含标签标题和网址。侧边栏发现异常后会显示记录数量。
           </div>
+        </div>
+        <div class="form-row full" role="status">
+          <div class="hint">
+            已保留 {{ diagnosticStatus.incidentCount || 0 }} 条异常记录，{{ diagnosticStatus.activeCount || 0 }} 条待确认。
+            <span v-if="diagnosticStatus.dirty">记录正在保存。</span>
+            <span v-if="diagnosticStatus.truncated || diagnosticStatus.dropped">部分证据因容量限制被截断或丢弃。</span>
+            <span v-if="Array.isArray(diagnosticStatus.gaps) ? diagnosticStatus.gaps.length : diagnosticStatus.gaps">存在观测间隙。</span>
+          </div>
+          <div v-if="diagnosticStatus.persistError" class="status error">诊断记录保存失败：{{ diagnosticStatus.persistError }}</div>
+          <div v-if="diagnosticStatus.restoreError" class="status error">诊断记录恢复失败：{{ diagnosticStatus.restoreError }}</div>
+          <div v-if="diagnosticStatus.transportError" class="status error">部分前端证据发送失败。</div>
         </div>
         <div class="form-row full">
           <button class="primary btn-icon" @click="onSaveDebugConfig">
@@ -296,6 +306,7 @@ defineProps({
     type: Object,
     default: () => ({}),
   },
+  diagnosticStatus: { type: Object, default: () => ({}) },
   debugConfig: {
     type: Object,
     default: () => ({}),

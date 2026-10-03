@@ -30,14 +30,16 @@ import {
 } from "./storage.js";
 import { delay } from "./utils.js";
 import {
-  formatTreeState,
-  diffTreeStates,
-  isTreeDebugPrintEnabled,
-  logChangeSummary,
+  isTreeDebugEnabled,
+  recordTreeDiagnostic,
   logFlow,
-  logTree,
   logTreeBlock,
 } from "./tree_debug.js";
+import {
+  configureTreeDiagnostics, getTreeDiagnosticContent, recordBrowserTreeEvent,
+  beginTreeDiagnosticOperation, endTreeDiagnosticOperation, observeTreeDiagnostics,
+  observeTreePhysicalTabs, treeDiagnosticEpoch, forgetTreeDiagnostics, getTreeDiagnosticOperations,
+} from "./tree_diagnostic_runtime.js";
 import {
   alignSnapshotToTabs,
   applyRemovePromotion,
@@ -183,96 +185,56 @@ let recentStructuralEvents = [];
 // 调试：树状态快照与"本次关闭"的变化原因收集
 // ---------------------------------------------------------------------------
 //
-// 设计取舍：变化原因由具体的算法/事件分支在**发生的那一刻**记录（提升规则、不变量修正、
-// 位置推断……），这里只负责"归拢到一次关闭的前后对比里"。之所以围绕"一次关闭"组织，
-// 是因为用户能稳定复现的入口就是关闭标签：打印关闭前的树 → 变化原因 → 关闭后的树，
-// 足以验证"到底是谁动了层级"。
-
-// 当前正在记录的关闭调试会话（同一时刻只可能有一次关闭在处理）。
+// 快照只用于诊断，保留原始父映射及子索引；不能借清理函数读取，否则现场会被改写。
 let activeCloseDebug = null;
+configureTreeDiagnostics({ captureState: captureTreeDebugState, readRevision: getTreeRevision });
 
-/** 取某窗口内存树的调试快照（没有内存树时返回 null）。 */
+/** 读取缓存下标来源的快照；元数据正文只在临时比较中使用。 */
 export function captureTreeDebugState(windowId) {
   const tree = trees.get(Number(windowId));
-  if (!tree) {
-    return null;
-  }
+  if (!tree) return null;
   const entries = [];
   for (const [id, parentId] of tree.parentById) {
     entries.push({
-      id: Number(id),
-      parentId: parentId == null ? null : Number(parentId),
-      index: tree.indexById && tree.indexById.has(id) ? tree.indexById.get(id) : -1,
+      id: Number(id), parentId: parentId == null ? null : Number(parentId),
+      index: tree.indexById?.has(id) ? tree.indexById.get(id) : -1,
+      ...getTreeDiagnosticContent(id),
     });
   }
-  return { windowId: Number(windowId), at: Date.now(), entries };
-}
-
-/**
- * 记录一条"树为什么变了"。调试会话进行中则并入本次关闭的汇总，否则立刻单独打印。
- * 注意：必须在变化发生**之后**调用（报告的是结果），并且不要传用户数据。
- */
-export function noteTreeChangeReason(text) {
-  if (activeCloseDebug) {
-    activeCloseDebug.reasons.push(text);
-    return;
-  }
-  logTree(`[事件] ${text}`);
-}
-
-/** 关闭标签前调用：抓住"关闭前"的树，并开启原因收集。 */
-export function beginTreeCloseDebug(tabId, removeInfo = {}) {
-  if (!isTreeDebugPrintEnabled()) {
-    return null;
-  }
-  const windowId = Number(removeInfo.windowId);
-  const before = captureTreeDebugState(windowId);
-  activeCloseDebug = {
-    tabId: Number(tabId),
-    windowId,
-    before,
-    reasons: [],
-    hadTree: Boolean(before),
+  entries.sort((a, b) => a.index - b.index);
+  return {
+    windowId: Number(windowId), source: 'backend-cache', sourceToken: treeRevisionToken,
+    revision: getTreeRevision(windowId), at: Date.now(), entries,
+    childIdsById: new Map([...tree.childIdsById].map(([id, children]) => [id, [...children]])),
   };
+}
+
+/** 原因在决策发生处采集；总开关即保留，详细开关只控制普通局部快照。 */
+export function noteTreeChangeReason(text) {
+  if (!isTreeDebugEnabled()) return;
+  if (activeCloseDebug) activeCloseDebug.reasons.push(text);
+  recordTreeDiagnostic({ type: 'tree-change-reason', windowId: activeCloseDebug?.windowId,
+    correlationId: activeCloseDebug?.correlationId, reason: text });
+}
+
+/** 关闭前先保留观测；正常提升的解释来自算法已有的 onDecision 回调。 */
+export function beginTreeCloseDebug(tabId, removeInfo = {}) {
+  if (!isTreeDebugEnabled()) return null;
+  const windowId = Number(removeInfo.windowId);
+  const correlationId = recordBrowserTreeEvent('removed', windowId, [Number(tabId)], {
+    isWindowClosing: Boolean(removeInfo.isWindowClosing),
+  });
+  activeCloseDebug = beginTreeDiagnosticOperation('close', windowId, [Number(tabId)], { correlationId });
+  activeCloseDebug.reasons = [];
+  activeCloseDebug.expectedParents = [];
   return activeCloseDebug;
 }
 
-/** 关闭标签的处理链走完后调用：打印"关闭前树 + 变化原因 + 关闭后树"。 */
-export function endTreeCloseDebug() {
-  const session = activeCloseDebug;
-  if (!session) {
-    return;
-  }
-  activeCloseDebug = null;
-  const after = captureTreeDebugState(session.windowId);
-  // 原始原因（不带序号）：完整块与摘要块各自负责编号，避免出现 "1. 1. …"。
-  const reasonLines = session.reasons.length > 0 ? session.reasons : [];
-  const diffLines = diffTreeStates(session.before, after);
-  const header =
-    `===== 关闭标签 #${session.tabId}（窗口 ${session.windowId}）=====` +
-    (session.hadTree ? "" : " · 关闭时内存里没有这棵树");
-
-  // ① 完整块：关闭前的树 → 变化原因 → 关闭后的树 → 前后差异。
-  const lines = [];
-  lines.push(header);
-  lines.push(`--- 关闭前的树（${session.before ? session.before.entries.length : 0} 个标签）---`);
-  lines.push(formatTreeState(session.before));
-  lines.push("--- 变化原因 ---");
-  lines.push(
-    reasonLines.length > 0
-      ? reasonLines.map((item, index) => `${index + 1}. ${item}`).join("\n")
-      : "（没有产生任何结构性变化）"
-  );
-  lines.push(`--- 关闭后的树（${after ? after.entries.length : 0} 个标签）---`);
-  lines.push(formatTreeState(after));
-  lines.push("--- 前后差异 ---");
-  lines.push(diffLines.join("\n"));
-  logTreeBlock("", lines);
-
-  // ② 摘要块：**再单独打一份**变化原因与前后差异（独立前缀 [Nesoi树·变化摘要]）。
-  // 几千标签的窗口里完整块有两份几千行的树快照，真正要看的几行会被淹没；
-  // 单独一份既方便一眼看到，也方便在控制台按前缀过滤。完整块保留不动。
-  logChangeSummary(header, reasonLines, diffLines);
+/** 必须在 finally 中结束，失败时也保留已观察到的现场。 */
+export function endTreeCloseDebug(token = activeCloseDebug, details = {}) {
+  if (!token) return;
+  if (activeCloseDebug === token) activeCloseDebug = null;
+  endTreeDiagnosticOperation(token, { ...details, reasons: token.reasons, expectedParents: token.expectedParents });
 }
 
 // ---------------------------------------------------------------------------
@@ -609,6 +571,7 @@ async function loadTree(windowId) {
   };
   rebuildIndexes(state, tabs);
   trees.set(windowId, state);
+  observeTreeDiagnostics(windowId, { type: "load", phase: "complete" });
   logFlow(
     `重建窗口 ${windowId}：标签 ${tabs.length}，` +
       `快照 ${snapshotItems.length > 0 ? `有(${snapshotItems.length} 项，sid${sidMatches ? "一致→按 tabId 精确配对" : "不一致→按顺序+URL 猜测"})` : "无→只能按 opener 建树"}，` +
@@ -738,6 +701,7 @@ function scheduleEnsureTrees(windowIds) {
 }
 
 function forgetWindow(windowId) {
+  forgetTreeDiagnostics(windowId);
   trees.delete(windowId);
   loadingTrees.delete(windowId);
   pendingWindows.delete(windowId);
@@ -747,10 +711,12 @@ function forgetWindow(windowId) {
 
 /** 读取窗口内所有标签并按 index 升序排列。 */
 function queryWindowTabs(windowId) {
+  const queryEpoch = treeDiagnosticEpoch(windowId);
   return new Promise((resolve) => {
     chrome.tabs.query({ windowId }, (tabs) => {
       const list = Array.isArray(tabs) ? tabs.slice() : [];
       list.sort((a, b) => (a.index || 0) - (b.index || 0));
+      observeTreePhysicalTabs(windowId, list, queryEpoch);
       resolve(list);
     });
   });
@@ -802,6 +768,21 @@ function attachAsRoot(tree, tabId) {
  * 只有这一刻 openerTabId 参与决策；之后父子关系由本插件自己的树数据决定，不再跟随 opener 变化。
  */
 export async function handleTreeTabCreated(tab) {
+  const windowId = Number(tab?.windowId);
+  const correlationId = recordBrowserTreeEvent('created', windowId, [Number(tab?.id)], {});
+  const token = beginTreeDiagnosticOperation('created', windowId, [Number(tab?.id)], { correlationId, registered: false });
+  let failed = false;
+  try {
+    return await handleTreeTabCreatedImpl(tab);
+  } catch (error) {
+    failed = true;
+    throw error;
+  } finally {
+    endTreeDiagnosticOperation(token, { failed });
+  }
+}
+
+async function handleTreeTabCreatedImpl(tab) {
   if (!tab || !Number.isFinite(Number(tab.windowId)) || !Number.isFinite(Number(tab.id))) {
     return;
   }
@@ -1002,15 +983,18 @@ export function handleTreeTabRemoved(tabId, removeInfo = {}) {
     // 因此这里挂到正在进行的加载上，等树装好后再补做一次提升，语义与关闭时就地提升完全一致。
     const loading = loadingTrees.get(windowId);
     if (loading) {
+      const deferredCorrelationId = activeCloseDebug?.correlationId;
       noteTreeChangeReason(`关闭 #${tabId}：内存里没有树，但有一次加载正在进行 → 挂到它上面，装好后补做提升`);
       loading.then(
         () => {
           const loaded = trees.get(windowId);
           if (loaded) {
-            applyRemovalToTree(loaded, tabId, windowId);
-            logTreeBlock(`[加载完成后补做的提升] 窗口 ${windowId}`, [
-              formatTreeState(captureTreeDebugState(windowId)),
-            ]);
+            const token = beginTreeDiagnosticOperation('close', windowId, [Number(tabId)], { correlationId: deferredCorrelationId });
+            try {
+              applyRemovalToTree(loaded, tabId, windowId, token);
+            } finally {
+              endTreeDiagnosticOperation(token, { reason: 'deferred-until-tree-loaded' });
+            }
           }
         },
         () => {}
@@ -1034,7 +1018,7 @@ export function handleTreeTabRemoved(tabId, removeInfo = {}) {
  * 幂等：树是加载完成后才装上的，那时被关闭的标签可能压根不在树里（列表是在关闭之后查的），
  * 此时无需处理，也不该因此把窗口标脏。
  */
-function applyRemovalToTree(tree, tabId, windowId) {
+function applyRemovalToTree(tree, tabId, windowId, diagnosticToken = activeCloseDebug) {
   const id = Number(tabId);
   if (!tree.parentById.has(id)) {
     noteTreeChangeReason(`关闭 #${id}：它已经不在内存树里（多半是加载发生在关闭之后）→ 无需提升`);
@@ -1046,6 +1030,9 @@ function applyRemovalToTree(tree, tabId, windowId) {
   // 提升"第一个子标签"前先按物理顺序排序，保证结果确定且符合直觉。
   sortChildrenByIndex(tree, id);
   applyRemovePromotion(tree, id, (info) => {
+    if (diagnosticToken) diagnosticToken.expectedParents = info.assignments;
+    recordTreeDiagnostic({ type: 'promotion-decision', windowId,
+      correlationId: diagnosticToken?.correlationId, tabId: id, ...info });
     const ruleText = {
       "no-children": "该标签没有子标签 → 无需提升",
       "only-child-of-parent": "它是父标签的唯一子标签 → 子标签全部接到父标签下",
@@ -1067,7 +1054,22 @@ function applyRemovalToTree(tree, tabId, windowId) {
  * 用户在浏览器原生标签栏拖动了标签：按新位置的邻居重新推断父标签（移植自 TST）。
  * 注意这里**不会**回滚物理位置——插件不为"子树物理连续"擅自改动用户的标签栏。
  */
-export async function handleTreeTabMoved(tabId, moveInfo = {}) {
+export async function handleTreeTabMoved(tabId, info = {}) {
+  const windowId = Number(info.windowId);
+  const correlationId = recordBrowserTreeEvent('moved', windowId, [Number(tabId)], { internal: internalMoveIds.has(Number(tabId)), fromIndex: info.fromIndex, toIndex: info.toIndex });
+  const token = beginTreeDiagnosticOperation('moved', windowId, [Number(tabId)], { correlationId, registered: false });
+  let failed = false;
+  try {
+    return await handleTreeTabMovedImpl(tabId, info);
+  } catch (error) {
+    failed = true;
+    throw error;
+  } finally {
+    endTreeDiagnosticOperation(token, { failed });
+  }
+}
+
+async function handleTreeTabMovedImpl(tabId, moveInfo = {}) {
   if (internalMoveIds.has(Number(tabId))) {
     return;
   }
@@ -1124,7 +1126,22 @@ export async function handleTreeTabMoved(tabId, moveInfo = {}) {
  * Chrome 只会移动被拖的那一个标签，因此这里先记录下整棵子树的父子关系，再把它从原窗口树上摘除；
  * 真正的物理搬运放到 onAttached 里进行（那时才知道目标窗口）。
  */
-export function handleTreeTabDetached(tabId, detachInfo = {}) {
+export function handleTreeTabDetached(tabId, info = {}) {
+  const windowId = Number(info.oldWindowId);
+  const correlationId = recordBrowserTreeEvent('detached', windowId, [Number(tabId)], { internal: internalMoveIds.has(Number(tabId)), fromIndex: info.fromIndex, toIndex: info.toIndex });
+  const token = beginTreeDiagnosticOperation('detached', windowId, [Number(tabId)], { correlationId, registered: false });
+  let failed = false;
+  try {
+    return handleTreeTabDetachedImpl(tabId, info);
+  } catch (error) {
+    failed = true;
+    throw error;
+  } finally {
+    endTreeDiagnosticOperation(token, { failed });
+  }
+}
+
+function handleTreeTabDetachedImpl(tabId, detachInfo = {}) {
   const id = Number(tabId);
   if (internalMoveIds.has(id)) {
     return;
@@ -1174,7 +1191,22 @@ function orderIdsByIndex(tree, ids) {
  * 标签进入窗口：把之前记录下来的子树整体迁移过来，父子关系保持。
  * 被拖标签本身在新窗口的父标签按位置推断，推断不出则作为顶层。
  */
-export async function handleTreeTabAttached(tabId, attachInfo = {}) {
+export async function handleTreeTabAttached(tabId, info = {}) {
+  const windowId = Number(info.newWindowId);
+  const correlationId = recordBrowserTreeEvent('attached', windowId, [Number(tabId)], { internal: internalMoveIds.has(Number(tabId)), fromIndex: info.fromIndex, toIndex: info.toIndex });
+  const token = beginTreeDiagnosticOperation('attached', windowId, [Number(tabId)], { correlationId, registered: false });
+  let failed = false;
+  try {
+    return await handleTreeTabAttachedImpl(tabId, info);
+  } catch (error) {
+    failed = true;
+    throw error;
+  } finally {
+    endTreeDiagnosticOperation(token, { failed });
+  }
+}
+
+async function handleTreeTabAttachedImpl(tabId, attachInfo = {}) {
   const id = Number(tabId);
   if (internalMoveIds.has(id)) {
     return;
@@ -1347,6 +1379,7 @@ function markDirty(windowId) {
   dirtyWindows.add(windowId);
   changesSinceFlush += 1;
   noteTreeStructureChanged(windowId);
+  if (!activeCloseDebug) observeTreeDiagnostics(windowId, { type: "mutation", phase: "applied" });
   scheduleFlush();
 }
 
@@ -1432,9 +1465,12 @@ async function flushDirtyWindows() {
       }
       // 落盘时的纠偏会**静默**改写内存树（用户看不到任何刷新），是排查"层级自己变了"的重点，
       // 因此每一条修正都要带原因打出来。
+      observeTreeDiagnostics(windowId, { type: "flush-before", phase: "before" });
       const flushRepairs = [];
       sanitizeTreeState(tree, orderedIds, pinnedIds, (info) => flushRepairs.push(info));
       rebuildIndexes(tree, tabs);
+      recordTreeDiagnostic({ type: 'flush-repairs', windowId, repairs: flushRepairs });
+      observeTreeDiagnostics(windowId, { type: 'flush-after', phase: 'complete' });
       const result = encodeSnapshot(tabs, tree, { maxBytes: SNAPSHOT_MAX_BYTES, sessionToken });
       if (flushRepairs.length > 0) {
         logTreeBlock(
@@ -1510,7 +1546,7 @@ async function forgetWindowSnapshot(windowId) {
  *
  * @param {number[]|null} windowIds 为空表示全部窗口
  */
-export async function getTreeStructure(windowIds = null) {
+export async function getTreeStructure(windowIds = null, diagnosticRequestId = null) {
   const ids = Array.isArray(windowIds) && windowIds.length > 0
     ? [...new Set(windowIds.map(Number).filter(Number.isFinite))]
     : await listWindowIds();
@@ -1518,10 +1554,14 @@ export async function getTreeStructure(windowIds = null) {
   for (const windowId of ids) {
     const tree = await ensureTree(windowId);
     if (tree) {
+      observeTreeDiagnostics(windowId, { type: 'structure-response', correlationId: diagnosticRequestId, phase: 'complete' });
+      recordTreeDiagnostic({ type: 'structure-response', windowId, correlationId: diagnosticRequestId,
+        revision: getTreeRevision(windowId), revisionToken: treeRevisionToken, epoch: treeDiagnosticEpoch(windowId) });
       structures[windowId] = {
         parents: toParentsPayload(tree),
         revision: getTreeRevision(windowId),
         revisionToken: treeRevisionToken,
+        ...(isTreeDebugEnabled() ? { diagnosticContext: getTreeDiagnosticOperations(windowId) } : {}),
       };
     }
   }
@@ -1608,16 +1648,31 @@ export async function moveTabTree(payload = {}) {
     afterTabId,
     beforeTabId,
   });
-  setParent(tree, tabId, parentId);
-  markDirty(windowId);
+  const diagnosticToken = beginTreeDiagnosticOperation('move', windowId, [tabId], {
+    expectedParents: [{ childId: tabId, parentId }],
+  });
+  let diagnosticFailed = false;
+  try {
+    setParent(tree, tabId, parentId);
+    markDirty(windowId);
 
-  const result = await moveTabsInternally(subtreeIds, windowId, insertIndex);
-  // 插件自己发起的移动同样改变了物理顺序，必须同步下标表：
-  // 否则后续基于下标排序的操作（跨窗口迁移、promote 的首个子标签）会用到过期数据。
-  updateIndexesAfterMove(tree, tabs, subtreeSet, insertIndex, subtreeIds);
-  // 物理移动后，被拖标签与子树的父子关系不变，但子树在新位置上的兄弟顺序可能变化；
-  // 这里不做额外推断，等下一次事件或落盘时的校验统一收敛。
-  return { moved: result.moved, skipped: result.skipped, parentId };
+    const result = await moveTabsInternally(subtreeIds, windowId, insertIndex);
+    // 插件自己发起的移动同样改变了物理顺序，必须同步下标表：
+    // 否则后续基于下标排序的操作（跨窗口迁移、promote 的首个子标签）会用到过期数据。
+    updateIndexesAfterMove(tree, tabs, subtreeSet, insertIndex, subtreeIds);
+    // 物理移动后，被拖标签与子树的父子关系不变，但子树在新位置上的兄弟顺序可能变化；
+    // 这里不做额外推断，等下一次事件或落盘时的校验统一收敛。
+    if (diagnosticToken && result.skipped === 0) {
+      // 复用业务已经计算出的目标序列；后续浏览器观察必须精确匹配才能解释移动。
+      diagnosticToken.expectedOrderIds = [...tree.indexById.keys()];
+    }
+    return { moved: result.moved, skipped: result.skipped, parentId };
+  } catch (error) {
+    diagnosticFailed = true;
+    throw error;
+  } finally {
+    endTreeDiagnosticOperation(diagnosticToken, { failed: diagnosticFailed });
+  }
 }
 
 /** 按"移除被拖子树后再插入"的规则重算下标表，口径与 computeInsertIndex 完全一致。 */

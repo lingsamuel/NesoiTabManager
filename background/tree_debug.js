@@ -1,36 +1,40 @@
-// 树结构调试：开关、树状态格式化、变化原因日志。
-//
-// 为什么单独成模块：树的"变化原因"分散在两处——tree_core.js 是纯算法决策（提升规则、
-// 不变量修正），tree.js 是事件链路（关闭/移动/重建/落盘）。而"要不要打印"是运行时开关，
-// 由用户在设置页打开。把开关、格式化、日志缓冲集中在这里，算法与事件链路只调用
-// logFlow()/logTree()/noteTreeChange() 这类薄接口，各自的职责保持清晰。
-//
-// 输出两条通道，缺一不可：
-// 1. 后台控制台（about:debugging → 本扩展 → 检查 → 控制台）——实时、可展开；
-// 2. storage.session 里的环形缓冲——后台被回收、控制台没开着也不会丢现场，
-//    管理页「复制调试日志」把最近若干行取走，便于整段贴出来核对。
-//
-// 日志内容说明：只会打印标签 id / 下标 / 父子关系 / 变化原因；**不含 URL**。
-// 标题只在"调试模式 + 打印树"双开时才附带（便于人工对照），属于用户数据，
-// 因此默认关闭、调试完请立刻关掉。
+// 树诊断统一入口：开关、兼容格式化与可靠会话缓冲。仅记录结构元数据。
 
 import { TREE_DEBUG_KEY, TREE_DEBUG_LOG_KEY } from "./constants.js";
-import { storageGet, storageSessionGet, storageSessionSet } from "./storage.js";
+import { createTreeDebugBuffer, sanitizeTreeDiagnostic } from "./tree_debug_buffer.js";
 import { buildTreeRows } from "./tree_core.js";
 
-// 环形缓冲最多保留多少条（一条可能是多行文本块）。
-const MAX_LOG_ENTRIES = 800;
-// 写 storage.session 的防抖：一次关闭会连续产生多条，合并成一次写。
-const PERSIST_DEBOUNCE_MS = 400;
-
 let config = { enabled: false, printTree: false };
-let loaded = false;
-// 标签标题提供者：由 background.js 注入（复用 recent_tabs 的标签缓存），
-// 这样本模块不必依赖 chrome API 与其它业务模块。
-let labelProvider = null;
-let entries = [];
-let persistTimer = null;
-let persistChain = Promise.resolve();
+let configPromise;
+let configGeneration = 0;
+const sourceId = `background-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+
+// 通用 storage 包装会吞掉错误；诊断必须单独读取 lastError 才能如实报告保存状态。
+function checkedStorageOperation(area, method, value, key) {
+  return new Promise((resolve, reject) => {
+    try {
+      if (!globalThis.chrome?.storage?.[area]) throw new Error(`${area} 存储不可用`);
+      chrome.storage[area][method](value, (result) => {
+        const error = chrome.runtime?.lastError;
+        if (error) reject(new Error(error.message || String(error)));
+        else resolve(method === "get" ? result?.[key] : undefined);
+      });
+    } catch (error) { reject(error); }
+  });
+}
+const buffer = createTreeDebugBuffer({
+  read: () => checkedStorageOperation("session", "get", TREE_DEBUG_LOG_KEY, TREE_DEBUG_LOG_KEY),
+  write: (value) => checkedStorageOperation("session", "set", { [TREE_DEBUG_LOG_KEY]: value }),
+  sourceId,
+  version: globalThis.chrome?.runtime?.getManifest?.()?.version || "unknown",
+});
+const statusListeners = new Set();
+function notifyStatus() {
+  for (const listener of statusListeners) {
+    try { listener(getTreeDebugStatus()); } catch (_) { /* 提示失败不能影响正常业务。 */ }
+  }
+}
+buffer.subscribe(notifyStatus);
 
 function normalizeConfig(raw) {
   const source = raw && typeof raw === "object" ? raw : {};
@@ -52,30 +56,36 @@ export function isTreeDebugEnabled() {
   return config.enabled;
 }
 
-/** 子开关：控制"树状态 + 变化原因"日志，输出量很大，只在需要复现时打开。 */
+/** 子开关：控制局部结构与变化原因的详细证据。 */
 export function isTreeDebugPrintEnabled() {
   return config.enabled && config.printTree;
 }
 
-/** 注入"标签 id → 人类可读标题"的提供者；取不到时退回 `#id`。 */
+/** 兼容旧的提供者注入接口；诊断已禁止输出标题。 */
 export function setTreeDebugLabelProvider(provider) {
-  labelProvider = typeof provider === "function" ? provider : null;
+  // 保留旧调用接口，但不再采集标题或 URL。
+  void provider;
 }
 
 /** 套用一份配置（内存态），返回归一化后的结果。 */
 export function applyTreeDebugConfig(raw) {
+  configGeneration++;
   config = normalizeConfig(raw);
+  notifyStatus();
   return getTreeDebugConfig();
 }
 
 /** 启动时从 storage.local 读回配置（幂等）。 */
-export async function initializeTreeDebug() {
-  if (loaded) {
-    return getTreeDebugConfig();
+export function initializeTreeDebug() {
+  if (!configPromise) {
+    const loadingGeneration = configGeneration;
+    configPromise = checkedStorageOperation("local", "get", TREE_DEBUG_KEY, TREE_DEBUG_KEY).then((stored) => {
+      // 读取期间的用户配置已立即生效，晚到的历史值不能覆盖它。
+      if (configGeneration === loadingGeneration) applyTreeDebugConfig(stored);
+      return getTreeDebugConfig();
+    });
   }
-  loaded = true;
-  applyTreeDebugConfig(await storageGet(TREE_DEBUG_KEY));
-  return getTreeDebugConfig();
+  return configPromise;
 }
 
 /** storage.onChanged 入口：用户在设置页改开关时立即生效，不必等后台重启。 */
@@ -92,16 +102,7 @@ export async function saveTreeDebugConfig(patch) {
 }
 
 function persistConfig(value) {
-  return new Promise((resolve) => {
-    try {
-      chrome.storage.local.set({ [TREE_DEBUG_KEY]: value }, () => {
-        void chrome.runtime.lastError;
-        resolve();
-      });
-    } catch (error) {
-      resolve();
-    }
-  });
+  return checkedStorageOperation("local", "set", { [TREE_DEBUG_KEY]: value });
 }
 
 // ---------------------------------------------------------------------------
@@ -111,8 +112,7 @@ function persistConfig(value) {
 const PREFIX = {
   flow: "[Nesoi树·流程]",
   tree: "[Nesoi树·树状]",
-  // 变化摘要单独一个前缀：几千标签的窗口里树快照有几千行，摘要必须能一眼看到、
-  // 也必须在控制台里能按前缀过滤出来。
+  // 独立前缀保留旧日志调用的可识别性。
   summary: "[Nesoi树·变化摘要]",
 };
 
@@ -135,15 +135,37 @@ function toText(parts) {
 }
 
 function emit(scope, parts) {
-  const text = `${PREFIX[scope]} ${toText(parts)}`;
-  if (typeof console !== "undefined" && typeof console.log === "function") {
-    console.log(text);
-  }
-  entries.push(text);
-  if (entries.length > MAX_LOG_ENTRIES) {
-    entries.splice(0, entries.length - MAX_LOG_ENTRIES);
-  }
-  schedulePersist();
+  // 兼容已有原因日志；新增结构事件优先通过 recordTreeDiagnostic 传结构化字段。
+  const text = `${PREFIX[scope]} ${toText(parts.map((part) => sanitizeTreeDiagnostic(part)))}`;
+  buffer.record({ type: scope, text });
+}
+
+/** 新诊断记录统一受总开关控制；前端保留采集顺序并另记后台接收时间。 */
+export function recordTreeDiagnostic(event) {
+  if (!config.enabled || !event || typeof event !== "object") return null;
+  return buffer.record({ ...event, ...(event.sourceId && event.sourceId !== sourceId && event.receivedAt === undefined ? { receivedAt: new Date().toISOString() } : {}) });
+}
+
+/** 首次与最近现场独立保留；恢复后再现会创建新的异常包。 */
+export function recordTreeIncident(event) {
+  if (!config.enabled || !event || typeof event !== "object") return null;
+  return buffer.incident(event);
+}
+
+/** 供 UI 获取小状态，不触发额外持久化。 */
+export function getTreeDebugStatus() {
+  return { enabled: config.enabled, ...buffer.status() };
+}
+
+/** 状态广播由调用方节流；监听不会单独写 storage。 */
+export function subscribeTreeDebugStatus(listener) {
+  statusListeners.add(listener);
+  return () => statusListeners.delete(listener);
+}
+
+/** 导出等待恢复并尝试保存；失败仍返回当前内存中的全部有界记录。 */
+export function exportTreeDebugLog() {
+  return buffer.exportText();
 }
 
 /** 流程级日志（需要总开关）。 */
@@ -154,7 +176,7 @@ export function logFlow(...parts) {
   emit("flow", parts);
 }
 
-/** 树状日志：整棵树与变化原因（需要总开关 + 子开关）。 */
+/** 兼容详细结构与原因日志（需要总开关 + 子开关）。 */
 export function logTree(...parts) {
   if (!isTreeDebugPrintEnabled()) {
     return;
@@ -171,14 +193,7 @@ export function logTreeBlock(title, lines) {
   emit("tree", [`${title}\n${body}`]);
 }
 
-/**
- * 单独打印"变化原因 + 前后差异"摘要块。
- *
- * 为什么必须单独打一份：几千标签的窗口里，关闭前后各是一份几千行的树快照，
- * 真正要看的那几行原因和差异会被彻底淹没。摘要在完整块之外**再打一次**，
- * 用独立前缀 `[Nesoi树·变化摘要]`，既方便一眼找到，也方便在控制台按前缀过滤。
- * 完整块（关闭前的树 / 变化原因 / 关闭后的树 / 前后差异）保持不变。
- */
+/** 兼容旧摘要入口；新观测通过结构化诊断入口记录局部前后证据。 */
 export function logChangeSummary(title, reasonLines, diffLines) {
   if (!isTreeDebugPrintEnabled()) {
     return;
@@ -194,37 +209,19 @@ export function logChangeSummary(title, reasonLines, diffLines) {
   emit("summary", [`${title}\n${body}`]);
 }
 
-function schedulePersist() {
-  if (persistTimer) {
-    return;
-  }
-  persistTimer = setTimeout(() => {
-    persistTimer = null;
-    const snapshot = entries.slice();
-    persistChain = persistChain
-      .then(() => storageSessionSet({ [TREE_DEBUG_LOG_KEY]: snapshot }))
-      .catch(() => {});
-  }, PERSIST_DEBOUNCE_MS);
+/** 恢复只启动一次，恢复期间的新日志与旧记录合并。 */
+export function loadTreeDebugLog() {
+  return buffer.load();
 }
 
-/** 后台启动时把上次留下的日志读回来（storage.session 跨回收存活）。 */
-export async function loadTreeDebugLog() {
-  const stored = await storageSessionGet(TREE_DEBUG_LOG_KEY);
-  if (Array.isArray(stored)) {
-    entries = stored.filter((item) => typeof item === "string").slice(-MAX_LOG_ENTRIES);
-  }
-  return entries.length;
-}
-
-/** 供管理页「复制调试日志」取走全文。 */
+/** 兼容同步读取；用户导出应调用异步 exportTreeDebugLog。 */
 export function getTreeDebugLogText() {
-  return entries.join("\n");
+  return buffer.text();
 }
 
-/** 清空日志（内存 + storage.session）。 */
+/** 清空使用代次屏障，防止晚到的恢复/保存覆盖新状态。 */
 export function clearTreeDebugLog() {
-  entries = [];
-  schedulePersist();
+  return buffer.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -252,8 +249,7 @@ export function formatTreeState(state, options = {}) {
   const indexById = new Map(list.map((tab) => [tab.id, tab.index]));
   const maxRows = Number.isFinite(options.maxRows) ? options.maxRows : 4000;
   const lines = rows.slice(0, maxRows).map((row) => {
-    const label = labelProvider ? labelProvider(row.id) : "";
-    return `${"  ".repeat(row.depth)}#${row.id} idx=${indexById.get(row.id)}${label ? ` ${label}` : ""}`;
+    return `${"  ".repeat(row.depth)}#${row.id} idx=${indexById.get(row.id)}`;
   });
   if (rows.length > maxRows) {
     lines.push(`…（共 ${rows.length} 行，已截断）`);
@@ -269,10 +265,7 @@ export function diffTreeStates(before, after) {
   if (!before || !after) {
     return ["（无法对比：一侧没有内存树）"];
   }
-  const labelOf = (id) => {
-    const label = labelProvider ? labelProvider(id) : "";
-    return label ? `#${id} ${label}` : `#${id}`;
-  };
+  const labelOf = (id) => `#${id}`;
   const beforeParent = new Map(before.entries.map((entry) => [entry.id, entry.parentId ?? null]));
   const afterParent = new Map(after.entries.map((entry) => [entry.id, entry.parentId ?? null]));
   const beforeIndex = new Map(before.entries.map((entry) => [entry.id, entry.index]));

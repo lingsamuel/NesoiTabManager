@@ -199,6 +199,10 @@ const listeners = { created: [], activated: [], updated: [], removed: [] };
 const updateCalls = [];
 // 发往后台的消息动作（展示态场景用它验证"点喇叭不会走 activateTab"）。
 const messageLog = [];
+const diagnosticMode = process.argv.includes('--diagnostics');
+const diagnosticMessages = [];
+let diagnosticStructure = { parents: {}, revision: 1, revisionToken: 'test-ui' };
+let heldStructureResponses = null;
 // 整窗查询次数：展示态变化只要走了"整窗重查"这条错路，计数就会露馅。
 let queryCount = 0;
 
@@ -241,7 +245,17 @@ function sendMessage(message, callback) {
     return;
   }
   if (action === "getTreeStructure") {
-    callback({ ok: true, structures: { [WINDOW_ID]: { parents: {} } } });
+    if (heldStructureResponses) heldStructureResponses.push(callback);
+    else callback({ ok: true, structures: { [WINDOW_ID]: diagnosticStructure } });
+    return;
+  }
+  if (action === 'recordTreeDiagnostics') {
+    diagnosticMessages.push(...message.events);
+    callback({ ok: true });
+    return;
+  }
+  if (action === 'getTreeDebugStatus') {
+    callback({ ok: true, status: { enabled: diagnosticMode, incidentCount: 0 } });
     return;
   }
   callback({ ok: true });
@@ -254,7 +268,7 @@ globalThis.chrome = {
     sendMessage,
   },
   storage: {
-    local: { get: (_key, cb) => cb({}), set: (_obj, cb) => cb && cb() },
+    local: { get: (key, cb) => cb(diagnosticMode && key === 'treeDebugConfig' ? { treeDebugConfig: { enabled: true, printTree: true } } : {}), set: (_obj, cb) => cb && cb() },
     session: { get: (_key, cb) => cb({}), set: (_obj, cb) => cb && cb() },
     onChanged: makeEvent([]),
   },
@@ -879,6 +893,37 @@ console.log("场景 8.11：活动标签与被点项分处两区 → 只选中被
   check(Boolean(pinAfter && !pinAfter._class.includes("selected")), "固定标签方块没有被选中");
   check(!messageLog.slice(messagesBefore).includes("activateTab"), "依然不激活标签");
   check(isRowFullyVisible(4), "被点行在补偿后仍完整可见（视口顶部越界不会把它顶出去）");
+}
+
+if (diagnosticMode) {
+  console.log('诊断场景：真实侧边栏 watcher 在标签删除与父映射响应之间不累计异常包');
+  const { getTreeDiagnostics } = await import('../src/manager/utils/tree_diagnostics.js');
+  const client = getTreeDiagnostics();
+  browserTabs = [101, 102, 103].map((id, index) => ({ id, index, windowId: WINDOW_ID,
+    title: `诊断样本 ${id}`, url: `https://example.com/${id}`, active: index === 0, pinned: false }));
+  diagnosticStructure = { parents: { 102: 101, 103: 102 }, revision: 2, revisionToken: 'test-ui' };
+  for (const listener of listeners.created) listener(browserTabs[0]);
+  await sleep(350);
+  await client.flush();
+  diagnosticMessages.length = 0;
+  heldStructureResponses = [];
+  browserTabs = browserTabs.filter(tab => tab.id !== 102).map((tab, index) => ({ ...tab, index }));
+  for (const listener of listeners.removed) listener(102, { windowId: WINDOW_ID, isWindowClosing: false });
+  await sleep(350);
+  await client.flush();
+  check(heldStructureResponses.length > 0, '实际标签查询已应用，结构响应确实被暂停');
+  check(diagnosticMessages.some(item => item.payload.classification === 'pending'), '真实 watcher 观察到处理中悬空父');
+  check(!diagnosticMessages.some(item => item.kind === 'incident'), '处理中暂态没有累计异常包');
+  diagnosticStructure = { parents: { 103: 101 }, revision: 3, revisionToken: 'test-ui',
+    diagnosticContext: { revision: 3, pending: false, operations: [{ type: 'close', correlationId: 'close-102',
+      registered: true, phase: 'complete', focusIds: [102], expectedParents: [{ childId: 103, parentId: 101 }],
+      revisionBefore: 2, revision: 3 }] } };
+  const callbacks = heldStructureResponses;
+  heldStructureResponses = null;
+  for (const callback of callbacks) callback({ ok: true, structures: { [WINDOW_ID]: diagnosticStructure } });
+  await sleep(50);
+  await client.flush();
+  check(!diagnosticMessages.some(item => item.kind === 'incident'), '父映射对齐后正常提升仍不产生异常提示');
 }
 
 console.log("场景 9：管理页「打开的窗口」跳转模式下输入关键词 → 同样要跳转");

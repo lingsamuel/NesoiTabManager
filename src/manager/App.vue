@@ -494,6 +494,7 @@
         :recent-config-status="recentConfigStatus"
         :debug-config="debugConfig"
         :debug-config-status="debugConfigStatus"
+        :diagnostic-status="diagnosticState.status"
         :on-save-ai-config="saveAiConfig"
         :on-save-discard-config="saveDiscardConfig"
         :on-save-recent-config="saveRecentConfig"
@@ -521,6 +522,7 @@ import { MOVE_NEW_LIST_VALUE, NEW_LIST_VALUE, useLists } from "./composables/use
 import { useWindows } from "./composables/useWindows.js";
 import { useWindowsSync } from "./composables/useWindowsSync.js";
 import { request } from "./utils/request.js";
+import { getTreeDiagnostics, copyTreeDiagnosticLog } from "./utils/tree_diagnostics.js";
 import { rememberListId } from "./utils/list_target_memory.js";
 import { moveTabsInBatches, removeTabsInBatches } from "./utils/helpers.js";
 
@@ -583,7 +585,9 @@ const recentConfig = reactive({
   startupMaxGraceSec: 900,
 });
 const recentConfigStatus = reactive({ message: "", type: "" });
-// 树结构调试开关。默认全关；「打印树结构与变化原因」输出量很大，只在复现问题时打开。
+// 树结构诊断默认关闭；详细模式记录局部结构与变化证据，不含标题和网址。
+const diagnostics = getTreeDiagnostics();
+const diagnosticState = diagnostics.state;
 const debugConfig = reactive({ enabled: false, printTree: false });
 const debugConfigStatus = reactive({ message: "", type: "" });
 
@@ -1523,32 +1527,32 @@ async function saveDebugConfig() {
   debugConfig.enabled = Boolean(config.enabled);
   debugConfig.printTree = Boolean(config.printTree);
   debugConfigStatus.message = debugConfig.enabled
-    ? `调试已开启${debugConfig.printTree ? "（含树结构与变化原因）" : ""}。请在扩展后台控制台查看 [Nesoi树·…] 开头的日志。`
+    ? `诊断已开启${debugConfig.printTree ? "（含局部结构与变化证据）" : ""}。发现异常后可直接复制诊断日志。`
     : "调试已关闭。";
   debugConfigStatus.type = "ok";
 }
 
-/** 把后台缓冲的调试日志整段复制到剪贴板，便于直接贴出来核对。 */
+/** 导出由后台组装，界面只负责剪贴板与反馈。 */
 async function copyDebugLog() {
-  const response = await request("getTreeDebugLog");
-  const text = (response && response.text) || "";
-  if (!text) {
-    debugConfigStatus.message = "还没有日志：请先开启调试并复现一次。";
-    debugConfigStatus.type = "error";
-    return;
-  }
   try {
-    await navigator.clipboard.writeText(text);
-    debugConfigStatus.message = `已复制 ${text.split("\n").length} 行调试日志。`;
+    await diagnostics.flush();
+    const count = await copyTreeDiagnosticLog();
+    debugConfigStatus.message = `已复制 ${count} 行诊断日志。`;
     debugConfigStatus.type = "ok";
   } catch (error) {
-    debugConfigStatus.message = `复制失败（浏览器拒绝了剪贴板访问）：${String(error && error.message ? error.message : error)}`;
+    debugConfigStatus.message = error?.message || "复制诊断日志失败。";
     debugConfigStatus.type = "error";
   }
 }
 
 async function clearDebugLog() {
-  await request("clearTreeDebugLog");
+  const response = await request("clearTreeDebugLog");
+  if (!response?.ok) {
+    debugConfigStatus.message = response?.error || "清空诊断日志失败。";
+    debugConfigStatus.type = "error";
+    return;
+  }
+  await diagnostics.refreshStatus();
   debugConfigStatus.message = "调试日志已清空。";
   debugConfigStatus.type = "ok";
 }

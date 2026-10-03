@@ -15,6 +15,7 @@ import { useMatchNavigation } from "../manager/composables/useMatchNavigation.js
 import { useTree } from "../manager/composables/useTree.js";
 import { matchesTabQuery } from "../manager/utils/helpers.js";
 import { request } from "../manager/utils/request.js";
+import { getTreeDiagnostics, copyTreeDiagnosticLog } from "../manager/utils/tree_diagnostics.js";
 import {
   applySelectionClick,
   clearSelection,
@@ -63,6 +64,12 @@ const ready = ref(false);
 const status = reactive({ message: "", type: "" });
 
 const tree = useTree();
+const diagnostics = getTreeDiagnostics();
+const diagnosticState = diagnostics.state;
+let diagnosticEpoch = 0;
+let diagnosticQueries = 0;
+let diagnosticAligned = false;
+const diagnosticRevisions = new Map();
 const filter = useFilterQuery();
 // 列表的模板引用：侧边栏关闭了列表的自动滚动，导航动作需要显式滚过去。
 const treeRef = ref(null);
@@ -163,6 +170,24 @@ const treeTabs = computed(() => tabs.value.filter((tab) => !tab.pinned));
  * 行模型：标签列表 + 父子映射 + 折叠状态 + 关键词 → 扁平行。
  * 这里不复制任何渲染逻辑，全部交给后台/管理页共用的 buildTreeRows。
  */
+function treeRowOptions(tabById) {
+  const keyword = filter.committed.value;
+  const hasKeyword = Boolean(String(keyword || "").trim());
+  const matchId = hasKeyword
+    ? (tabIdValue) => {
+        const tab = tabById.get(Number(tabIdValue));
+        return Boolean(tab && matchesTabQuery(tab, keyword));
+      }
+    : null;
+  return {
+    collapsedIds: tree.collapsedSetFor(windowId.value),
+    forceExpand: hasKeyword,
+    matchId,
+    // 跳转模式必须保留完整树、只标记匹配项。
+    pruneToMatches: filter.mode.value === "filter",
+  };
+}
+
 const rowModel = computed(() => {
   const list = treeTabs.value;
   const id = windowId.value;
@@ -179,23 +204,66 @@ const rowModel = computed(() => {
       parentMap.set(child, parent);
     }
   }
-  const keyword = filter.committed.value;
-  const hasKeyword = Boolean(String(keyword || "").trim());
-  const matchId = hasKeyword
-    ? (tabIdValue) => {
-        const tab = tabById.get(Number(tabIdValue));
-        return Boolean(tab && matchesTabQuery(tab, keyword));
-      }
-    : null;
-  const rows = buildTreeRows(list, parentMap, {
-    collapsedIds: tree.collapsedSetFor(id),
-    forceExpand: hasKeyword,
-    matchId,
-    // 跳转模式必须保留完整树、只标记匹配项；否则会退化成过滤。
-    pruneToMatches: filter.mode.value === "filter",
-  });
+  const rows = buildTreeRows(list, parentMap, treeRowOptions(tabById));
   return { rows, tabById };
 });
+
+/** 完整行、显示行、浏览器顺序各有独立基线，折叠和筛选不能被当成树节点消失。 */
+function observeDiagnosticRows() {
+  if (!diagnosticState.enabled || windowId.value === null || document.visibilityState !== "visible") return;
+  const id = windowId.value;
+  const parents = tree.parentsFor(id);
+  const tabById = new Map(treeTabs.value.map((tab) => [Number(tab.id), tab]));
+  const parentById = new Map(treeTabs.value.map((tab) => [Number(tab.id), parents[tab.id] ?? null]));
+  const applied = tree.diagnosticContextFor(id);
+  const aligned = diagnosticAligned && diagnosticQueries === 0 && !applied.pending;
+  const observe = (source, rows) => {
+    const baseline = diagnosticRevisions.get(source);
+    const sameInstance = baseline?.sourceToken === applied.sourceToken;
+    const operations = sameInstance ? (applied.operations || []).filter((operation) =>
+      operation.revision > baseline.revision && operation.revision <= applied.revision).map((operation) => {
+        if (!Array.isArray(operation.expectedOrderIds)) return operation;
+        const expectedTabs = operation.expectedOrderIds.map((tabId) => tabById.get(tabId)).filter(Boolean);
+        // 操作登记的是浏览器物理顺序；必须经相同投影才能与 DFS/筛选行比较。
+        const options = source === "rows" ? { forceExpand: true } : treeRowOptions(tabById);
+        return { ...operation, expectedOrderIds: buildTreeRows(expectedTabs, parentById, options).map((row) => row.id) };
+      }) : [];
+    diagnostics.observe({
+      windowId: id, source, sourceToken: applied.sourceToken, parentById,
+      entries: rows.map((row, index) => ({ id: row.id, parentId: parentById.get(row.id) ?? null,
+        index, depth: row.depth, collapsed: Boolean(row.collapsed),
+        title: tabById.get(row.id)?.title, url: tabById.get(row.id)?.url })),
+    }, { ...applied, operations, aligned, phase: aligned ? "complete" : "pending",
+      filterActive: Boolean(filter.committed.value), filterMode: filter.mode.value,
+      collapsedCount: tree.collapsedSetFor(id)?.size || 0,
+      visibleCount: rowModel.value.rows.length, completeCount: treeTabs.value.length,
+      pinnedCount: tabs.value.length - treeTabs.value.length });
+    // 处理中不能推进已对齐版本，否则后续真实观测会失去关闭提升的解释链。
+    if (aligned) diagnosticRevisions.set(source, { sourceToken: applied.sourceToken, revision: applied.revision });
+  };
+  observe("rows", buildTreeRows(treeTabs.value, parentById, { forceExpand: true }));
+  observe("visibleRows", rowModel.value.rows);
+}
+
+// 关闭时不求值任何用于诊断的快照；开启期间复用正常行模型的变更通知。
+watch(() => diagnosticState.enabled ? rowModel.value : null, () => observeDiagnosticRows(), { flush: "post" });
+watch(() => diagnosticState.enabled ? [filter.committed.value, filter.mode.value,
+  JSON.stringify(tree.collapsedSetFor(windowId.value) ? [...tree.collapsedSetFor(windowId.value)] : [])] : null,
+() => {
+  if (!diagnosticState.enabled) return;
+  diagnostics.gap({ windowId: windowId.value, source: "visibleRows", reason: "view-projection-change" });
+  diagnosticRevisions.delete("visibleRows");
+}, { flush: "pre" });
+
+async function copyDiagnosticLog() {
+  try {
+    await diagnostics.flush();
+    const count = await copyTreeDiagnosticLog();
+    setStatus(`已复制 ${count} 行诊断日志。`, "ok");
+  } catch (error) {
+    setStatus(error?.message || "复制诊断日志失败。", "error");
+  }
+}
 
 const items = computed(() => {
   const { rows, tabById } = rowModel.value;
@@ -578,17 +646,46 @@ function getCurrentWindow() {
   });
 }
 
+/** 同一次正常查询在结构响应后再对齐，无需为了诊断另查整窗。 */
+function observeDiagnosticPhysical(id, list, aligned) {
+  if (!diagnosticState.enabled) return;
+  const applied = tree.diagnosticContextFor(id);
+  const baseline = diagnosticRevisions.get("physical");
+  const sameInstance = baseline?.sourceToken === applied.sourceToken;
+  const operations = sameInstance ? (applied.operations || []).filter((operation) =>
+    operation.revision > baseline.revision && operation.revision <= applied.revision) : [];
+  const complete = aligned && !applied.pending && diagnosticQueries === 0;
+  diagnostics.observe({ windowId: id, source: "physical", sourceToken: applied.sourceToken,
+    entries: list.map((tab) => ({ id: tab.id, parentId: null, index: tab.index, pinned: Boolean(tab.pinned),
+      title: tab.title, url: tab.url })),
+  }, { ...applied, operations, aligned: complete, phase: complete ? "complete" : "pending" });
+  if (complete) diagnosticRevisions.set("physical", { sourceToken: applied.sourceToken, revision: applied.revision });
+}
+
 async function refresh() {
   const id = windowId.value;
   if (id === null) {
     return;
   }
+  const diagnosticQuery = diagnosticState.enabled;
+  const queryEpoch = diagnosticEpoch;
+  if (diagnosticQuery) diagnosticQueries += 1;
   const list = await queryWindowTabs(id);
+  if (diagnosticQuery) {
+    diagnosticAligned = queryEpoch === diagnosticEpoch;
+    observeDiagnosticPhysical(id, list, false);
+  }
   tabs.value = list;
   // 折叠状态是与管理页共用的会话级记录，标签关闭后要顺手裁掉无效条目，避免越积越多。
   tree.pruneCollapsed(new Set(list.map((tab) => String(tab.id))));
   // 父子映射仍由后台提供：树是后台维护的唯一真相，前端不再自行推断。
   const ok = await tree.loadForWindows([id]);
+  if (diagnosticQuery) {
+    diagnosticQueries -= 1;
+    diagnosticAligned = ok && queryEpoch === diagnosticEpoch;
+    observeDiagnosticPhysical(id, list, diagnosticAligned);
+    observeDiagnosticRows();
+  }
   if (!ok) {
     setStatus(tree.status.message || "树状结构加载失败。", "error");
   }
@@ -698,6 +795,13 @@ function runPendingRefresh() {
 }
 
 function onVisibilityChange() {
+  if (diagnosticState.enabled && document.visibilityState !== "visible") {
+    for (const source of ["physical", "rows", "visibleRows"]) {
+      diagnostics.gap({ windowId: windowId.value, source, reason: "hidden" });
+    }
+    diagnosticAligned = false;
+    diagnosticRevisions.clear();
+  }
   if (document.visibilityState === "visible" && pendingWhileHidden) {
     pendingWhileHidden = false;
     startRefreshTimer();
@@ -793,6 +897,10 @@ function bindTabEvents() {
       if (!Number.isFinite(eventWindowId)) {
         return;
       }
+      if (diagnosticState.enabled && eventWindowId === Number(windowId.value)) {
+        diagnosticEpoch += 1;
+        diagnosticAligned = false;
+      }
       scheduleRefresh(eventWindowId === Number(windowId.value) ? "full" : "pinned");
     };
     target.addListener(listener);
@@ -831,6 +939,10 @@ function bindTreeStructureEvents() {
   const unsubscribe = tree.onStructureChanged((changedWindowIds) => {
     const ids = Array.isArray(changedWindowIds) ? changedWindowIds : [];
     if (ids.length === 0 || ids.includes(Number(windowId.value))) {
+      if (diagnosticState.enabled) {
+        diagnosticEpoch += 1;
+        diagnosticAligned = false;
+      }
       scheduleRefresh("full");
       return;
     }
@@ -1692,6 +1804,10 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  for (const source of ["physical", "rows", "visibleRows"]) {
+    diagnostics.gap({ windowId: windowId.value, source, reason: "unmounted" });
+  }
+  void diagnostics.flush();
   if (refreshTimer) {
     clearTimeout(refreshTimer);
     refreshTimer = null;
@@ -1708,6 +1824,11 @@ onBeforeUnmount(() => {
     @dragover="onRootDragOver"
     @drop="onRootDrop"
   >
+    <div v-if="diagnosticState.enabled && (diagnosticState.status.incidentCount || diagnosticState.status.persistError || diagnosticState.status.restoreError || diagnosticState.status.transportError)"
+      class="sb-diagnostic-notice" role="status">
+      <span>树诊断：{{ diagnosticState.status.incidentCount || 0 }} 条异常记录<span v-if="diagnosticState.status.activeCount">（{{ diagnosticState.status.activeCount }} 条待确认）</span><span v-if="diagnosticState.status.persistError || diagnosticState.status.restoreError || diagnosticState.status.transportError"> · 记录不完整</span></span>
+      <button type="button" @click="copyDiagnosticLog">复制日志</button>
+    </div>
     <div class="sb-toolbar">
       <FilterInput
         :model-value="filter.query.value"

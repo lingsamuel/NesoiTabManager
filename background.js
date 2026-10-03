@@ -61,7 +61,6 @@ import {
 import { openDroppedItem } from "./background/dropped_item.js";
 import {
   beginTreeCloseDebug,
-  captureTreeDebugState,
   createRootTab,
   endTreeCloseDebug,
   getTreeStructure,
@@ -100,15 +99,47 @@ import {
 import {
   clearTreeDebugLog,
   getTreeDebugConfig,
-  getTreeDebugLogText,
+  exportTreeDebugLog,
+  getTreeDebugStatus,
+  subscribeTreeDebugStatus,
+  recordTreeDiagnostic,
+  recordTreeIncident,
+  isTreeDebugEnabled,
   handleTreeDebugConfigChanged,
   initializeTreeDebug,
   isTreeDebugPrintEnabled,
   loadTreeDebugLog,
   logFlow,
   saveTreeDebugConfig,
-  setTreeDebugLabelProvider,
 } from "./background/tree_debug.js";
+
+import { configureTreeDiagnostics, resetTreeDiagnosticBaselines } from './background/tree_diagnostic_runtime.js';
+import { createDiagnosticReceiver } from './background/tree_diagnostic_receiver.js';
+
+configureTreeDiagnostics({ metadataProvider: getCachedTabInfo });
+const receiveTreeDiagnostics = createDiagnosticReceiver({
+  enabled: isTreeDebugEnabled, emit: recordTreeDiagnostic, incident: recordTreeIncident,
+  extensionRoot: chrome.runtime.getURL(''),
+});
+let diagnosticStatusTimer = null;
+let lastDiagnosticStatus = '';
+subscribeTreeDebugStatus(() => {
+  if (diagnosticStatusTimer) return;
+  diagnosticStatusTimer = setTimeout(() => {
+    diagnosticStatusTimer = null;
+    const status = getTreeDebugStatus();
+    // 小状态沿用已有 session 通知方式；不广播到所有标签页，也不为状态创建保活任务。
+    const serialized = JSON.stringify(status);
+    if (serialized === lastDiagnosticStatus || !chrome.storage.session) return;
+    try {
+      chrome.storage.session.set({ treeDiagnosticStatus: status }, () => {
+        if (!chrome.runtime.lastError) lastDiagnosticStatus = serialized;
+      });
+    } catch (_) {
+      // 详细保存错误由日志缓冲自身报告；状态通知失败不再递归写日志。
+    }
+  }, 400);
+});
 
 chrome.runtime.onInstalled.addListener(() => {
   clearActionPopup();
@@ -200,6 +231,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   // 调试开关改动立即生效：用户不必等后台重启就能看到日志。
   if (changes[TREE_DEBUG_KEY]) {
     handleTreeDebugConfigChanged(changes[TREE_DEBUG_KEY].newValue || {});
+    resetTreeDiagnosticBaselines();
   }
 });
 
@@ -272,16 +304,26 @@ chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
   //    且 url 与标题来自 recent_tabs 的标签缓存（它在下面这一步就被删掉了）；
   // 2. 被关闭标签的子标签会被提升，它们的父标签引用要在树改写前把 id 取出来。
   //
-  // 调试模式（设置页「打印树结构与变化原因」）：抓"关闭前"的树 → 走完整条处理链 →
-  // 打印"变化原因 + 关闭后"的树。原因由各分支在发生的那一刻记录（提升规则、不变量修正、
-  // 位置推断、重建来源等），这里只负责归拢，保证一次关闭的现场是完整可核对的。
+  // 诊断必须完整覆盖处理链；任何步骤失败也记录结束边界。
   const debugToken = beginTreeCloseDebug(tabId, removeInfo);
-  handleClosedTabRecorded(tabId, removeInfo);
-  handlePromotionAfterClose(tabId, removeInfo.windowId);
-  handleTabRemoved(tabId);
-  handleRecentTabRemoved(tabId);
-  handleTreeTabRemoved(tabId, removeInfo);
-  endTreeCloseDebug(debugToken);
+  let stage = 'closed-record';
+  let failed = false;
+  try {
+    handleClosedTabRecorded(tabId, removeInfo);
+    stage = 'promotion-record';
+    handlePromotionAfterClose(tabId, removeInfo.windowId);
+    stage = 'discard-cache';
+    handleTabRemoved(tabId);
+    stage = 'recent-cache';
+    handleRecentTabRemoved(tabId);
+    stage = 'tree-remove';
+    handleTreeTabRemoved(tabId, removeInfo);
+  } catch (error) {
+    failed = true;
+    throw error;
+  } finally {
+    endTreeCloseDebug(debugToken, { stage, failed });
+  }
 });
 
 chrome.tabs.onMoved.addListener((tabId, moveInfo) => {
@@ -587,7 +629,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (action === "getTreeStructure") {
-    getTreeStructure(Array.isArray(message.windowIds) ? message.windowIds : null)
+    getTreeStructure(
+      Array.isArray(message.windowIds) ? message.windowIds : null,
+      typeof message.diagnosticRequestId === 'string' ? message.diagnosticRequestId.slice(0, 160) : null
+    )
       .then((result) => sendResponse({ ok: true, ...result }))
       .catch((error) => sendResponse({ ok: false, error: String(error.message || error) }));
     return true;
@@ -644,6 +689,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (action === "saveTreeDebugConfig") {
     saveTreeDebugConfig(message.config || {})
       .then((config) => {
+        resetTreeDiagnosticBaselines();
         logFlow(
           `调试开关已更新：总开关=${config.enabled ? "开" : "关"}，打印树结构与变化原因=${config.printTree ? "开" : "关"}`
         );
@@ -655,13 +701,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   // 管理页「复制调试日志」：把最近若干行原样取走，便于整段贴出来核对。
   if (action === "getTreeDebugLog") {
-    sendResponse({ ok: true, text: getTreeDebugLogText() });
-    return false;
+    exportTreeDebugLog()
+      .then(text => sendResponse({ ok: true, text, status: getTreeDebugStatus() }))
+      .catch(() => sendResponse({ ok: false, error: '诊断日志导出失败，请重试。' }));
+    return true;
   }
 
   if (action === "clearTreeDebugLog") {
-    clearTreeDebugLog();
-    sendResponse({ ok: true });
+    Promise.resolve(clearTreeDebugLog()).then(() => {
+      resetTreeDiagnosticBaselines('logs-cleared');
+      sendResponse({ ok: true, status: getTreeDebugStatus() });
+    }).catch(() => sendResponse({ ok: false, error: '清空日志失败，请重试。' }));
+    return true;
+  }
+
+  if (action === 'getTreeDebugStatus') {
+    initializeTreeDebug().then(() => loadTreeDebugLog()).then(() => {
+      sendResponse({ ok: true, status: getTreeDebugStatus() });
+    }).catch(() => sendResponse({ ok: true, status: getTreeDebugStatus() }));
+    return true;
+  }
+
+  if (action === 'recordTreeDiagnostics') {
+    sendResponse({ ok: true, ...receiveTreeDiagnostics(message.events, sender) });
     return false;
   }
 
@@ -687,12 +749,8 @@ initializeClosedGroups();
 // 为什么必须记这一条：MV3 的事件页会被回收，回收后内存树是空的，随后的结构事件走的是
 // "从快照重建"的路径——排查时必须能区分"事件被就地处理"与"事件被丢弃/重建"这两种情况。
 initializeTreeDebug().then(async () => {
-  // 标题只在"打印树结构"打开时才附带（属于用户数据），因此由后台注入提供者。
-  setTreeDebugLabelProvider((tabId) => {
-    const cached = getCachedTabInfo(tabId);
-    return cached && cached.title ? cached.title : "";
-  });
   await loadTreeDebugLog();
+  resetTreeDiagnosticBaselines('background-started-history-has-no-live-baseline');
   logFlow(
     `后台（重新）启动：内存树为空；会话存储=${HAS_SESSION_STORAGE ? "有" : "无"}；` +
       `调试=${getTreeDebugConfig().enabled ? "开" : "关"}${isTreeDebugPrintEnabled() ? "（含树结构打印）" : ""}`

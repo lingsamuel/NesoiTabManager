@@ -716,8 +716,11 @@ async function main() {
   // --- 场景 17：调试模式（打印树结构与变化原因）---
   // 用户要能凭日志回答"这个标签为什么换了父"，因此这里断言一次关闭的完整现场：
   // 关闭前的树、每条变化的原因（含用到的规则）、关闭后的树、前后差异。
-  console.log("场景 17：调试模式打印关闭前后的树与变化原因");
+  console.log("场景 17：调试模式记录局部前后证据与变化原因");
   const debug = await import("../background/tree_debug.js");
+  // 本脚本用带 query 的 import 模拟重启，依赖模块却共享；切回当前受测树的读取接口。
+  const diagnostics = await import("../background/tree_diagnostic_runtime.js");
+  diagnostics.configureTreeDiagnostics({ captureState: tree.captureTreeDebugState, readRevision: tree.getTreeRevision });
   const a17 = addTab({ windowId: 21, url: "https://a17.example.com/", title: "A17" });
   const b17 = addTab({ windowId: 21, url: "https://b17.example.com/", title: "B17", openerTabId: a17.id });
   const c17 = addTab({ windowId: 21, url: "https://c17.example.com/", title: "C17", openerTabId: b17.id });
@@ -735,30 +738,25 @@ async function main() {
   tree.handleTreeTabRemoved(b17.id, { windowId: 21, isWindowClosing: false });
   tree.endTreeCloseDebug();
   const debugText = debug.getTreeDebugLogText();
-  assertEqual(debugText.includes("关闭前的树"), true, "17：日志含关闭前的树");
-  assertEqual(debugText.includes("变化原因"), true, "17：日志含变化原因段落");
-  assertEqual(debugText.includes("提升 #"), true, "17：日志说明了提升的是哪个标签");
-  assertEqual(debugText.includes("规则："), true, "17：日志说明了命中的提升规则");
-  assertEqual(debugText.includes("关闭后的树"), true, "17：日志含关闭后的树");
-  assertEqual(debugText.includes(`#${c17.id}`), true, "17：日志里能看到被提升的子标签");
-  // 摘要必须**单独**再打一份（独立前缀），否则几千标签的窗口里原因会被树快照淹没。
-  assertEqual(debugText.includes("[Nesoi树·变化摘要]"), true, "17：变化摘要单独成块（独立前缀）");
-  const summaryIndex = debugText.lastIndexOf("[Nesoi树·变化摘要]");
-  const summaryText = debugText.slice(summaryIndex);
-  assertEqual(summaryText.includes("提升 #"), true, "17：摘要块里含变化原因");
-  assertEqual(summaryText.includes("父变化"), true, "17：摘要块里含前后差异");
-  assertEqual(summaryText.includes("关闭前的树"), false, "17：摘要块不含整棵树（便于一眼看到）");
-  assertEqual((summaryText.match(/\n1\. /g) || []).length, 1, "17：摘要里的原因编号不重复");
+  assertEqual(debugText.includes('"type":"close-begin"'), true, "17：关闭起点有独立关联记录");
+  assertEqual(debugText.includes('"type":"promotion-decision"'), true, "17：记录算法实际提升分配");
+  assertEqual(debugText.includes("提升 #"), true, "17：日志说明被提升标签与规则");
+  assertEqual(debugText.includes('"before":'), true, "17：局部节点保留原始前态");
+  assertEqual(debugText.includes('"after":'), true, "17：局部节点保留后态");
+  assertEqual(debugText.includes('"type":"close-end"'), true, "17：关闭终点使用关联记录");
+  assertEqual(debugText.includes("关闭前的树"), false, "17：不重复输出整个窗口");
+  assertEqual(debugText.includes('"incidentCount": 0'), true, "17：匹配算法分配的正常关闭不误报");
   const after17 = await tree.getTreeStructure([21]);
   assertEqual(after17.structures[21].parents[c17.id], a17.id, "17：前提——唯一子标签被提升到祖父");
 
   // 关掉调试后不得再产生日志（默认全关，避免影响正常使用）
-  debug.clearTreeDebugLog();
+  await debug.clearTreeDebugLog();
   debug.applyTreeDebugConfig({ enabled: false, printTree: false });
+  const disabledDebugText = debug.getTreeDebugLogText();
   tree.beginTreeCloseDebug(b17.id, { windowId: 21 });
   tree.handleTreeTabRemoved(a17.id, { windowId: 21, isWindowClosing: false });
   tree.endTreeCloseDebug();
-  assertEqual(debug.getTreeDebugLogText(), "", "17：调试关闭后不产生任何日志");
+  assertEqual(debug.getTreeDebugLogText(), disabledDebugText, "17：调试关闭后不产生任何日志");
 
   // --- 场景 18：不变量校验要补齐"窗口里有、内存树里没有条目"的标签 ---
   // 用户现象：新标签不再自动挂到当前激活标签下，过一会或 Reload 才恢复。
