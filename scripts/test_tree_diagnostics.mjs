@@ -108,10 +108,10 @@ test('可见行依据完整父映射区分隐藏与悬空，保留观察层级',
   assert.equal(node(result, 2).after.depth, 0);
 });
 
-function harness() {
+function harness(options = {}) {
   const records = [];
   const incidents = [];
-  const monitor = createTreeDiagnosticMonitor({ emit: (record) => records.push(record), incident: (record) => incidents.push(record) });
+  const monitor = createTreeDiagnosticMonitor({ ...options, emit: (record) => records.push(record), incident: (record) => incidents.push(record) });
   return { monitor, records, incidents };
 }
 
@@ -185,6 +185,49 @@ test('实例切换与显式 gap 不比较跨边界快照', () => {
   monitor.observe(snapshot([{ id: 1 }, { id: 2 }], { sourceToken: 'b' }), { aligned: true });
   assert.equal(incidents.length, 0);
   monitor.clear();
+});
+
+test('持续打开的前端：后台切换后仍捕获非根关闭导致的升顶层', () => {
+  const { monitor, records, incidents } = harness({ preserveBaselineOnSourceChange: true });
+  const before = snapshot([{ id: 1 }, { id: 2, parentId: 1 }, { id: 3, parentId: 2 }, { id: 4, parentId: 2 }], { source: 'rows', sourceToken: 'old' });
+  const pending = snapshot([{ id: 1 }, { id: 3, parentId: 2 }, { id: 4, parentId: 2 }], { source: 'rows', sourceToken: 'old' });
+  const after = snapshot([{ id: 1 }, { id: 3 }, { id: 4 }], { source: 'rows', sourceToken: 'new' });
+  monitor.observe(before, { aligned: true });
+  monitor.observe(pending, { aligned: false });
+  monitor.observe(after, { aligned: true });
+  const incident = incidents.find((entry) => entry.type === 'parent-change' && entry.status === 'active');
+  assert.ok(incident, '新后台的无环合法树也可能是错误继承，不能当作初始基线');
+  assert.equal(node(incident.evidence.firstEvidence, 3).before.parentId, 2);
+  assert.equal(node(incident.evidence, 3).after.parentId, null);
+  assert.equal(incident.evidence.observation.previousSourceToken, 'old');
+  assert.ok(records.some((entry) => entry.type === 'monitor-source-changed' && entry.baselinePreserved));
+  assert.equal(records.filter((entry) => entry.type === 'monitor-baseline').length, 1);
+  monitor.observe(after, { aligned: true });
+  assert.notEqual(incidents.at(-1).status, 'recovered', '再次相同不能消除跨实例异常');
+});
+
+test('后台令牌切换发生在处理中时仍保留已对齐前态', () => {
+  const { monitor, incidents } = harness({ preserveBaselineOnSourceChange: true });
+  monitor.observe(snapshot([{ id: 1 }, { id: 2, parentId: 1 }, { id: 3, parentId: 1 }], { sourceToken: 'a' }), { aligned: true });
+  const after = snapshot([{ id: 2 }, { id: 3 }], { sourceToken: 'b' });
+  monitor.observe(after, { aligned: false });
+  assert.equal(incidents.length, 0);
+  monitor.observe(after, { aligned: true });
+  assert.ok(incidents.some((entry) => entry.type === 'parent-change' && entry.status === 'active'));
+  assert.equal(incidents.at(-1).evidence.observation.previousSourceToken, 'a');
+});
+
+test('连续前端捕获跨后台换位，明确 gap 后仍重新建立基线', () => {
+  const { monitor, incidents } = harness({ preserveBaselineOnSourceChange: true });
+  monitor.observe(snapshot([{ id: 1 }, { id: 2 }], { sourceToken: 'a' }), { aligned: true });
+  monitor.observe(snapshot([{ id: 1 }, { id: 2 }], { sourceToken: 'b' }), { aligned: true });
+  assert.equal(incidents.length, 0, '仅换后台而结构不变不应报警');
+  monitor.observe(snapshot([{ id: 2 }, { id: 1 }], { sourceToken: 'c' }), { aligned: true });
+  assert.ok(incidents.some((entry) => entry.type === 'order-change' && entry.status === 'active'));
+  const count = incidents.length;
+  monitor.gap({ windowId: 1, source: 'physical', reason: 'hidden' });
+  monitor.observe(snapshot([{ id: 1 }, { id: 2 }], { sourceToken: 'd' }), { aligned: true });
+  assert.equal(incidents.length, count);
 });
 
 test('处理中未知改父在完成时无新差异仍确认，解除必须核对最新目标父', () => {

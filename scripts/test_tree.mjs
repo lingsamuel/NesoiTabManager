@@ -775,6 +775,28 @@ async function main() {
   assertEqual(repairedCount >= 2, true, "18：补齐被计入不变量修正（会触发通知与会话值重写）");
 
   console.log("");
+  console.log("场景 19：后台未加载时关闭顶层父，重建与再次落盘保持继承");
+  windows.push({ id: 30 });
+  const root19 = addTab({ windowId: 30, url: "https://root19.invalid/" });
+  const first19 = addTab({ windowId: 30, url: "https://first19.invalid/", openerTabId: root19.id });
+  const second19 = addTab({ windowId: 30, url: "https://second19.invalid/", openerTabId: root19.id });
+  const leaf19 = addTab({ windowId: 30, url: "https://leaf19.invalid/", openerTabId: second19.id });
+  await tree.getTreeStructure([30]);
+  tree.handleTreeSuspend();
+  await tick(10);
+  const cold19 = await import("../background/tree.js?cold-close-19");
+  tabs = tabs.filter((tab) => tab.id !== root19.id);
+  reindex();
+  cold19.handleTreeTabRemoved(root19.id, { windowId: 30 });
+  const rebuilt19 = (await cold19.getTreeStructure([30])).structures[30].parents;
+  assertEqual(rebuilt19[first19.id], undefined, "19：第一个子节点接替顶层");
+  assertEqual(rebuilt19[second19.id], first19.id, "19：其余子节点归到第一个子节点下");
+  assertEqual(rebuilt19[leaf19.id], second19.id, "19：后代子树保持完整");
+  cold19.handleTreeSuspend();
+  await tick(10);
+  const reloaded19 = await import("../background/tree.js?cold-reload-19");
+  assertDeepEqual((await reloaded19.getTreeStructure([30])).structures[30].parents, rebuilt19, "19：落盘后再次加载保持修复结果");
+
   console.log(`共 ${checks} 项断言，失败 ${failures} 项`);
   if (failures > 0) {
     process.exitCode = 1;

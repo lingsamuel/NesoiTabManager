@@ -575,7 +575,7 @@ async function loadTree(windowId) {
   logFlow(
     `重建窗口 ${windowId}：标签 ${tabs.length}，` +
       `快照 ${snapshotItems.length > 0 ? `有(${snapshotItems.length} 项，sid${sidMatches ? "一致→按 tabId 精确配对" : "不一致→按顺序+URL 猜测"})` : "无→只能按 opener 建树"}，` +
-      `匹配 ${result.matched} 新增 ${result.added} 修正 ${result.repaired} exact=${result.exact}`
+      `匹配 ${result.matched} 新增 ${result.added} 缺失 ${result.removed}（按关闭规则继承） 修正 ${result.repaired} exact=${result.exact}`
   );
   if (repairs.length > 0) {
     logTreeBlock(
@@ -1000,11 +1000,11 @@ export function handleTreeTabRemoved(tabId, removeInfo = {}) {
         () => {}
       );
     } else {
-      // 必须把"事件被丢弃"说清楚：后续任何一次重建都会从快照重新推导，
-      // 而快照里这个已关闭的标签还在，子标签的归属就由对齐算法决定。
+      // 当前没有可修改的树；快照对齐会用正常关闭共用的规则消去缺失节点。
+      // 多个缺失节点没有完整时间线时按逆快照顺序处理，不能声称重放了真实事件顺序。
       noteTreeChangeReason(
-        `关闭 #${tabId}：内存里没有树、也没有进行中的加载 → 本次关闭就地丢弃；` +
-          `下一次重建会从快照推导（快照里这个标签仍在，其子标签的归属由对齐算法决定）`
+        `关闭 #${tabId}：内存里没有树、也没有进行中的加载 → 跳过就地修改；` +
+          `下一次快照重建按关闭规则补齐继承（多个缺失节点按逆快照顺序处理）`
       );
     }
     return;

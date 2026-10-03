@@ -25,6 +25,7 @@ const fields = new Set(`firstEvidence latestEvidence fromRevision toRevision tru
   cycleIds relatedIds missingParentId parentIdBefore parentIdAfter uncertain comparison recoveredAt explanation
   order relativeOrder ordinal beforeOrdinal afterOrdinal oldPrevious oldNext newPrevious newNext direction
   structuralChanged orderOnly signatureIds baselineAt currentAt incomplete byteLimit omittedFields missingEvidence
+  previousSourceToken baselinePreserved
 `.split(/\s+/).filter(Boolean));
 
 function sanitize(value, depth = 0) {

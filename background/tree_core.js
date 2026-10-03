@@ -1,3 +1,5 @@
+import { getRemovePromotionRule, restoreSnapshotParents } from "./tree_snapshot_promotion.js";
+
 // 树状结构的纯逻辑实现。
 //
 // 本文件**不依赖任何 chrome API**，原因有二：
@@ -393,8 +395,8 @@ function pickInitialParent(tab, index, indexById, pinnedIds, activeTabId) {
  *      ——这正是朴素的"单调游标贪心"会雪崩的地方。
  *   3. 邻域搜不到时，再用 URL 索引做一次跳距受限的前向搜索，兜住"中间被插入一大段新标签"。
  *   4. 父关系恢复：快照里记录的父标签可能已在插件不知情时被关闭（例如 MV3 的 SW 被回收后
- *      才收到 tabs.onRemoved，内存里没有树可改），此时沿快照的父链向上找最近的存活祖先，
- *      与关闭标签时的 promote intelligently 一致，避免整棵子树被凭空抬成顶层。
+ *      才收到 tabs.onRemoved，内存里没有树可改），此时按正常关闭的规则消去缺失节点，
+ *      包括首子接替及唯一孩子的全部提升，避免把同一父下的所有孩子分别抬成顶层。
  *
  * @param {{activeTabId?: number|null, sessionToken?: string, onRepair?: Function}} options
  *   sessionToken 由后台从 `storage.session` 读出；只有它与快照里的 `sid` 一致时才信任 `i`。
@@ -559,36 +561,10 @@ export function alignSnapshotToTabs(orderedTabs, snapshot, options = {}) {
     offset = found - j;
   }
 
-  // 依据快照里的父下标建立父子关系。父下标必须也已配对，且位置在子之前。
+  // 先在快照身份空间消去缺失节点，再转回真实 tabId；不能把“找祖先”当成关闭继承。
+  const restoredParents = restoreSnapshotParents(items, matchOfSnapshotIndex);
   const parentById = new Map();
   let usedFallback = false;
-  // 记忆「某个快照下标向上找到的最近存活祖先下标」，-2 = 未计算，-1 = 没有存活祖先。
-  // 没有它时，父链很长且连续被关闭会让每个子标签重复走一遍父链，退化成 O(n²)。
-  const nearestAliveCache = new Int32Array(items.length).fill(-2);
-  const findNearestAliveAncestor = (startIndex) => {
-    const path = [];
-    let cursor = startIndex;
-    let guard = 0;
-    while (cursor >= 0 && cursor < items.length && guard <= items.length) {
-      if (matchOfSnapshotIndex[cursor] >= 0) {
-        break;
-      }
-      if (nearestAliveCache[cursor] !== -2) {
-        cursor = nearestAliveCache[cursor];
-        break;
-      }
-      path.push(cursor);
-      cursor = Number.isInteger(items[cursor].p) ? items[cursor].p : SNAPSHOT_ROOT_PARENT;
-      guard += 1;
-    }
-    const resolved = cursor >= 0 && cursor < items.length && matchOfSnapshotIndex[cursor] >= 0
-      ? cursor
-      : -1;
-    for (const node of path) {
-      nearestAliveCache[node] = resolved;
-    }
-    return resolved;
-  };
 
   for (let j = 0; j < items.length; j += 1) {
     const actualIndex = matchOfSnapshotIndex[j];
@@ -596,25 +572,15 @@ export function alignSnapshotToTabs(orderedTabs, snapshot, options = {}) {
       continue;
     }
     const tab = orderedTabs[actualIndex];
-    const parentIndex = Number.isInteger(items[j].p) ? items[j].p : SNAPSHOT_ROOT_PARENT;
+    const parentIndex = restoredParents[j];
     let parentId = null;
     if (parentIndex >= 0 && parentIndex < items.length) {
       const parentActualIndex = matchOfSnapshotIndex[parentIndex];
       if (parentActualIndex >= 0 && parentActualIndex < actualIndex) {
         parentId = orderedTabs[parentActualIndex].id;
       } else {
-        // 直接父标签在本次对齐里没配上（通常就是父标签已被关闭，而关闭发生在
-        // 后台被回收、内存里没有这棵树的时候）。不能就此把它当顶层——那会把整棵
-        // 子树凭空抬到根上；应沿快照的父链继续向上找最近的存活祖先，
-        // 语义与关闭标签时的 promote intelligently（子树接到祖父）保持一致。
+        // 配对后父节点实际移到了子节点后面，仍按既有物理顺序约束回退为顶层。
         usedFallback = true;
-        const ancestorIndex = findNearestAliveAncestor(parentIndex);
-        if (ancestorIndex >= 0) {
-          const ancestorActualIndex = matchOfSnapshotIndex[ancestorIndex];
-          if (ancestorActualIndex >= 0 && ancestorActualIndex < actualIndex) {
-            parentId = orderedTabs[ancestorActualIndex].id;
-          }
-        }
       }
     }
     parentById.set(tab.id, parentId);
@@ -907,18 +873,19 @@ export function applyRemovePromotion(state, removedId, onDecision = null) {
     }
   };
 
+  const rule = getRemovePromotionRule(parentId, siblingCountBefore, children.length);
   dropTab(state, removedId);
 
   if (children.length === 0) {
-    report("no-children", []);
+    report(rule, []);
     return 0;
   }
 
-  if (parentId != null && siblingCountBefore === 0) {
+  if (rule === "only-child-of-parent") {
     for (const childId of children) {
       setParent(state, childId, parentId);
     }
-    report("only-child-of-parent", children.map((childId) => ({ childId, parentId })));
+    report(rule, children.map((childId) => ({ childId, parentId })));
     return children.length;
   }
 
@@ -927,7 +894,7 @@ export function applyRemovePromotion(state, removedId, onDecision = null) {
   for (const childId of rest) {
     setParent(state, childId, firstChild);
   }
-  report(parentId == null ? "closed-was-root" : "first-child-takes-place", [
+  report(rule, [
     { childId: firstChild, parentId },
     ...rest.map((childId) => ({ childId, parentId: firstChild })),
   ]);

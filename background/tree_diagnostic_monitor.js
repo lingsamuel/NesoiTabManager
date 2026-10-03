@@ -94,7 +94,7 @@ function safeObservation(context) {
     aligned: context.aligned === true,
     registered: context.registered === true,
   };
-  for (const field of ['requestId', 'revision', 'sourceToken', 'queryEpoch', 'currentEpoch', 'epoch', 'fromRevision', 'toRevision', 'filterActive', 'filterMode', 'collapsedCount', 'visibleCount', 'completeCount', 'pinnedCount']) {
+  for (const field of ['requestId', 'revision', 'sourceToken', 'previousSourceToken', 'queryEpoch', 'currentEpoch', 'epoch', 'fromRevision', 'toRevision', 'filterActive', 'filterMode', 'collapsedCount', 'visibleCount', 'completeCount', 'pinnedCount']) {
     if (typeof context[field] === 'string' || typeof context[field] === 'boolean' || Number.isFinite(context[field])) observation[field] = context[field];
   }
   if (Array.isArray(context.operations)) {
@@ -151,9 +151,11 @@ function setRecoveryBaseline(active, previous, evidence) {
 /**
  * 消费真实观测点的只读监测器；不设置定时器、不查询浏览器、不维护业务树。
  * aligned 仅在调用方确认异步观察可对齐时为 true；处理中疑点保留首次前态，后续观察确认或恢复。
+ * preserveBaselineOnSourceChange 仅供同一前端生命周期使用：后台换实例不改变浏览器 tabId，
+ * 可以继续比较存活身份，但不能跨实例比较 revision 或假定中间操作证据完整。
  * emit/incident 的失败与业务隔离；调用方继续负责记录容量与保存。
  */
-export function createTreeDiagnosticMonitor({ emit = () => {}, incident = () => {} } = {}) {
+export function createTreeDiagnosticMonitor({ emit = () => {}, incident = () => {}, preserveBaselineOnSourceChange = false } = {}) {
   const sources = new Map();
   const safeEmit = (record) => { try { emit(record); } catch { /* 日志失败不能改变标签操作。 */ } };
   const safeIncident = (record) => { try { incident(record); } catch { /* 存储失败不阻断观测。 */ } };
@@ -181,9 +183,18 @@ export function createTreeDiagnosticMonitor({ emit = () => {}, incident = () => 
     let state = sources.get(key);
     const token = snapshot.sourceToken ?? snapshot.instanceToken ?? snapshot.instanceId ?? null;
     if (state && token !== state.token) {
-      gap({ windowId: snapshot.windowId, source: snapshot.source, reason: 'source-instance-changed' });
-      state = null;
+      if (preserveBaselineOnSourceChange) {
+        safeEmit({ type: 'monitor-source-changed', windowId: snapshot.windowId, source: snapshot.source,
+          previousSourceToken: state.token, sourceToken: token, baselinePreserved: true });
+        // 切换可能先出现在处理中采样；直到下一次对齐观察才结束这段跨来源比较。
+        if (!state.sourceTransition) state.sourceTransition = { previousSourceToken: state.token };
+        state.token = token;
+      } else {
+        gap({ windowId: snapshot.windowId, source: snapshot.source, reason: 'source-instance-changed' });
+        state = null;
+      }
     }
+    if (state?.sourceTransition) context = { ...context, ...state.sourceTransition };
     const previous = state?.snapshot || null;
     const evidence = compareTreeSnapshots(previous, snapshot, { focusIds: context.focusIds || [] });
     if (!state) {
@@ -273,7 +284,10 @@ export function createTreeDiagnosticMonitor({ emit = () => {}, incident = () => 
       safeEmit({ type: 'tree-observation', windowId: snapshot.windowId, source: snapshot.source, correlationId: context.correlationId || null, classification: unexplained ? (context.aligned === true ? 'suspect' : 'pending') : 'explained', observation: safeObservation(context), evidence });
     }
     state.snapshot = snapshotCopy(snapshot);
-    if (context.aligned === true) state.alignedSnapshot = state.snapshot;
+    if (context.aligned === true) {
+      state.alignedSnapshot = state.snapshot;
+      state.sourceTransition = null;
+    }
     return evidence;
   };
   return { observe, gap, clear: () => sources.clear() };

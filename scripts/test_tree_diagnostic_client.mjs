@@ -49,6 +49,13 @@ for (const batch of sent.filter((entry) => entry.action === 'recordTreeDiagnosti
   assert.ok(Buffer.byteLength(JSON.stringify(batch)) <= 128 * 1024, '诊断消息不得超出 128 KiB');
 }
 assert.ok(sent.some((batch) => JSON.stringify(batch).includes('truncation')), '局部记录截断必须明确标记');
+client.observe({ windowId: 1, source: 'rows', sourceToken: 'old-background',
+  entries: [{ id: 1, index: 0 }, { id: 2, index: 1, parentId: 1 }, { id: 3, index: 2, parentId: 1 }] }, { aligned: true });
+client.observe({ windowId: 1, source: 'rows', sourceToken: 'new-background',
+  entries: [{ id: 2, index: 0 }, { id: 3, index: 1 }] }, { aligned: true });
+await client.flush();
+assert.ok(sent.some((batch) => batch.events?.some((event) => event.kind === 'incident' && event.payload.type === 'parent-change')),
+  '真实前端客户端在后台实例切换后必须发送局部改父异常');
 configListener({ enabled: false });
 const previous = sent.length;
 client.record({ type: 'disabled again' });
@@ -150,6 +157,12 @@ for (const batch of sent.filter((entry) => entry.action === 'recordTreeDiagnosti
   const result = receiver(batch.events, { url: 'extension://test/ui/sidebar.html' });
   assert.equal(result.rejected, 0, '真实后台 receiver 接受客户端有界批次');
 }
+const sourceChanged = received.find((event) => event.type === 'monitor-source-changed');
+assert.equal(sourceChanged?.previousSourceToken, 'old-background', '来源切换的旧后台标识通过真实 IPC 保留');
+assert.equal(sourceChanged?.baselinePreserved, true, '明确区分保留前态的切换与观测间隙');
+const crossSourceIncident = received.find((event) => event.type === 'parent-change' && event.status === 'active');
+assert.equal(crossSourceIncident?.evidence?.firstEvidence?.observation?.previousSourceToken, 'old-background',
+  '异常包首次证据也必须保留跨后台比较的来源边界');
 const boundedBatches = [];
 const pendingSends = [];
 const bounded = createTreeDiagnosticClient({

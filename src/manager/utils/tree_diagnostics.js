@@ -103,6 +103,8 @@ export function createTreeDiagnosticClient({
   let incidentSeq = 0;
   const incidentSignatures = new Map();
   const monitor = createTreeDiagnosticMonitor({
+    // 客户端自身未重建时，保留后台休眠/重启前的已对齐树，用于发现重建引入的改父或换位。
+    preserveBaselineOnSourceChange: true,
     emit: (event) => record(event),
     incident: (payload) => record(payload, "incident"),
   });
