@@ -885,7 +885,7 @@ function getCachedTabInfo(tabId) {
  *
  * 使用场景：关闭标签时该窗口的树还没进内存（后台刚被回收），`getTabStructureInfo()` 拿不到结构信息；
  * 而撤销关闭仍需要"原来在第几位、前后是谁"才能把标签放回原位。缓存里的下标来自 `chrome.tabs`，
- * 比内存树里那张"删除不重编号"的近似下标表更可靠，因此这条兜底比缺省值更准。
+ * 与内存树里那张"事件到达时顺序"的表互为兜底：树没进内存时只能用它，因此比缺省值更准。
  * 调用方必须**在 handleRecentTabRemoved 之前**调用（否则条目已被删除）。
  *
  * @returns {{index: number, prevId: number|null, nextId: number|null}|null}

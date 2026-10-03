@@ -369,6 +369,35 @@ async function main() {
   assertEqual(throwAttempts, 2, "刷新回调抛错后仍能继续接收后续事件");
   throwSync.dispose();
 
+  // --- 场景：后台结构变更通知经 schedule() 走同一防抖队列 ---
+  // 结构变更通知走 storage.session（不产生 tabs 事件），管理页必须能主动排一次刷新，
+  // 否则树状视图会停在"落盘前静默纠偏"之前的旧层级（用户只能 Reload 扩展才对齐）。
+  console.log("场景 9：主动 schedule() 与事件共用防抖队列");
+  const scheduleTimers = createFakeTimers();
+  let scheduleRefreshes = 0;
+  const scheduleSync = useWindowsSync({
+    chrome: createFakeChrome().chrome,
+    document: createFakeDocument().doc,
+    canRefresh: () => true,
+    refresh: () => {
+      scheduleRefreshes += 1;
+    },
+    setTimeout: scheduleTimers.setTimeout,
+    clearTimeout: scheduleTimers.clearTimeout,
+  });
+  assertEqual(typeof scheduleSync.schedule, "function", "9：管理页同步层暴露了 schedule()");
+  scheduleSync.start();
+  scheduleSync.schedule();
+  scheduleSync.schedule();
+  scheduleTimers.runAll();
+  await Promise.resolve();
+  await Promise.resolve();
+  assertEqual(scheduleRefreshes, 1, "9：多次 schedule() 被防抖合并成一次刷新");
+  scheduleSync.dispose();
+  scheduleSync.schedule();
+  scheduleTimers.runAll();
+  assertEqual(scheduleRefreshes, 1, "9：dispose 后 schedule() 不再刷新");
+
   console.log("");
   console.log(`共 ${checks} 项断言，失败 ${failures} 项`);
   if (failures > 0) {

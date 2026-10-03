@@ -215,7 +215,20 @@ export function sanitizeTreeState(state, orderedTabIds, pinnedIds = null, onRepa
   let repaired = 0;
   for (let i = 0; i < orderedTabIds.length; i += 1) {
     const tabId = orderedTabIds[i];
-    const parentId = state.parentById.has(tabId) ? state.parentById.get(tabId) : null;
+    if (!state.parentById.has(tabId)) {
+      // 窗口里真实存在、但内存树里没有条目的标签：补成顶层。
+      //
+      // 为什么必须补：代码各处一律用 `parentById.has(id)` 判断"这个标签在不在树里"
+      // （新建标签挑父、撤销恢复的父校验、关闭提升都依赖它）。缺条目会让**真实存在的**
+      // 标签被当成不存在——用户表现为"新标签不再挂到当前标签下"，而且只有重建/重载才恢复。
+      // 缺条目的来源：标签的创建事件落在"树正在加载"的空档里被推迟，而随后的延迟对齐
+      // 因为树已经装好而变成空操作，于是这个标签永远不会被写进父映射。
+      report(tabId, null, null, "内存树缺少该标签的条目 → 补为顶层");
+      state.parentById.set(tabId, null);
+      repaired += 1;
+      continue;
+    }
+    const parentId = state.parentById.get(tabId);
     if (parentId == null) {
       continue;
     }

@@ -316,6 +316,17 @@ function useWindowsSync(options = {}) {
       bindEvents();
     },
     /**
+     * 主动排一次刷新（与 chrome 事件同一防抖队列）。
+     * 用途：后台的**结构变更通知**走 storage.session（不产生 tabs 事件），
+     * 收到后必须让管理页重取父子映射，否则树状视图会停在纠偏前的旧层级。
+     */
+    schedule() {
+      if (disposed) {
+        return;
+      }
+      queue.schedule();
+    },
+    /**
      * 告诉同步层"管理页自己"是哪个标签页。
      * 需要异步查询（chrome.tabs.getCurrent），因此与 start() 分开，避免阻塞挂载流程。
      */

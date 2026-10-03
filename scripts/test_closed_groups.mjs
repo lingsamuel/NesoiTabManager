@@ -595,7 +595,11 @@ async function main() {
   await closeTabs([fleaf.id]);
   // 4a：浏览器恢复了会话值（真·撤销关闭）→ 精确挂回原父。
   const firefoxReopen = addTab({ url: "https://fleaf.example/", title: "FLeaf" });
-  tabValues.set(Number(firefoxReopen.id), { "nesoi:tree-ref": { parentId: froot.id, at: Date.now() } });
+  // `at` 必须早于新标签的创建时刻：Firefox 恢复的是"被关闭标签一生中写下的值"。
+  // 若 at 落在创建之后，插件会（正确地）把它当成本插件自己刚写的引用而拒绝采信。
+  tabValues.set(Number(firefoxReopen.id), {
+    "nesoi:tree-ref": { parentId: froot.id, at: Date.now() - 5000 },
+  });
   await emitAsync(listeners.created, { ...firefoxReopen });
   assertTrue(await waitForParent(1, firefoxReopen.id, froot.id), "Firefox：有会话值时精确挂回原父");
 
@@ -604,7 +608,9 @@ async function main() {
   const slowReopen = addTab({ url: "about:blank", status: "loading", title: "" });
   await emitAsync(listeners.created, { ...slowReopen });
   await tick(80);
-  tabValues.set(Number(slowReopen.id), { "nesoi:tree-ref": { parentId: froot.id, at: Date.now() } });
+  tabValues.set(Number(slowReopen.id), {
+    "nesoi:tree-ref": { parentId: froot.id, at: Date.now() - 5000 },
+  });
   assertTrue(await waitForParent(1, slowReopen.id, froot.id), "Firefox：会话值延迟就绪也能精确识别");
 
   // 4c：用户手动打开了同一个 URL（没有会话值）→ 会话值不可用时退回 URL 启发式，
@@ -968,6 +974,88 @@ async function main() {
     c16Value && c16Value["nesoi:tree-ref"] ? c16Value["nesoi:tree-ref"].parentId : "缺失",
     null,
     "16：纠偏后会话值被重写为顶层"
+  );
+
+  // --- 场景 17：内存树缺条目（创建事件落在树加载空档被丢弃）不得让"新标签挂到活动标签下"失效 ---
+  // 用户现象：有时新标签不会落到当前激活页之下，过一会或者 Reload 才恢复。
+  // 成因：那个"真实存在"的活动标签在内存树里没有条目，于是被当成不存在（日志里的"#X 不在树里"）。
+  console.log("场景 17：内存树缺条目时要自愈，不能把真实存在的活动标签当成不存在");
+  windows.push({ id: 17 });
+  await tree.getTreeStructure([17]);
+  const p17 = await openTab({ windowId: 17, url: "https://p17.example/", title: "P17" });
+  // 造一个"在窗口里、但内存树不知道"的标签：直接进标签列表，**不派发 onCreated**
+  // （等价于创建事件落在树加载的空档里被丢弃，随后因为树已装好、延迟对齐变成空操作）。
+  const ghost17 = addTab({ windowId: 17, url: "https://ghost17.example/", title: "Ghost" });
+  tree.handleTreeTabActivated({ windowId: 17, tabId: ghost17.id });
+  const child17 = addTab({ windowId: 17, url: "https://child17.example/", title: "Child" });
+  await emitAsync(listeners.created, { ...child17 });
+  assertTrue(
+    await waitForParent(17, child17.id, ghost17.id),
+    "17：缺条目的活动标签被补为顶层后，新标签仍挂到它下面"
+  );
+  assertTrue(
+    await waitForParent(17, ghost17.id, undefined),
+    "17：被补的标签本身是顶层"
+  );
+
+  // --- 场景 18：撤销恢复时子标签物理上在父之前 → 仍要还原子树（A - B - C）---
+  // 用户现象：原先是 A-B-C，关闭 A 后 B 被提升为顶层，撤销却只把 A 挂在顶层（"B-C 没变、A 单独在顶层"），
+  // 原因是重挂要求"父在物理上排在子之前"，而原来的物理顺序是子在前。
+  console.log("场景 18：子标签物理上在父之前时，撤销仍要还原子树");
+  windows.push({ id: 18 });
+  await tree.getTreeStructure([18]);
+  const a18 = await openTab({ windowId: 18, url: "https://a18.example/", title: "A18" });
+  const b18 = await openTab({ windowId: 18, url: "https://b18.example/", openerTabId: a18.id, title: "B18" });
+  const c18 = await openTab({ windowId: 18, url: "https://c18.example/", openerTabId: a18.id, title: "C18" });
+  let parents18 = parentsOf(await tree.getTreeStructure([18]), 18);
+  assertEqual(parents18[b18.id], a18.id, "18 前置：B 是 A 的子标签");
+  // 再把物理顺序改成"子标签都在父之前"且**不派发 onMoved**：树顺序与标签栏顺序本来就允许不一致
+  // （用户可以拖动标签栏），这里模拟的正是"撤销时子标签物理上排在父之前"。
+  moveTabPhysicallyRaw(a18.id, 2);
+  assertTrue(tabById(b18.id).index < tabById(a18.id).index, "18 前置：B 物理上排在 A 之前");
+  assertTrue(tabById(c18.id).index < tabById(a18.id).index, "18 前置：C 物理上排在 A 之前");
+
+  await closeTabs([a18.id]); // 原生关闭 A：B、C 被提升出去
+  parents18 = parentsOf(await tree.getTreeStructure([18]), 18);
+  assertEqual(parents18[b18.id], undefined, "18 前置：A 关闭后 B 被提升为顶层");
+
+  const a18again = await openTab({ windowId: 18, url: "https://a18.example/", title: "A18" });
+  assertTrue(await waitForParent(18, b18.id, a18again.id), "18：撤销后 B 重新挂回 A 下");
+  assertTrue(await waitForParent(18, c18.id, a18again.id), "18：撤销后 C 重新挂回 A 下");
+  assertTrue(
+    tabById(a18again.id).index < tabById(b18.id).index,
+    "18：重挂后父在物理上排在子之前（不变量成立）"
+  );
+
+  // --- 场景 19：本插件自己写的会话值不能当"这是撤销恢复"的证据 ---
+  // 成因：每个新标签在 250ms 后都会由本插件写下 `nesoi:tree-ref`，
+  // 判定若采信它，就会把普通新标签误判成撤销恢复，并**提前结束判定**、跳过真正该走的 URL 兜底。
+  console.log("场景 19：本插件自己写的会话值不算撤销证据");
+  windows.push({ id: 19 });
+  await tree.getTreeStructure([19]);
+  const r19 = await openTab({ windowId: 19, url: "https://r19.example/", title: "R19" });
+  const leaf19 = await openTab({ windowId: 19, url: "https://leaf19.example/", openerTabId: r19.id, title: "Leaf19" });
+  const anchor19 = await openTab({ windowId: 19, url: "https://anchor19.example/", title: "Anchor19" });
+  tree.handleTreeTabActivated({ windowId: 19, tabId: anchor19.id });
+  await closeTabs([leaf19.id]);
+  // 模拟 Ctrl+Shift+T：先 about:blank 出现，且本插件已经为它写下了"挂到活动标签下"的会话值。
+  const ownRef19 = addTab({ windowId: 19, url: "about:blank", status: "loading", title: "" });
+  await emitAsync(listeners.created, { ...ownRef19 });
+  await tick(30);
+  // 创建之后本插件自己写下的引用（真实时序就是 ~250ms 防抖）：
+  // `at` 晚于创建时刻 → 判定必须把它当"自己的写入"而不是"撤销恢复的证据"。
+  tabValues.set(Number(ownRef19.id), {
+    "nesoi:tree-ref": { parentId: anchor19.id, at: Date.now() },
+  });
+  await tick(60);
+  // 真实 URL 随后就绪：判定应当继续走 URL 兜底，按关闭记录挂回原父（而不是被自己的会话值带偏）。
+  const live19 = tabById(ownRef19.id);
+  live19.url = "https://leaf19.example/";
+  live19.title = "Leaf19";
+  live19.status = "complete";
+  assertTrue(
+    await waitForParent(19, ownRef19.id, r19.id),
+    "19：自己的会话值被忽略后，仍按关闭记录挂回原父"
   );
 
   console.log("");

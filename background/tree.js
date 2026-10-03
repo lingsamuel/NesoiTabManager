@@ -648,6 +648,46 @@ function shiftIndexesForInsert(tree, atIndex) {
   }
 }
 
+/**
+ * 删除标签之后，把其后所有标签的下标前移。
+ *
+ * 为什么必须做（用一次 O(n) 换正确性）：不重编号的话 `indexById` 就退化成"近似下标"，
+ * 而它被两处关键逻辑直接使用——
+ * 1. **记录关闭现场**（`getTabStructureInfo` 用 index±1 求前后邻居）→ 撤销恢复按邻居把标签放回原位，
+ *    邻居取错就会把标签移到毫不相干的位置（用户表现为"撤销后标签出现在奇怪的地方"，
+ *    且"重挂被提升的子标签"会因为物理顺序判断错误而全部跳过）；
+ * 2. "第一个子标签"等相对顺序判定。
+ * 单个窗口的标签数是有界的（几千），一次 Map 遍历远小于一次 `chrome.tabs` IPC。
+ *
+ * @param {number[]} removedIndexes 被删除标签当时的下标（可含 undefined / 重复）
+ */
+function renumberIndexesAfterRemovals(tree, removedIndexes) {
+  if (!tree.indexById || !Array.isArray(removedIndexes)) {
+    return;
+  }
+  const removed = [...new Set(removedIndexes.filter((value) => Number.isFinite(value)))].sort(
+    (a, b) => a - b
+  );
+  if (removed.length === 0) {
+    return;
+  }
+  const maxIndex = removed[removed.length - 1];
+  // shift[i] = 下标小于 i 的已删除标签数量（前缀和，O(n + 删除数)）。
+  const shift = new Int32Array(maxIndex + 2);
+  for (const index of removed) {
+    shift[index + 1] = 1;
+  }
+  for (let i = 1; i < shift.length; i += 1) {
+    shift[i] += shift[i - 1];
+  }
+  for (const [id, index] of tree.indexById) {
+    const moved = index <= maxIndex ? shift[index] : shift[maxIndex + 1];
+    if (moved > 0) {
+      tree.indexById.set(id, index - moved);
+    }
+  }
+}
+
 /** 标签在窗口内移动后同步下标表。 */
 function applyIndexMove(tree, tabId, fromIndex, toIndex) {
   if (!tree.indexById || !Number.isFinite(fromIndex) || !Number.isFinite(toIndex)) {
@@ -848,9 +888,13 @@ export async function handleTreeTabCreated(tab) {
  * 优先级：合法 opener → 创建时刻的活动标签（对应 TST 的"新标签页命令 open as child"）→ 顶层。
  * 固定标签永远是顶层。
  *
- * 「合法」= 父标签在同一窗口的树里、不是自身、不是固定标签，且**物理 index 严格小于新标签**。
- * 物理顺序这一条必须用**真实下标**判断（`chrome.tabs.get`）：内存里的 `indexById` 是"删除不重编号"
- * 的近似表，用它判断会把本来合法的 opener 误判成非法（或反过来），而这条判断决定了会不会产生非法父。
+ * 「合法」= 父标签**真实存在**于本窗口、不是自身、不是固定标签，且**物理 index 严格小于新标签**。
+ * 物理顺序这一条必须用**真实下标**判断（`chrome.tabs.get`）：内存里的 `indexById` 即便已经维护得
+ * 与物理顺序一致，也不如浏览器自己给的这一份可靠，而这条判断决定了会不会产生非法父。
+ *
+ * 「真实存在但内存树里缺条目」的候选（标签的创建事件落在树加载的空档而被丢弃）
+ * 在这里**顺手补为顶层**再挂：否则真实存在的活动标签会被当成不存在，
+ * 用户表现为"新标签不再挂到当前标签下"，且只有重建/重载才恢复。
  *
  * @returns {{parentId: number|null, source: string, reason: string}}
  *   `source` 供日志说明父是哪来的；`reason` 在没有可用父时说明各候选被拒的原因。
@@ -866,15 +910,11 @@ async function pickParentForNewTab(tree, tab) {
   const rejected = [];
 
   if (Number.isFinite(openerId) && openerId !== tabId) {
-    if (!tree.parentById.has(openerId)) {
-      rejected.push(`opener #${openerId} 不在树里`);
-    } else {
-      const ok = await isCandidateParentValid(openerId, childIndex);
-      if (ok) {
-        return { parentId: openerId, source: "合法 openerTabId", reason: "" };
-      }
-      rejected.push(`opener #${openerId} 物理顺序不合法或已固定`);
+    const verdict = await checkCandidateParent(tree, openerId, childIndex);
+    if (verdict.ok) {
+      return { parentId: openerId, source: "合法 openerTabId", reason: "" };
     }
+    rejected.push(`opener #${openerId} ${verdict.reason}`);
   } else {
     rejected.push("没有 openerTabId");
   }
@@ -889,36 +929,46 @@ async function pickParentForNewTab(tree, tab) {
   const activeNumeric = Number(activeId);
   if (!Number.isFinite(activeNumeric) || activeNumeric === tabId) {
     rejected.push("活动标签不可用");
-  } else if (!tree.parentById.has(activeNumeric)) {
-    rejected.push(`活动标签 #${activeNumeric} 不在树里`);
-  } else if (await isCandidateParentValid(activeNumeric, childIndex)) {
-    return { parentId: activeNumeric, source: "创建时刻的活动标签", reason: "" };
   } else {
-    rejected.push(`活动标签 #${activeNumeric} 物理顺序不合法或已固定`);
+    const verdict = await checkCandidateParent(tree, activeNumeric, childIndex);
+    if (verdict.ok) {
+      return { parentId: activeNumeric, source: "创建时刻的活动标签", reason: "" };
+    }
+    rejected.push(`活动标签 #${activeNumeric} ${verdict.reason}`);
   }
   return { parentId: null, source: "", reason: rejected.join("；") || "无候选" };
 }
 
 /**
- * 候选父是否可作为新标签的父：读**真实**标签信息，要求它存在、非固定、且 index 小于新标签。
+ * 候选父是否可作为新标签的父：读**真实**标签信息，要求它存在、在本窗口、非固定，且 index 小于新标签。
  * 读不到真实下标（极少数场景）时不否决，保持旧行为（宁可挂上也不要凭空丢层级）。
+ *
+ * 副作用：候选真实存在、但内存树里没有条目时，把它补为顶层（见 `pickParentForNewTab` 的说明）。
+ *
+ * @returns {{ok: boolean, reason: string}}
  */
-async function isCandidateParentValid(parentId, childIndex) {
+async function checkCandidateParent(tree, parentId, childIndex) {
   const parent = await getTabById(parentId);
   if (!parent) {
-    return false;
+    return { ok: false, reason: "已不存在" };
+  }
+  if (Number(parent.windowId) !== Number(tree.windowId)) {
+    return { ok: false, reason: "不在本窗口" };
   }
   if (parent.pinned) {
-    return false;
+    return { ok: false, reason: "是固定标签" };
   }
-  if (!Number.isFinite(childIndex)) {
-    return true;
+  if (Number.isFinite(childIndex)) {
+    const parentIndex = Number(parent.index);
+    if (Number.isFinite(parentIndex) && parentIndex >= childIndex) {
+      return { ok: false, reason: `排在新标签之后（idx ${parentIndex} >= ${childIndex}）` };
+    }
   }
-  const parentIndex = Number(parent.index);
-  if (!Number.isFinite(parentIndex)) {
-    return true;
+  if (!tree.parentById.has(parentId)) {
+    attachAsRoot(tree, parentId);
+    noteTreeChangeReason(`#${parentId} 在窗口里但内存树缺条目 → 补为顶层（自愈）`);
   }
-  return parentIndex < childIndex;
+  return { ok: true, reason: "" };
 }
 
 /**
@@ -990,7 +1040,9 @@ function applyRemovalToTree(tree, tabId, windowId) {
     noteTreeChangeReason(`关闭 #${id}：它已经不在内存树里（多半是加载发生在关闭之后）→ 无需提升`);
     return;
   }
+  const removedIndex = tree.indexById.get(id);
   tree.indexById.delete(id);
+  renumberIndexesAfterRemovals(tree, [removedIndex]);
   // 提升"第一个子标签"前先按物理顺序排序，保证结果确定且符合直觉。
   sortChildrenByIndex(tree, id);
   applyRemovePromotion(tree, id, (info) => {
@@ -1094,10 +1146,13 @@ export function handleTreeTabDetached(tabId, detachInfo = {}) {
   // 必须在删除下标之前算好顺序，否则搬过去的子树相对顺序会变成随机的。
   const orderedDescendantIds = orderIdsByIndex(tree, subtreeIds.filter((item) => item !== id));
   migratingSubtrees.set(id, { fromWindowId: windowId, parents, orderedDescendantIds });
+  const removedIndexes = [];
   for (const subtreeId of subtreeIds) {
     dropTab(tree, subtreeId);
+    removedIndexes.push(tree.indexById.get(subtreeId));
     tree.indexById.delete(subtreeId);
   }
+  renumberIndexesAfterRemovals(tree, removedIndexes);
   markDirty(windowId);
 }
 
@@ -1788,9 +1843,8 @@ export function getChildTabIds(tabId, windowId) {
  * @param {{childPinned?: boolean, indexMap?: Map<number, number>}} options
  *   - `childPinned` 为 true 时强制顶层（固定标签不参与父子）；
  *   - `indexMap` 是**实时**的 `tabId -> 物理下标`（由 `refreshTreeIndexes()` 提供）。
- *     必须传它的原因：内存里的 `indexById` 是"删除不重编号"的近似表，用它判断
- *     "父是否真的排在子之前"会得出错误结论（关闭过标签之后下标就会偏），
- *     结果是本该挂上的层级被误判为非法而丢成顶层。
+ *     必须传它的原因：`indexById` 只反映"事件到达时的顺序"，事件被丢弃（后台被回收、
+ *     树未加载时的空档）或刚做过对齐时它可能与物理事实不一致；撤销恢复必须依据**实时查询**的结果。
  * @returns {boolean} 树已加载并写入成功时为 true。
  */
 export function applyRestoredParent(windowId, tabId, parentId, options = {}) {
@@ -1919,9 +1973,9 @@ export function readoptPromotedChildren(windowId, parentId, expectations, option
 /**
  * 用一次真实查询重建某窗口的下标表，并返回实时的 `tabId -> 物理下标` 映射。
  *
- * 为什么需要它：`indexById` 在删除标签时**不重编号**（O(1) 删除是刻意的设计），
- * 因此它只是"近似下标"，够用于"第一个子标签"这类相对判断；而撤销关闭要判断
- * "父标签是否真的排在子标签之前"，必须依据物理事实。
+ * 为什么需要它：`indexById` 平时与物理顺序一致（插入/移动/删除都会维护），但它只反映
+ * "事件到达时的顺序"——事件被丢弃或刚对齐过时可能与物理事实不一致；
+ * 撤销关闭要判断"父标签是否真的排在子标签之前"，必须依据一次实时查询。
  */
 export async function refreshTreeIndexes(windowId) {
   const winId = Number(windowId);

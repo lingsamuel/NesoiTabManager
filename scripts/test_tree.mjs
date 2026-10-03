@@ -760,6 +760,22 @@ async function main() {
   tree.endTreeCloseDebug();
   assertEqual(debug.getTreeDebugLogText(), "", "17：调试关闭后不产生任何日志");
 
+  // --- 场景 18：不变量校验要补齐"窗口里有、内存树里没有条目"的标签 ---
+  // 用户现象：新标签不再自动挂到当前激活标签下，过一会或 Reload 才恢复。
+  // 成因：该标签的创建事件落在"树正在加载"的空档被丢弃，父映射里永远没有它；
+  // 而代码各处都用 parentById.has(id) 判断"在不在树里"，于是真实存在的活动标签被当成不存在。
+  console.log("场景 18：不变量校验补齐缺失条目的标签");
+  const { sanitizeTreeState } = await import("../background/tree_core.js");
+  const sparseState = {
+    parentById: new Map([[1, null]]),
+    childIdsById: new Map(),
+  };
+  const repairedCount = sanitizeTreeState(sparseState, [1, 2, 3], new Set());
+  assertEqual(sparseState.parentById.has(2), true, "18：缺失条目的标签被补进父映射");
+  assertEqual(sparseState.parentById.get(2), null, "18：补进来的标签是顶层");
+  assertEqual(sparseState.parentById.get(3), null, "18：所有缺失条目都被补齐");
+  assertEqual(repairedCount >= 2, true, "18：补齐被计入不变量修正（会触发通知与会话值重写）");
+
   console.log("");
   console.log(`共 ${checks} 项断言，失败 ${failures} 项`);
   if (failures > 0) {

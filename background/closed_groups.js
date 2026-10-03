@@ -432,7 +432,11 @@ async function flushTabRefs() {
     if (!tree) {
       continue;
     }
-    const ids = pending.all ? [...tree.parentById.keys()] : [...pending.ids];
+    const ids = (pending.all ? [...tree.parentById.keys()] : [...pending.ids]).filter(
+      // 正在做撤销判定的标签**先不写**：判定要读 Firefox 从被关闭标签恢复过来的会话值，
+      // 我们自己写的值会把它覆盖掉，判定就再也拿不到真正的依据（判定结束后见 finishUndoDetect）。
+      (tabId) => !pendingUndoDetects.has(`${windowId}:${tabId}`)
+    );
     await Promise.all(
       ids.map(async (tabId) => {
         const info = getTabStructureInfo(tabId, windowId);
@@ -604,7 +608,7 @@ function rebuildParentIndexes(group) {
 /** 判定窗口：超过这个时间还没命中就保持同步落位的结果（普通新标签不会有额外延迟以外的行为差异）。 */
 const UNDO_DETECT_WINDOW_MS = 500;
 /** 轮询节奏（毫秒，累计），覆盖"会话值/真实 URL 稍后才就绪"的情况。 */
-const UNDO_DETECT_PROBE_DELAYS = [0, 60, 150, 300];
+const UNDO_DETECT_PROBE_DELAYS = [0, 60, 150, 300, 460];
 
 /** 正在判定的新建标签：`windowId:tabId` -> { tabId, windowId, startedAt }。 */
 const pendingUndoDetects = new Map();
@@ -662,9 +666,18 @@ function shouldScheduleUndoDetect() {
   return closedTabLog.some((record) => record && now - Number(record.at || 0) <= CLOSED_LOG_TTL_MS);
 }
 
-/** 结束一次判定（成功/超时/标签消失都走这里）。 */
+/**
+ * 结束一次判定（成功/超时/标签消失都走这里）。
+ *
+ * 结束时补写一次会话值：判定期间我们**故意不写**这个标签的引用（见 flushTabRefs），
+ * 否则自己刚写的值会把"Firefox 恢复过来的值"覆盖掉，判定就再也读不到真正的依据。
+ */
 function finishUndoDetect(key) {
+  const state = pendingUndoDetects.get(key);
   pendingUndoDetects.delete(key);
+  if (state) {
+    handleTabStructureChanged(state.windowId, [state.tabId]);
+  }
 }
 
 /**
@@ -707,7 +720,11 @@ async function runUndoDetect(key) {
       // ① 会话值（精确判据）
       if (refsUsable) {
         const stored = await getTabValue(tabId, TAB_REF_KEY);
-        if (stored && typeof stored === "object") {
+        if (stored && typeof stored === "object" && isOwnRefWrite(stored, startedAt)) {
+          // 本插件自己刚给这个新标签写下的引用（每 250ms 防抖刷新一次），
+          // 它只能说明"我们给它定了什么父"，**不能**当作"Firefox 撤销恢复了它"的证据。
+          diag(`判定继续 #${tabId}：读到的会话值是本插件创建之后写的 → 不算撤销证据`);
+        } else if (stored && typeof stored === "object") {
           const record = takeRecordForTab(tab);
           diag(
             `判定命中 #${tabId}：依据=会话值（会话值父=${describeParent(stored.parentId)}，` +
@@ -753,6 +770,20 @@ function isPlaceholderUrl(url) {
   return /^(about:(blank|newtab|home|sessionrestore|welcome)|chrome:\/\/(newtab|new-tab-page))/i.test(
     normalizeUrl(url)
   );
+}
+
+/**
+ * 这个会话值是不是**本插件在这次创建之后**自己写下的（而不是 Firefox 从被关闭标签那里恢复过来的）。
+ *
+ * 判据是写入时间：会话值里带 `at`（写入时刻），判定状态里带 `startedAt`（这个标签的创建时刻）。
+ * 我们自己写的值必然 `at >= startedAt`；而 Firefox 撤销恢复带过来的值来自被关闭标签的一生，
+ * 必然早于新标签的创建时刻。没有这道判断时，**每个**新标签在 250ms 后都会因为"自己写的引用"
+ * 被误判成撤销恢复（日志里表现为"判定命中：依据=会话值"），并因此提前结束判定、
+ * 把真正该走的 URL 兜底路径跳过。
+ */
+function isOwnRefWrite(stored, createdAt) {
+  const at = Number(stored && stored.at);
+  return Number.isFinite(at) && Number.isFinite(createdAt) && at >= createdAt;
 }
 
 /**
@@ -809,6 +840,10 @@ async function applyUndoRestore(tab, record, stored) {
     // 移动之后父标签必须在子标签之前，这一条只能在校验时才知道，因此再套用一次。
     indexMap = await refreshTreeIndexes(windowId);
     applyRestoredParent(windowId, tabId, parentId, { childPinned: Boolean(tab.pinned), indexMap });
+    // 重挂子标签要求"父在物理上排在子之前"。关闭前的物理顺序不一定满足
+    // （树的顺序与标签栏顺序本来就允许不一致），此时先把被恢复的父移到最早的子标签之前，
+    // 否则重挂会全部跳过（用户看到的就是"撤销后 B-C 没变、A 单独挂在顶层"）。
+    await alignRestoredParentBeforePromotedChildren(windowId, tabId, record);
     // 重挂"被提升出去、且仍停在提升结果位置"的直属子标签（A - B - C 完整回来）。
     indexMap = await refreshTreeIndexes(windowId);
     const result = readoptPromotedChildren(windowId, tabId, record.promotedChildren, { indexMap });
@@ -819,6 +854,47 @@ async function applyUndoRestore(tab, record, stored) {
     handleTabStructureChanged(windowId, [tabId, ...result.readopted]);
   }
   return true;
+}
+
+/**
+ * 重挂子标签前，保证被恢复的父标签在物理上排在"最早的一个被提升子标签"之前。
+ *
+ * 为什么需要：撤销恢复沿用的是关闭记录里的**物理**邻居，而树的顺序与标签栏顺序本来就允许不一致
+ * （用户可以把子标签拖到父标签前面）。若子标签物理上在父之前，重新挂回就会违反
+ * "父 index 小于子 index"这条硬不变量，只能整批跳过——用户看到的是
+ * "撤销后 B-C 没变，A 单独挂在顶层"，也就是"撤销没能还原子树"。
+ * 撤销是用户显式操作，因此这里允许移动**被恢复的那一个标签**（只动一个，且是刚刚由这次撤销
+ * 恢复出来的标签），把它挪到最早子标签之前；不做其它标签的搬运。
+ */
+async function alignRestoredParentBeforePromotedChildren(windowId, tabId, record) {
+  const children = Array.isArray(record.promotedChildren) ? record.promotedChildren : [];
+  if (children.length === 0) {
+    return;
+  }
+  const childIndexes = [];
+  for (const item of children) {
+    const childId = Number(item && item.tabId);
+    if (!Number.isFinite(childId)) {
+      continue;
+    }
+    const tab = await getTabInfo(childId);
+    if (tab && Number(tab.windowId) === Number(windowId) && Number.isFinite(Number(tab.index))) {
+      childIndexes.push(Number(tab.index));
+    }
+  }
+  if (childIndexes.length === 0) {
+    return;
+  }
+  const earliestChildIndex = Math.min(...childIndexes);
+  const self = await getTabInfo(tabId);
+  const selfIndex = self && Number(self.windowId) === Number(windowId) ? Number(self.index) : NaN;
+  if (!Number.isFinite(selfIndex) || selfIndex < earliestChildIndex) {
+    return;
+  }
+  diag(
+    `重挂位置修正 #${tabId}：它在 idx ${selfIndex}，最早子标签在 idx ${earliestChildIndex} → 先把父移到子标签之前`
+  );
+  await moveTabsInternallyTo(windowId, [tabId], earliestChildIndex);
 }
 
 /**
@@ -930,8 +1006,8 @@ export async function restoreClosedGroup(windowId = null) {
       await ensureTreeFor(memberWindowId);
       await waitUntilTabsTracked(memberWindowId, reopenedIds);
 
-      // 先按实时下标重建一次：`indexById` 是"删除不重编号"的近似表，
-      // 而下面判断"父是否排在子之前"必须依据物理事实。
+      // 先按实时下标重建一次：下面判断"父是否排在子之前"必须依据物理事实，
+      // 不能依赖内存里那张只反映"事件到达时顺序"的表。
       // 注意：parentIndex 是**组内全局下标**，因此查找父时始终传完整的 members。
       let indexMap = await refreshTreeIndexes(memberWindowId);
       applyGroupStructure(members, windowMembers, idByMember, memberWindowId, indexMap);
