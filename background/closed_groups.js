@@ -36,6 +36,7 @@ import {
   setRestoreCandidateProvider,
   waitUntilTabsTracked,
 } from "./tree.js";
+import { isTreeDebugPrintEnabled, logFlow } from "./tree_debug.js";
 import { delay } from "./utils.js";
 
 // ---------------------------------------------------------------------------
@@ -71,6 +72,8 @@ let restorableGroupCount = 0;
 
 // 记录载入只做一次；所有读写入口都先 await 它，避免"还没载入就把旧记录覆盖掉"。
 let loadPromise = null;
+// 临时诊断用：关闭记录栈是否已经从 storage.session 载入完成。
+let closedLogLoaded = false;
 // 写盘串行化：storage.session.set 是异步的，并发写会互相覆盖。
 let writeChain = Promise.resolve();
 
@@ -109,6 +112,65 @@ function logDebug(...args) {
 logDebug.enabled = false;
 
 // ---------------------------------------------------------------------------
+// 临时诊断（定位"原生撤销关闭认领失败"的原因，排查结束即删）
+//
+// 只在调试打印开关打开时输出（与 [Nesoi树·*] 同一开关、同一日志缓冲），
+// 因此正式使用与单元测试都不受影响。内容刻意**不含 URL 正文**：
+// 只输出 tabId、布尔值、URL 的粗分类（空 / about:* / http(s) / 其它）。
+// ---------------------------------------------------------------------------
+
+/**
+ * 写一条诊断日志；调试打印开关关闭时暂存下来，等开关就绪后补打。
+ *
+ * 为什么要暂存：后台（事件页/Service Worker）刚被唤醒时，调试配置还在异步载入，
+ * 而"后台刚被回收"恰好是我们要排查的一种成因（关闭记录栈可能还没载入完）。
+ * 直接丢弃的话，最关键的现场就没了。
+ */
+const diagBacklog = [];
+function diag(message) {
+  if (!isTreeDebugPrintEnabled()) {
+    diagBacklog.push(`[撤销诊断] ${message}`);
+    if (diagBacklog.length > 200) {
+      diagBacklog.shift();
+    }
+    return;
+  }
+  while (diagBacklog.length > 0) {
+    logFlow(diagBacklog.shift());
+  }
+  logFlow(`[撤销诊断] ${message}`);
+}
+
+/** URL 粗分类：既能区分"onCreated 没给 url"，又不泄露用户数据。 */
+function classifyUrl(rawUrl) {
+  const url = normalizeUrl(rawUrl);
+  if (!url) {
+    return "空";
+  }
+  if (url.startsWith("about:")) {
+    return "about:*";
+  }
+  if (/^https?:/i.test(url)) {
+    return "http(s)";
+  }
+  return "其它协议";
+}
+
+/** 把父标签渲染成诊断文本。 */
+function describeParent(parentId) {
+  return isFiniteId(parentId) ? `#${Number(parentId)}` : "顶层";
+}
+
+/** 读一次会话值并渲染成诊断文本（不含 URL）。 */
+async function describeStoredRef(tabId) {
+  const stored = await getTabValue(Number(tabId), TAB_REF_KEY);
+  if (!stored || typeof stored !== "object") {
+    return "无";
+  }
+  return describeParent(stored.parentId);
+}
+
+// ---------------------------------------------------------------------------
 // 载入与持久化
 // ---------------------------------------------------------------------------
 
@@ -139,6 +201,7 @@ export function ensureClosedGroupsLoaded() {
       closedTabLog = sanitizeLog(log);
       closedGroups = sanitizeGroups(groups);
       restorableGroupCount = closedGroups.length;
+      closedLogLoaded = true;
     })();
   }
   return loadPromise;
@@ -213,6 +276,21 @@ export function handleClosedTabRecorded(tabId, removeInfo = {}) {
     at: Date.now(),
     groupId: pendingGroupClose && pendingGroupClose.tabIds.has(id) ? pendingGroupClose.groupId : null,
   };
+  // 临时诊断：关闭那一刻，记录里的父与 Firefox 会话值里的父是否一致。
+  // 若"记录父=顶层、会话值父=#X"，说明会话值被后来的结构变化写脏了。
+  if (isTreeDebugPrintEnabled() && supportsTabRefs()) {
+    describeStoredRef(id).then((refParent) => {
+      diag(
+        `关闭 #${id}：记录父=${describeParent(record.parentId)}，URL=${classifyUrl(record.url)}，` +
+          `记录下标=${record.index}，会话值父=${refParent}`
+      );
+    });
+  } else if (!supportsTabRefs()) {
+    diag(
+      `关闭 #${id}：记录父=${describeParent(record.parentId)}，URL=${classifyUrl(record.url)}，` +
+        `记录下标=${record.index}（本浏览器无每标签会话值）`
+    );
+  }
   return ensureClosedGroupsLoaded().then(() => {
     closedTabLog = [record, ...closedTabLog].slice(0, CLOSED_LOG_MAX);
     persist();
@@ -285,6 +363,15 @@ async function flushTabRefs() {
         await setTabValue(tabId, TAB_REF_KEY, { parentId: info.parentId, at: Date.now() });
       })
     );
+    // 临时诊断：写完立刻回读一个样本，验证 Firefox 下"写进去的会话值真能读回来"。
+    // 若这一行一直是"无"，说明会话值这条路在当前 Firefox 上根本没生效（写入形式或时机问题），
+    // 而不是"Firefox 撤销时没带上会话值"。
+    if (isTreeDebugPrintEnabled() && ids.length > 0) {
+      const probeId = ids[0];
+      await delay(50);
+      const back = await describeStoredRef(probeId);
+      diag(`会话值回读：窗口 ${windowId} 写了 ${ids.length} 个，样本 #${probeId} 读回父=${back}`);
+    }
   }
 }
 
@@ -448,8 +535,19 @@ function claimRestoreCandidate(tab) {
   if (!tab || !isFiniteId(tab.id)) {
     return null;
   }
-  const url = normalizeUrl(tab.url || tab.pendingUrl || "");
+  const rawUrl = tab.url || tab.pendingUrl || "";
+  const url = normalizeUrl(rawUrl);
+  const tabId = Number(tab.id);
+  // 临时诊断：先摊开这次 onCreated 的环境事实，才能区分"URL 门禁挡掉"与"会话值读不到"。
+  const stackText = closedTabLog.length > 0
+    ? `关闭记录栈 ${closedTabLog.length} 条（最新 #${closedTabLog[0].tabId}，${Math.round((Date.now() - Number(closedTabLog[0].at || 0)) / 1000)}s 前）`
+    : `关闭记录栈空（已载入=${closedLogLoaded}）`;
+  diag(
+    `新建 #${tabId}：url=${classifyUrl(rawUrl)}（url=${classifyUrl(tab.url)}，pendingUrl=${classifyUrl(tab.pendingUrl)}），` +
+      `会话值支持=${supportsTabRefs()}，${stackText}`
+  );
   if (!url) {
+    diag(`新建 #${tabId}：onCreated 没给 URL → URL 门禁直接失败，退回默认规则`);
     return null;
   }
 
@@ -463,6 +561,7 @@ function claimRestoreCandidate(tab) {
       if (pending.count <= 0) {
         pendingCreatedUrls.delete(url);
       }
+      diag(`新建 #${tabId}：命中"本插件主动创建"登记 → 占位顶层`);
       return { record: null, apply: () => Promise.resolve(true) };
     }
   }
@@ -475,12 +574,17 @@ function claimRestoreCandidate(tab) {
       now - Number(record.at || 0) <= CLOSED_LOG_TTL_MS
   );
   if (index < 0) {
+    diag(
+      `新建 #${tabId}：URL 未命中任何关闭记录 → 退回默认规则` +
+        (closedTabLog.length > 0 ? `（${closedTabLog.length} 条记录中 URL 均不等）` : "")
+    );
     return null;
   }
 
   // 认领即出栈：同一条记录不会被两次"重新打开"复用；判定失败（Firefox 读不到会话值）时再放回去。
   const [record] = closedTabLog.splice(index, 1);
   persist();
+  diag(`新建 #${tabId}：URL 命中关闭记录 #${record.tabId}（记录父=${describeParent(record.parentId)}）→ 进入认领套用`);
   return {
     record,
     apply: async () => {
@@ -511,10 +615,31 @@ async function applyClaimedRestore(tab, record) {
   }
 
   if (supportsTabRefs()) {
-    const stored = await getTabValue(tabId, TAB_REF_KEY);
+    let stored = await getTabValue(tabId, TAB_REF_KEY);
+    // 临时诊断探针：首读拿不到时，隔 120/300/600ms 各再读一次，用来区分
+    // ①"这个标签从来没有会话值"（写入侧就没生效 / Firefox 撤销时不带值）与
+    // ②"会话值来得晚"（只需短重试即可救回认领）。
     if (!stored || typeof stored !== "object") {
+      const probeStart = Date.now();
+      diag(`新建 #${tabId}：会话值首读为空 → 开始延迟探针`);
+      // 探针只在调试打印打开时执行：它会引入最多约 1s 的额外等待，绝不能影响正式行为与测试。
+      if (isTreeDebugPrintEnabled()) {
+        for (const waitMs of [120, 300, 600]) {
+          await delay(waitMs);
+          stored = await getTabValue(tabId, TAB_REF_KEY);
+          if (stored && typeof stored === "object") {
+            diag(`新建 #${tabId}：会话值在 +${Date.now() - probeStart}ms 后读到（父=${describeParent(stored.parentId)}）`);
+            break;
+          }
+          diag(`新建 #${tabId}：+${Date.now() - probeStart}ms 仍读不到会话值`);
+        }
+      }
+    }
+    if (!stored || typeof stored !== "object") {
+      diag(`新建 #${tabId}：会话值始终为空 → 认领作废、记录放回、退回默认规则`);
       return false;
     }
+    diag(`新建 #${tabId}：会话值父=${describeParent(stored.parentId)}（记录父=${describeParent(record.parentId)}）`);
     // 会话值里的父标签比"URL 匹配出来的旧记录"更新（关闭之后又被挂到别处之类的操作会更新它）。
     // 前后邻居仍以关闭记录为准：那里记录的是关闭那一刻的真实邻居，比防抖写入的会话值更准。
     if (isFiniteId(stored.parentId)) {
@@ -529,6 +654,7 @@ async function applyClaimedRestore(tab, record) {
   // 移动之后父标签必须在子标签之前，这一条只能在校验时才知道，因此再套用一次。
   indexMap = await refreshTreeIndexes(windowId);
   applyRestoredParent(windowId, tabId, record.parentId, { childPinned: Boolean(tab.pinned), indexMap });
+  diag(`新建 #${tabId}：认领成功，按记录父=${describeParent(record.parentId)} 套用完毕`);
   return true;
 }
 
@@ -1076,7 +1202,11 @@ function setTabValue(tabId, key, value) {
   return new Promise((resolve) => {
     try {
       chrome.sessions.setTabValue(tabId, key, value, () => {
-        void chrome.runtime.lastError;
+        const error = chrome.runtime.lastError;
+        // 临时诊断：Firefox 下若这里报错（例如回调形式不被接受），会话值就永远写不进去。
+        if (error) {
+          diag(`写会话值失败 #${tabId}：${String(error.message || error)}`);
+        }
         resolve();
       });
     } catch (error) {
