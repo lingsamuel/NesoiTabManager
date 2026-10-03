@@ -741,6 +741,14 @@ async function main() {
   assertEqual(debugText.includes("规则："), true, "17：日志说明了命中的提升规则");
   assertEqual(debugText.includes("关闭后的树"), true, "17：日志含关闭后的树");
   assertEqual(debugText.includes(`#${c17.id}`), true, "17：日志里能看到被提升的子标签");
+  // 摘要必须**单独**再打一份（独立前缀），否则几千标签的窗口里原因会被树快照淹没。
+  assertEqual(debugText.includes("[Nesoi树·变化摘要]"), true, "17：变化摘要单独成块（独立前缀）");
+  const summaryIndex = debugText.lastIndexOf("[Nesoi树·变化摘要]");
+  const summaryText = debugText.slice(summaryIndex);
+  assertEqual(summaryText.includes("提升 #"), true, "17：摘要块里含变化原因");
+  assertEqual(summaryText.includes("父变化"), true, "17：摘要块里含前后差异");
+  assertEqual(summaryText.includes("关闭前的树"), false, "17：摘要块不含整棵树（便于一眼看到）");
+  assertEqual((summaryText.match(/\n1\. /g) || []).length, 1, "17：摘要里的原因编号不重复");
   const after17 = await tree.getTreeStructure([21]);
   assertEqual(after17.structures[21].parents[c17.id], a17.id, "17：前提——唯一子标签被提升到祖父");
 

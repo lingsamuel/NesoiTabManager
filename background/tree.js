@@ -31,6 +31,7 @@ import {
   formatTreeState,
   diffTreeStates,
   isTreeDebugPrintEnabled,
+  logChangeSummary,
   logFlow,
   logTree,
   logTreeBlock,
@@ -206,20 +207,34 @@ export function endTreeCloseDebug() {
   }
   activeCloseDebug = null;
   const after = captureTreeDebugState(session.windowId);
-  const lines = [];
-  lines.push(
+  // 原始原因（不带序号）：完整块与摘要块各自负责编号，避免出现 "1. 1. …"。
+  const reasonLines = session.reasons.length > 0 ? session.reasons : [];
+  const diffLines = diffTreeStates(session.before, after);
+  const header =
     `===== 关闭标签 #${session.tabId}（窗口 ${session.windowId}）=====` +
-      (session.hadTree ? "" : " · 关闭时内存里没有这棵树")
-  );
+    (session.hadTree ? "" : " · 关闭时内存里没有这棵树");
+
+  // ① 完整块：关闭前的树 → 变化原因 → 关闭后的树 → 前后差异。
+  const lines = [];
+  lines.push(header);
   lines.push(`--- 关闭前的树（${session.before ? session.before.entries.length : 0} 个标签）---`);
   lines.push(formatTreeState(session.before));
   lines.push("--- 变化原因 ---");
-  lines.push(session.reasons.length > 0 ? session.reasons.map((item, index) => `${index + 1}. ${item}`).join("\n") : "（没有产生任何结构性变化）");
+  lines.push(
+    reasonLines.length > 0
+      ? reasonLines.map((item, index) => `${index + 1}. ${item}`).join("\n")
+      : "（没有产生任何结构性变化）"
+  );
   lines.push(`--- 关闭后的树（${after ? after.entries.length : 0} 个标签）---`);
   lines.push(formatTreeState(after));
   lines.push("--- 前后差异 ---");
-  lines.push(diffTreeStates(session.before, after).join("\n"));
+  lines.push(diffLines.join("\n"));
   logTreeBlock("", lines);
+
+  // ② 摘要块：**再单独打一份**变化原因与前后差异（独立前缀 [Nesoi树·变化摘要]）。
+  // 几千标签的窗口里完整块有两份几千行的树快照，真正要看的几行会被淹没；
+  // 单独一份既方便一眼看到，也方便在控制台按前缀过滤。完整块保留不动。
+  logChangeSummary(header, reasonLines, diffLines);
 }
 
 // ---------------------------------------------------------------------------

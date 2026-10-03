@@ -111,6 +111,9 @@ function persistConfig(value) {
 const PREFIX = {
   flow: "[Nesoi树·流程]",
   tree: "[Nesoi树·树状]",
+  // 变化摘要单独一个前缀：几千标签的窗口里树快照有几千行，摘要必须能一眼看到、
+  // 也必须在控制台里能按前缀过滤出来。
+  summary: "[Nesoi树·变化摘要]",
 };
 
 function toText(parts) {
@@ -166,6 +169,29 @@ export function logTreeBlock(title, lines) {
   }
   const body = Array.isArray(lines) ? lines.join("\n") : String(lines || "");
   emit("tree", [`${title}\n${body}`]);
+}
+
+/**
+ * 单独打印"变化原因 + 前后差异"摘要块。
+ *
+ * 为什么必须单独打一份：几千标签的窗口里，关闭前后各是一份几千行的树快照，
+ * 真正要看的那几行原因和差异会被彻底淹没。摘要在完整块之外**再打一次**，
+ * 用独立前缀 `[Nesoi树·变化摘要]`，既方便一眼找到，也方便在控制台按前缀过滤。
+ * 完整块（关闭前的树 / 变化原因 / 关闭后的树 / 前后差异）保持不变。
+ */
+export function logChangeSummary(title, reasonLines, diffLines) {
+  if (!isTreeDebugPrintEnabled()) {
+    return;
+  }
+  const reasons = Array.isArray(reasonLines) ? reasonLines : [];
+  const diffs = Array.isArray(diffLines) ? diffLines : [];
+  const body = [
+    "--- 变化原因 ---",
+    reasons.length > 0 ? reasons.map((item, index) => `${index + 1}. ${item}`).join("\n") : "（没有产生任何结构性变化）",
+    "--- 前后差异 ---",
+    diffs.length > 0 ? diffs.join("\n") : "（无差异）",
+  ].join("\n");
+  emit("summary", [`${title}\n${body}`]);
 }
 
 function schedulePersist() {
