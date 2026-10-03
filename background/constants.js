@@ -28,6 +28,12 @@ export const TREE_COLLAPSED_KEY = "treeCollapsed";
 // 浏览器重启后它自动清空（tabId 已重新分配，快照里的 id 不能再当身份用）。
 export const TREE_SESSION_TOKEN_KEY = "treeSessionToken";
 export const TREE_FLUSH_ALARM = "treeFlush";
+// 树结构版本号：`{ [windowId]: revision }`，放 storage.session。
+// 后台每次结构变化（含落盘前的静默纠偏）都自增并写一次，前端监听 storage.onChanged 立即重拉父子映射——
+// 界面必须始终等于后台的真实结构，而这类静默纠偏不产生任何 tabs 事件。
+// 用 storage 而不是 runtime.sendMessage 广播：后者会派发到**所有标签页的每个 frame 的 content script**，
+// 在几千标签的场景下这条通知的代价与"一次结构变化"完全不成比例。
+export const TREE_REVISION_KEY = "treeStructureRevision";
 // 撤销关闭：关闭记录只存活于当前浏览器会话，因此同样放 storage.session。
 // closedTabLog 记单个标签的关闭现场（供浏览器原生「重新打开已关闭的标签页」恢复父子关系），
 // closedGroups 记本插件自己发起的批量关闭（供「撤销关闭」整组恢复）。

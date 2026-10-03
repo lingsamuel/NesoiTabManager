@@ -34,6 +34,9 @@ const storageData = { local: {}, session: {} };
 const alarmsCreated = [];
 // tabId -> { [key]: value }，模拟 Firefox 的每标签会话值。
 const tabValues = new Map();
+// 后台写入 storage.session 的树结构版本号快照（前端据此重拉父子映射）。
+// 每次写入都会记一份，用于断言"结构变化（含落盘前静默纠偏）都会通知前端"。
+const revisionSnapshots = [];
 // 模拟浏览器的「最近关闭」列表：元素为 { sessionId, url, title }。
 let recentlyClosed = [];
 
@@ -63,10 +66,18 @@ function reindex() {
   }
 }
 
-function addTab({ windowId = 1, pinned = false, url = "", title = "", openerTabId = null, index = null } = {}) {
+function addTab({
+  windowId = 1,
+  pinned = false,
+  url = "",
+  title = "",
+  openerTabId = null,
+  index = null,
+  status = "complete",
+} = {}) {
   const id = nextTabId;
   nextTabId += 1;
-  const tab = { id, windowId, pinned, url, title, openerTabId, index: 0, active: false };
+  const tab = { id, windowId, pinned, url, title, openerTabId, index: 0, active: false, status };
   const others = tabs.filter((item) => item.windowId !== windowId);
   const inWindow = tabs.filter((item) => item.windowId === windowId);
   const at = index === null ? inWindow.length : index;
@@ -103,6 +114,10 @@ function storageArea(area) {
     set(obj, callback) {
       for (const [k, v] of Object.entries(obj)) {
         storageData[area][k] = clone(v);
+      }
+      // 树结构版本号是"后台 → 前端"的结构变更通知通道，单独记一份便于断言。
+      if (area === "session" && obj.treeStructureRevision) {
+        revisionSnapshots.push(clone(obj.treeStructureRevision));
       }
       if (callback) {
         callback();
@@ -146,15 +161,25 @@ function moveTabsMock(tabIds, info, callback) {
 
 function setupChromeMock() {
   const runtime = { lastError: null };
+  // Firefox 的每标签会话值：**只提供 Promise 形式**。
+  // 真实 Firefox 上 `chrome.sessions.setTabValue(id, key, value, callback)` 这类回调形式不生效
+  // （写入看似成功、回读永远为空），曾经因此让"精确识别撤销关闭"整条链路静默失效。
+  // 因此测试替身必须严格：传回调直接抛错，否则这类问题永远测不出来。
   const setTabValue = (tabId, key, value, callback) => {
+    if (typeof callback === "function") {
+      throw new TypeError("sessions.setTabValue 不接受回调：请使用 Promise 形式");
+    }
     const entry = tabValues.get(Number(tabId)) || {};
     entry[key] = clone(value);
     tabValues.set(Number(tabId), entry);
-    callback && callback();
+    return Promise.resolve();
   };
   const getTabValue = (tabId, key, callback) => {
+    if (typeof callback === "function") {
+      throw new TypeError("sessions.getTabValue 不接受回调：请使用 Promise 形式");
+    }
     const entry = tabValues.get(Number(tabId)) || {};
-    callback(entry[key]);
+    return Promise.resolve(entry[key] === undefined ? null : clone(entry[key]));
   };
   globalThis.chrome = {
     runtime,
@@ -301,6 +326,41 @@ function tick(ms = 0) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * 等某窗口里某标签的父关系变成期望值（`undefined` = 顶层）。
+ *
+ * 撤销判定是**异步**的（要在判定窗口内等 Firefox 会话值 / 真实 URL 就绪），
+ * 因此断言必须等它收敛，而不是"创建后固定睡 20ms"。
+ */
+async function waitForParent(windowId, tabId, expected, timeoutMs = 900) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const structure = await tree.getTreeStructure([windowId]);
+    if (parentsOf(structure, windowId)[tabId] === expected) {
+      return true;
+    }
+    if (Date.now() >= deadline) {
+      return false;
+    }
+    await tick(10);
+  }
+}
+
+/** 等某窗口里某标签的物理下标变成期望值。 */
+async function waitForIndex(tabId, expected, timeoutMs = 900) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const tab = tabById(tabId);
+    if (tab && tab.index === expected) {
+      return true;
+    }
+    if (Date.now() >= deadline) {
+      return false;
+    }
+    await tick(10);
+  }
+}
+
 /** 像浏览器那样新建一个标签：先进列表，再异步派发 onCreated。 */
 async function openTab(options) {
   const tab = addTab(options);
@@ -313,6 +373,28 @@ async function openTab(options) {
 async function closeTabs(ids) {
   await new Promise((resolve) => chrome.tabs.remove(ids, resolve));
   await tick(15);
+}
+
+/**
+ * 直接改物理顺序，**不派发 onMoved**。
+ *
+ * 用途：模拟"插件不知情时标签栏已经变了"（后台被回收、事件被丢掉），
+ * 此时内存树里可能残留一个物理上已经排到子标签之后的父——正好用来验证落盘前的静默纠偏。
+ */
+function moveTabPhysicallyRaw(tabId, targetIndex) {
+  const tab = tabs.find((item) => item.id === Number(tabId));
+  if (!tab) {
+    return;
+  }
+  const inWindow = tabs.filter((item) => item.windowId === tab.windowId && item.id !== tab.id);
+  const others = tabs.filter((item) => item !== tab && item.windowId !== tab.windowId);
+  const at = Math.max(0, Math.min(Number(targetIndex), inWindow.length));
+  inWindow.splice(at, 0, tab);
+  inWindow.forEach((item, i) => {
+    item.index = i;
+  });
+  tabs = [...others, ...inWindow];
+  reindex();
 }
 
 // ---------------------------------------------------------------------------
@@ -471,13 +553,31 @@ async function main() {
 
   // Ctrl+Shift+T：新 tabId、相同 URL，且 Chrome 下没有每标签会话值。
   const reopened = await openTab({ url: "https://leaf.example/", title: "Leaf" });
-  await tick(20);
-  structure = await tree.getTreeStructure([1]);
-  assertEqual(parentsOf(structure, 1)[reopened.id], root.id, "原生撤销后回到原父 Root 之下");
-  assertEqual(tabById(reopened.id).index, leafIndex, "原生撤销后回到原物理位置");
+  assertTrue(await waitForParent(1, reopened.id, root.id), "原生撤销后回到原父 Root 之下");
+  assertTrue(await waitForIndex(reopened.id, leafIndex), "原生撤销后回到原物理位置");
+
+  // --- 场景 3b：onCreated 只给 about:blank，真实 URL 稍后才到（Firefox 的真实时序）---
+  // 关键回归：旧实现拿 onCreated 的 url 做全等匹配，而撤销恢复出来的标签这一刻是 about:blank，
+  // 于是判定必然失败、只能退回默认规则（用户看到的就是"撤销后层级不对"）。
+  console.log("场景 3b：onCreated 只有 about:blank，真实 URL 稍后才到");
+  const root3b = await openTab({ url: "https://blank-root.example/", title: "BRoot" });
+  const leaf3b = await openTab({ url: "https://blank-leaf.example/", openerTabId: root3b.id, title: "BLeaf" });
+  const leaf3bIndex = leaf3b.index;
+  await closeTabs([leaf3b.id]);
+  // 模拟 Ctrl+Shift+T：先以 about:blank 出现，真实 URL 之后才提交。
+  const blankReopen = addTab({ url: "about:blank", status: "loading", title: "" });
+  await emitAsync(listeners.created, { ...blankReopen });
+  await tick(80);
+  // 判定窗口内还不该把 about:blank 当成"匹配失败"：它必须继续等真实 URL。
+  const blankTab = tabById(blankReopen.id);
+  blankTab.url = "https://blank-leaf.example/";
+  blankTab.title = "BLeaf";
+  blankTab.status = "complete";
+  assertTrue(await waitForParent(1, blankReopen.id, root3b.id), "真实 URL 就绪后仍能按记录还原父");
+  assertTrue(await waitForIndex(blankReopen.id, leaf3bIndex), "真实 URL 就绪后仍能还原物理位置");
 
   // --- 场景 4：Firefox 的每标签会话值 ---
-  console.log("场景 4：Firefox 每标签会话值——有值精确恢复，无值退回默认规则");
+  console.log("场景 4：Firefox 每标签会话值——有值精确恢复");
   // 恢复每标签会话值，模拟切回 Firefox。
   chrome.sessions.setTabValue = chromeSessions.setTabValue;
   chrome.sessions.getTabValue = chromeSessions.getTabValue;
@@ -494,36 +594,32 @@ async function main() {
 
   await closeTabs([fleaf.id]);
   // 4a：浏览器恢复了会话值（真·撤销关闭）→ 精确挂回原父。
-  // 会话值必须在派发 onCreated **之前**就位：判定与套用都发生在创建事件的同步/近同步阶段。
   const firefoxReopen = addTab({ url: "https://fleaf.example/", title: "FLeaf" });
   tabValues.set(Number(firefoxReopen.id), { "nesoi:tree-ref": { parentId: froot.id, at: Date.now() } });
   await emitAsync(listeners.created, { ...firefoxReopen });
-  await tick(20);
-  structure = await tree.getTreeStructure([1]);
-  assertEqual(
-    parentsOf(structure, 1)[firefoxReopen.id],
-    froot.id,
-    "Firefox：有会话值时精确挂回原父"
-  );
+  assertTrue(await waitForParent(1, firefoxReopen.id, froot.id), "Firefox：有会话值时精确挂回原父");
 
-  // 4b：用户手动打开了同一个 URL（没有会话值）→ 判定失败，退回默认规则且记录被放回。
+  // 4b：会话值**稍后**才就绪（真实 Firefox 上会晚一点出现）→ 短轮询后照样精确识别。
+  // 关键回归：旧实现只读一次，读不到就把记录放回并退回默认规则。
+  const slowReopen = addTab({ url: "about:blank", status: "loading", title: "" });
+  await emitAsync(listeners.created, { ...slowReopen });
+  await tick(80);
+  tabValues.set(Number(slowReopen.id), { "nesoi:tree-ref": { parentId: froot.id, at: Date.now() } });
+  assertTrue(await waitForParent(1, slowReopen.id, froot.id), "Firefox：会话值延迟就绪也能精确识别");
+
+  // 4c：用户手动打开了同一个 URL（没有会话值）→ 会话值不可用时退回 URL 启发式，
+  // 因此会被当成撤销恢复（**已知上限**：与 Chrome 侧同一口径；Firefox 会话值可用时不会误判）。
   const anchor = await openTab({ url: "https://anchor.example/", title: "Anchor" });
   tree.handleTreeTabActivated({ windowId: 1, tabId: anchor.id });
   const secondLeaf = await openTab({ url: "https://fleaf.example/", openerTabId: froot.id, title: "FLeaf" });
   await tick(350);
   await closeTabs([secondLeaf.id]);
   const manual = await openTab({ url: "https://fleaf.example/", title: "FLeaf" });
-  await tick(20);
-  structure = await tree.getTreeStructure([1]);
-  assertEqual(
-    parentsOf(structure, 1)[manual.id],
-    anchor.id,
-    "Firefox：无会话值时不按 URL 误判（退回默认规则挂到活动标签）"
-  );
+  assertTrue(await waitForParent(1, manual.id, froot.id), "Firefox：无会话值时按 URL 启发式恢复原父（与 Chrome 同口径）");
   assertEqual(
     (storageData.session.closedTabLog || []).some((record) => record.url === "https://fleaf.example/"),
-    true,
-    "判定失败后关闭记录被放回栈里"
+    false,
+    "URL 命中后关闭记录被消费出栈"
   );
 
   // --- 场景 5：原父已关闭 → 降级为顶层 ---
@@ -744,6 +840,135 @@ async function main() {
     .sort((left, right) => left.index - right.index)
     .map((tab) => tab.id);
   assertEqual(order9.indexOf(n9restored.id), 2, "13：撤销后回到原来的第 3 位");
+
+  // --- 场景 14：关闭父标签后撤销，必须把被提升出去的直属子标签重挂回去（A - B - C）---
+  // 用户现象：A - B - C，关闭 A（B 被提升为顶层、X 挂到 B 下）后 Ctrl+Shift+T，
+  // 旧实现只恢复 A 一个标签 → 得到 `A / B-C`，而不是 `A - B - C`。
+  console.log("场景 14：撤销父标签时重挂被提升的直属子标签");
+  windows.push({ id: 14 });
+  await tree.getTreeStructure([14]);
+  const a14 = await openTab({ windowId: 14, url: "https://a14.example/", title: "A14" });
+  const b14 = await openTab({ windowId: 14, url: "https://b14.example/", openerTabId: a14.id, title: "B14" });
+  const c14 = await openTab({ windowId: 14, url: "https://c14.example/", openerTabId: b14.id, title: "C14" });
+  const x14 = await openTab({ windowId: 14, url: "https://x14.example/", openerTabId: a14.id, title: "X14" });
+  let parents14 = parentsOf(await tree.getTreeStructure([14]), 14);
+  assertEqual(parents14[b14.id], a14.id, "14 前置：B 挂在 A 下");
+  assertEqual(parents14[c14.id], b14.id, "14 前置：C 挂在 B 下");
+  assertEqual(parents14[x14.id], a14.id, "14 前置：X 挂在 A 下");
+
+  await closeTabs([a14.id]); // 原生关闭：只进 closedTabLog
+  parents14 = parentsOf(await tree.getTreeStructure([14]), 14);
+  assertEqual(parents14[b14.id], undefined, "14 前置：A 被关闭后第一个子标签 B 提升为顶层");
+  assertEqual(parents14[x14.id], b14.id, "14 前置：其余子标签挂到第一个子标签 B 下");
+  const record14 = (storageData.session.closedTabLog || []).find((record) => record.tabId === a14.id);
+  assertEqual(
+    Array.isArray(record14 && record14.promotedChildren) ? record14.promotedChildren.length : 0,
+    2,
+    "14：关闭记录里记下了 2 个被提升的直属子标签"
+  );
+
+  // Ctrl+Shift+T：只恢复 A 一个标签，撤销时必须把 B、X 挂回 A 下。
+  const a14again = await openTab({ windowId: 14, url: "https://a14.example/", title: "A14" });
+  assertTrue(await waitForParent(14, b14.id, a14again.id), "14：撤销后 B 重新挂回 A 下");
+  assertTrue(await waitForParent(14, x14.id, a14again.id), "14：撤销后 X 重新挂回 A 下");
+  parents14 = parentsOf(await tree.getTreeStructure([14]), 14);
+  assertEqual(parents14[c14.id], b14.id, "14：孙标签 C 仍跟着 B（只重挂直属子标签）");
+
+  // 14b：用户已经手动改过某个子标签的父 → 撤销时不得覆盖用户意图。
+  const r14 = await openTab({ windowId: 14, url: "https://r14.example/", title: "R14" });
+  const b14b = await openTab({ windowId: 14, url: "https://b14b.example/", openerTabId: a14again.id, title: "B14B" });
+  await closeTabs([a14again.id]);
+  // 关闭提升把 B14B 变成顶层；用户随后把它拖到 R14 下（用管理页拖拽的同一入口）。
+  await tree.moveTabTree({ tabId: b14b.id, parentId: r14.id });
+  const a14third = await openTab({ windowId: 14, url: "https://a14.example/", title: "A14" });
+  await tick(300);
+  parents14 = parentsOf(await tree.getTreeStructure([14]), 14);
+  assertEqual(parents14[b14b.id], r14.id, "14b：用户改过父的子标签不被撤销覆盖");
+  assertEqual(parents14[a14third.id], undefined, "14b：被恢复的 A 仍是顶层（没有被误挂）");
+
+  // --- 场景 15：活动标签物理上排在新标签之后 → 同步落位不得挂到它下面 ---
+  // 这正是用户报的现象：Ctrl+Shift+T 把标签放回原位置（活动标签在它后面），
+  // 旧实现按"创建时刻的活动标签"挂父 → 产生非法父（父排在子之后），直到落盘前才被静默改回顶层——
+  // 期间界面显示的就是 `B - A / C` 这种非法结构。
+  console.log("场景 15：不得产生「父排在子之后」的非法父");
+  windows.push({ id: 15 });
+  await tree.getTreeStructure([15]);
+  const p15 = await openTab({ windowId: 15, url: "https://p15.example/", title: "P15" });
+  const q15 = await openTab({ windowId: 15, url: "https://q15.example/", title: "Q15" });
+  // 让 Q 成为"创建时刻的活动标签"，随后在它**之前**插入一个没有 opener 的新标签。
+  tree.handleTreeTabActivated({ windowId: 15, tabId: q15.id });
+  const before15 = addTab({ windowId: 15, url: "https://before15.example/", title: "Before", index: p15.index });
+  await emitAsync(listeners.created, { ...before15 });
+  await tick(30);
+  const structure15 = await tree.getTreeStructure([15]);
+  assertEqual(
+    parentsOf(structure15, 15)[before15.id],
+    undefined,
+    "15：活动标签在物理上之后 → 不挂父（顶层），而不是产生非法父"
+  );
+  assertTrue(
+    parentsOf(structure15, 15)[q15.id] === undefined,
+    "15：活动标签 Q 自己不受影响"
+  );
+
+  // --- 场景 16：结构变化推送 + 落盘前静默纠偏也要推送、并重写会话值 ---
+  console.log("场景 16：结构变更推送（含落盘前的静默纠偏）");
+  // 恢复 Firefox 的每标签会话值（场景 12 起被摘掉），用于验证"纠偏后重写会话值"。
+  chrome.sessions.setTabValue = chromeSessions.setTabValue;
+  chrome.sessions.getTabValue = chromeSessions.getTabValue;
+  windows.push({ id: 16 });
+  await tree.getTreeStructure([16]);
+  const p16 = await openTab({ windowId: 16, url: "https://p16.example/", title: "P16" });
+  const c16 = await openTab({ windowId: 16, url: "https://c16.example/", openerTabId: p16.id, title: "C16" });
+  await tick(30);
+
+  // 让物理顺序变非法（父 P 排到了子 C 之后）且**不派发事件**：模拟"插件不知情时结构已变"。
+  moveTabPhysicallyRaw(c16.id, 0);
+  // 再把窗口标脏（真实场景里由其它结构事件触发落盘）。
+  await openTab({ windowId: 16, url: "https://filler16.example/", title: "Filler16" });
+  await tick(30);
+  const pushedBefore = revisionSnapshots.length;
+  assertTrue(pushedBefore > 0, "16：结构变化后写下了树结构版本号（前端据此重拉父子映射）");
+  const lastSnapshot = revisionSnapshots[pushedBefore - 1];
+  assertTrue(
+    Object.values(lastSnapshot.revisions || {}).some((value) => Number.isFinite(Number(value))),
+    "16：版本号里带 revision"
+  );
+  assertTrue(
+    typeof lastSnapshot.token === "string" && lastSnapshot.token.length > 0,
+    "16：版本号里带后台实例令牌（后台重启后版本号不可比较）"
+  );
+
+  await tree.handleTreeSuspend(); // 等价于后台被回收前的落盘：会跑不变量校验并静默纠偏
+  await tick(80);
+  const structure16 = await tree.getTreeStructure([16]);
+  assertEqual(
+    parentsOf(structure16, 16)[c16.id],
+    undefined,
+    "16：落盘前的静默纠偏把非法父改回顶层（界面重拉即可看到真实结构）"
+  );
+  assertTrue(
+    revisionSnapshots.length > pushedBefore,
+    "16：静默纠偏也通知了前端（否则界面会停在旧层级）"
+  );
+  const newestSnapshot = revisionSnapshots[revisionSnapshots.length - 1];
+  assertEqual(
+    structure16.structures[16].revisionToken,
+    newestSnapshot.token,
+    "16：拉取结果与通知带同一个后台实例令牌"
+  );
+  assertTrue(
+    Number(structure16.structures[16].revision) >= Number(newestSnapshot.revisions[16]),
+    "16：拉取结果里的 revision 不旧于最后一次通知"
+  );
+  // 纠偏后必须把新的父写回每标签会话值（否则过期会话值会在下一次撤销时把错误父引回来）。
+  await tick(400);
+  const c16Value = tabValues.get(Number(c16.id));
+  assertEqual(
+    c16Value && c16Value["nesoi:tree-ref"] ? c16Value["nesoi:tree-ref"].parentId : "缺失",
+    null,
+    "16：纠偏后会话值被重写为顶层"
+  );
 
   console.log("");
   console.log(`共 ${checks} 项断言，失败 ${failures} 项`);

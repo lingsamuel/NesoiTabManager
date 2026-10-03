@@ -32,8 +32,10 @@ import {
   getChildTabIds,
   getTabStructureInfo,
   moveTabsInternallyTo,
+  readoptPromotedChildren,
   refreshTreeIndexes,
-  setRestoreCandidateProvider,
+  setStructureRefsHook,
+  setUndoDetectProvider,
   waitUntilTabsTracked,
 } from "./tree.js";
 import { isTreeDebugPrintEnabled, logFlow } from "./tree_debug.js";
@@ -90,18 +92,59 @@ const PENDING_CREATED_URL_TTL_MS = 10000;
 const pendingTabRefTabs = new Map();
 let tabRefTimer = null;
 
+/**
+ * 判断一个值是不是有效的标签 id。
+ *
+ * **必须显式排除 `null` / `undefined`**：`Number(null) === 0`，若用 `Number.isFinite(Number(value))` 判断，
+ * 顶层标签（`parentId = null`）会被误判成"父标签 #0"，进而把 `null` 语义写成 `0`——
+ * 关门组记录里就会出现假父标签 `#0`，下游只能靠"这个父标签不存在"侥幸兜住。
+ */
 function isFiniteId(value) {
+  if (value === null || value === undefined || value === "") {
+    return false;
+  }
   return Number.isFinite(Number(value));
 }
 
-/** Firefox 才有每标签的会话值；Chrome 的 sessions API 不提供这两个方法。 */
-function supportsTabRefs() {
-  return Boolean(
+/**
+ * Firefox 专有的每标签会话值 API（`sessions.setTabValue` / `getTabValue`），否则 null。
+ *
+ * 为什么优先 `browser.*` 并且**只按 Promise 调用**：实测在 Firefox 下
+ * `chrome.sessions.setTabValue(tabId, key, value, callback)` 这类回调形式不生效——
+ * 写入看似成功（回调被调用、无 lastError）、回读却永远是空，异常还会被 try/catch 吞掉，
+ * 于是"精确识别撤销关闭"的权威判据永远不存在，认领只能静默退回默认规则。
+ * `browser.sessions.*` 是标准的 Promise 形式，行为可预期；`chrome.*` 仅作为兜底（同样按 Promise 调用）。
+ */
+function sessionsRefApi() {
+  if (
+    typeof browser !== "undefined" &&
+    browser &&
+    browser.sessions &&
+    typeof browser.sessions.setTabValue === "function" &&
+    typeof browser.sessions.getTabValue === "function"
+  ) {
+    return browser.sessions;
+  }
+  if (
+    typeof chrome !== "undefined" &&
     chrome.sessions &&
-      typeof chrome.sessions.setTabValue === "function" &&
-      typeof chrome.sessions.getTabValue === "function"
-  );
+    typeof chrome.sessions.setTabValue === "function" &&
+    typeof chrome.sessions.getTabValue === "function"
+  ) {
+    return chrome.sessions;
+  }
+  return null;
 }
+
+/** 本环境是否**存在**每标签会话值 API（是否**可用**还要看自检，见 tabRefsVerified）。 */
+function supportsTabRefs() {
+  return Boolean(sessionsRefApi());
+}
+
+// 会话值机制的可用性：null = 尚未自检，true = 自检通过，false = 自检失败（不再依赖它）。
+let tabRefsVerified = null;
+let tabRefsSelfCheck = null;
+const TAB_REF_SELF_KEY = "nesoi:tree-ref-probe";
 
 function logDebug(...args) {
   // 记录里含 URL 与标题（属于用户数据），因此只在明确需要排查时打开。
@@ -227,8 +270,13 @@ function persist() {
  * 但内存缓存每次 SW 冷启动都是空的，需要重新读回来。
  */
 export function initializeClosedGroups() {
-  // 同步注册判定钩子：tabs.onCreated 可能在载入完成前就到达。
-  setRestoreCandidateProvider(claimRestoreCandidate);
+  // 同步注册钩子：tabs.onCreated / 落盘纠偏可能在载入完成前就到达。
+  // - undoDetectProvider：新建标签完成同步落位后，由本模块在判定窗口内异步确认"是不是撤销恢复"；
+  // - structureRefsHook：结构被静默纠偏改写后，把新的父写回每标签会话值。
+  setUndoDetectProvider(scheduleUndoDetect);
+  setStructureRefsHook(handleTabStructureChanged);
+  // 会话值机制的写读自检：失败就永久放弃这条路径（不再"假装权威"）。
+  void ensureTabRefsVerified();
   return ensureClosedGroupsLoaded();
 }
 
@@ -263,6 +311,11 @@ export function handleClosedTabRecorded(tabId, removeInfo = {}) {
   // 此时用全量标签缓存兜底出下标与前后邻居：原生撤销关闭才能把标签放回原位，
   // 否则记录里是 index = -1、邻居全空，恢复出来的位置只能听天由命。
   const fallback = info ? null : getCachedTabNeighbors(id);
+  // 关闭的是父标签时，记下它的直属子标签：撤销恢复它时要把"仍停在提升结果位置"的子标签重挂回去
+  // （否则 `A - B - C` 撤销后只会得到 `A / B-C`）。
+  // 注意：**提升还没发生**（调用方紧接着才执行提升），因此这里只记 id，
+  // 提升后的父在下面的 .then（微任务，提升已完成）里补。
+  const childIds = info ? getChildTabIds(id, windowId) : [];
   const record = {
     tabId: id,
     windowId,
@@ -275,6 +328,8 @@ export function handleClosedTabRecorded(tabId, removeInfo = {}) {
     title: cached ? cached.title || "" : "",
     at: Date.now(),
     groupId: pendingGroupClose && pendingGroupClose.tabIds.has(id) ? pendingGroupClose.groupId : null,
+    // 直属子标签在"promote intelligently"之后各自被挂到哪里（null = 被提升为顶层）。
+    promotedChildren: childIds.map((childId) => ({ tabId: childId, parentId: null })),
   };
   // 临时诊断：关闭那一刻，记录里的父与 Firefox 会话值里的父是否一致。
   // 若"记录父=顶层、会话值父=#X"，说明会话值被后来的结构变化写脏了。
@@ -282,19 +337,42 @@ export function handleClosedTabRecorded(tabId, removeInfo = {}) {
     describeStoredRef(id).then((refParent) => {
       diag(
         `关闭 #${id}：记录父=${describeParent(record.parentId)}，URL=${classifyUrl(record.url)}，` +
-          `记录下标=${record.index}，会话值父=${refParent}`
+          `记录下标=${record.index}，子标签数=${childIds.length}，会话值父=${refParent}`
       );
     });
   } else if (!supportsTabRefs()) {
     diag(
       `关闭 #${id}：记录父=${describeParent(record.parentId)}，URL=${classifyUrl(record.url)}，` +
-        `记录下标=${record.index}（本浏览器无每标签会话值）`
+        `记录下标=${record.index}，子标签数=${childIds.length}（本浏览器无每标签会话值）`
     );
   }
   return ensureClosedGroupsLoaded().then(() => {
+    // 这个 .then 是微任务，调用方（tabs.onRemoved 的处理链）已经同步跑完"关闭提升"，
+    // 因此此刻才能读到子标签被挂到了哪里。
+    fillPromotedChildren(record, windowId);
     closedTabLog = [record, ...closedTabLog].slice(0, CLOSED_LOG_MAX);
     persist();
   });
+}
+
+/**
+ * 补齐 `promotedChildren`：记录每个直属子标签在提升之后的父（`null` = 顶层）。
+ * 已被一并关闭 / 不在树里的子标签直接剔除（撤销时也没有重挂的必要）。
+ */
+function fillPromotedChildren(record, windowId) {
+  const entries = [];
+  for (const item of record.promotedChildren || []) {
+    const childId = Number(item && item.tabId);
+    if (!Number.isFinite(childId)) {
+      continue;
+    }
+    const current = getTabStructureInfo(childId, windowId);
+    if (!current) {
+      continue;
+    }
+    entries.push({ tabId: childId, parentId: current.parentId ?? null });
+  }
+  record.promotedChildren = entries;
 }
 
 /**
@@ -304,7 +382,8 @@ export function handleClosedTabRecorded(tabId, removeInfo = {}) {
  * @param {number[]|null} tabIds 受影响的标签；传 null 表示"该窗口所有标签"（代价 O(n)，只在关闭父标签时用）。
  */
 export function handleTabStructureChanged(windowId, tabIds = null) {
-  if (!supportsTabRefs()) {
+  // 自检已判定不可用时不再做无意义的防抖写入（应用户要求：不"假装权威"、不空转）。
+  if (!tabRefsUsable()) {
     return;
   }
   const winId = Number(windowId);
@@ -363,15 +442,6 @@ async function flushTabRefs() {
         await setTabValue(tabId, TAB_REF_KEY, { parentId: info.parentId, at: Date.now() });
       })
     );
-    // 临时诊断：写完立刻回读一个样本，验证 Firefox 下"写进去的会话值真能读回来"。
-    // 若这一行一直是"无"，说明会话值这条路在当前 Firefox 上根本没生效（写入形式或时机问题），
-    // 而不是"Firefox 撤销时没带上会话值"。
-    if (isTreeDebugPrintEnabled() && ids.length > 0) {
-      const probeId = ids[0];
-      await delay(50);
-      const back = await describeStoredRef(probeId);
-      diag(`会话值回读：窗口 ${windowId} 写了 ${ids.length} 个，样本 #${probeId} 读回父=${back}`);
-    }
   }
 }
 
@@ -521,140 +591,233 @@ function rebuildParentIndexes(group) {
 }
 
 // ---------------------------------------------------------------------------
-// 单标签撤销：认领 + 套用
+// 单标签撤销：延迟判定 + 套用
+//
+// 为什么要"延迟判定"而不是在 tabs.onCreated 的同步阶段认领：
+// 识别依据（Firefox 每标签会话值、标签的真实 URL）在这一刻都拿不到——
+// Firefox 撤销恢复出来的标签在 onCreated 时 url = "about:blank"、没有 pendingUrl，
+// 而关闭记录里存的是真实 URL，同步做 URL 全等匹配必然失败；会话值读取本身也是异步的。
+// 因此改成：tree.js 先做**同步的合法落位**（永不产生非法父），随后调用本模块的判定钩子，
+// 在 UNDO_DETECT_WINDOW_MS 内轮询两条依据，命中就把父关系与物理位置纠正为关闭记录的现场。
 // ---------------------------------------------------------------------------
 
-/**
- * 判断一个新建标签是不是「撤销关闭」产生的（同步，必须在 tabs.onCreated 的同步阶段调用）。
- *
- * 返回值语义见 tree.js 的 setRestoreCandidateProvider：
- * - 返回 null：不是撤销恢复，走默认的 opener / 活动标签规则；
- * - 返回 { record, apply }：由 apply() 决定是否已处理。
- */
-function claimRestoreCandidate(tab) {
-  if (!tab || !isFiniteId(tab.id)) {
-    return null;
-  }
-  const rawUrl = tab.url || tab.pendingUrl || "";
-  const url = normalizeUrl(rawUrl);
-  const tabId = Number(tab.id);
-  // 临时诊断：先摊开这次 onCreated 的环境事实，才能区分"URL 门禁挡掉"与"会话值读不到"。
-  const stackText = closedTabLog.length > 0
-    ? `关闭记录栈 ${closedTabLog.length} 条（最新 #${closedTabLog[0].tabId}，${Math.round((Date.now() - Number(closedTabLog[0].at || 0)) / 1000)}s 前）`
-    : `关闭记录栈空（已载入=${closedLogLoaded}）`;
-  diag(
-    `新建 #${tabId}：url=${classifyUrl(rawUrl)}（url=${classifyUrl(tab.url)}，pendingUrl=${classifyUrl(tab.pendingUrl)}），` +
-      `会话值支持=${supportsTabRefs()}，${stackText}`
-  );
-  if (!url) {
-    diag(`新建 #${tabId}：onCreated 没给 URL → URL 门禁直接失败，退回默认规则`);
-    return null;
-  }
+/** 判定窗口：超过这个时间还没命中就保持同步落位的结果（普通新标签不会有额外延迟以外的行为差异）。 */
+const UNDO_DETECT_WINDOW_MS = 500;
+/** 轮询节奏（毫秒，累计），覆盖"会话值/真实 URL 稍后才就绪"的情况。 */
+const UNDO_DETECT_PROBE_DELAYS = [0, 60, 150, 300];
 
+/** 正在判定的新建标签：`windowId:tabId` -> { tabId, windowId, startedAt }。 */
+const pendingUndoDetects = new Map();
+
+/**
+ * 登记一次「这个新建标签是不是撤销恢复」的判定（由 tree.js 在同步落位之后调用）。
+ *
+ * 必须是同步返回、不能阻塞落位：真正的轮询在 runUndoDetect 里异步进行。
+ */
+export function scheduleUndoDetect(tab, windowId) {
+  const tabId = Number(tab && tab.id);
+  const winId = Number(windowId);
+  if (!Number.isFinite(tabId) || !Number.isFinite(winId)) {
+    return;
+  }
   // 本插件自己正在恢复关闭组：这些标签的父子关系由恢复流程统一套用，
-  // 这里只负责"占住顶层"，避免默认规则插手后又与恢复结果互相覆盖。
+  // 既不能套用默认规则，也**不能**把它们误判成原生撤销去消费关闭记录。
+  // 因此这里只消费登记项并结束（与旧实现在同步认领里"占住顶层"等价，但不再需要抢跑）。
+  const createdUrl = normalizeUrl(tab.url || tab.pendingUrl || "");
   if (pendingCreatedUrls.size > 0) {
     prunePendingCreatedUrls();
-    const pending = pendingCreatedUrls.get(url);
+    const pending = createdUrl ? pendingCreatedUrls.get(createdUrl) : null;
     if (pending && pending.count > 0) {
       pending.count -= 1;
       if (pending.count <= 0) {
-        pendingCreatedUrls.delete(url);
+        pendingCreatedUrls.delete(createdUrl);
       }
-      diag(`新建 #${tabId}：命中"本插件主动创建"登记 → 占位顶层`);
-      return { record: null, apply: () => Promise.resolve(true) };
+      diag(`判定跳过 #${tabId}：本插件正在恢复关闭组（这条标签的父由恢复流程套用）`);
+      return;
     }
   }
-
-  const now = Date.now();  const index = closedTabLog.findIndex(
-    (record) =>
-      record &&
-      record.url &&
-      normalizeUrl(record.url) === url &&
-      now - Number(record.at || 0) <= CLOSED_LOG_TTL_MS
-  );
-  if (index < 0) {
-    diag(
-      `新建 #${tabId}：URL 未命中任何关闭记录 → 退回默认规则` +
-        (closedTabLog.length > 0 ? `（${closedTabLog.length} 条记录中 URL 均不等）` : "")
-    );
-    return null;
+  if (!shouldScheduleUndoDetect()) {
+    return;
   }
-
-  // 认领即出栈：同一条记录不会被两次"重新打开"复用；判定失败（Firefox 读不到会话值）时再放回去。
-  const [record] = closedTabLog.splice(index, 1);
-  persist();
-  diag(`新建 #${tabId}：URL 命中关闭记录 #${record.tabId}（记录父=${describeParent(record.parentId)}）→ 进入认领套用`);
-  return {
-    record,
-    apply: async () => {
-      const handled = await applyClaimedRestore(tab, record);
-      if (!handled) {
-        // 判定失败：放回原位，让后续的"重新打开"仍有机会用它。
-        closedTabLog.splice(Math.min(index, closedTabLog.length), 0, record);
-        persist();
-      }
-      return handled;
-    },
-  };
+  const key = `${winId}:${tabId}`;
+  if (pendingUndoDetects.has(key)) {
+    return;
+  }
+  pendingUndoDetects.set(key, { tabId, windowId: winId, startedAt: Date.now() });
+  void runUndoDetect(key);
 }
 
 /**
- * 套用单标签撤销恢复：挂回原父节点与原物理位置。
- *
- * Firefox 下每标签会话值是**权威信息**：读不到就说明这次创建并不是撤销关闭
- * （例如用户手动打开了同一个 URL），此时返回 false 让调用方退回默认规则。
- *
- * @returns {Promise<boolean>} true 表示已按记录处理完父子关系
+ * 值不值得开一次判定：既没有会话值机制、也没有未过期的关闭记录时完全没必要。
+ * 关闭记录还没从 storage.session 载入完时不能过早放弃（那正是"后台刚被回收"的场景）。
  */
-async function applyClaimedRestore(tab, record) {
-  const tabId = Number(tab.id);
-  const windowId = Number(tab.windowId);
-  if (!Number.isFinite(tabId) || !Number.isFinite(windowId) || !record) {
-    return false;
+function shouldScheduleUndoDetect() {
+  if (tabRefsUsable()) {
+    return true;
   }
+  if (!closedLogLoaded) {
+    return true;
+  }
+  const now = Date.now();
+  return closedTabLog.some((record) => record && now - Number(record.at || 0) <= CLOSED_LOG_TTL_MS);
+}
 
-  if (supportsTabRefs()) {
-    let stored = await getTabValue(tabId, TAB_REF_KEY);
-    // 临时诊断探针：首读拿不到时，隔 120/300/600ms 各再读一次，用来区分
-    // ①"这个标签从来没有会话值"（写入侧就没生效 / Firefox 撤销时不带值）与
-    // ②"会话值来得晚"（只需短重试即可救回认领）。
-    if (!stored || typeof stored !== "object") {
-      const probeStart = Date.now();
-      diag(`新建 #${tabId}：会话值首读为空 → 开始延迟探针`);
-      // 探针只在调试打印打开时执行：它会引入最多约 1s 的额外等待，绝不能影响正式行为与测试。
-      if (isTreeDebugPrintEnabled()) {
-        for (const waitMs of [120, 300, 600]) {
-          await delay(waitMs);
-          stored = await getTabValue(tabId, TAB_REF_KEY);
-          if (stored && typeof stored === "object") {
-            diag(`新建 #${tabId}：会话值在 +${Date.now() - probeStart}ms 后读到（父=${describeParent(stored.parentId)}）`);
-            break;
-          }
-          diag(`新建 #${tabId}：+${Date.now() - probeStart}ms 仍读不到会话值`);
+/** 结束一次判定（成功/超时/标签消失都走这里）。 */
+function finishUndoDetect(key) {
+  pendingUndoDetects.delete(key);
+}
+
+/**
+ * 轮询判定：命中"会话值"或"真实 URL 匹配关闭记录"就套用撤销恢复。
+ *
+ * 命中依据的优先级：
+ * 1. **Firefox 每标签会话值**（自检通过时）——它精确回答"这是不是撤销恢复"，
+ *    因此即使关闭记录已经过期/被消费，也能用值里的父把层级救回来；
+ * 2. **真实 URL 全等匹配 `closedTabLog`**（Chrome 的主路径、Firefox 会话值不可用时的兜底）——
+ *    必须等 URL 就绪（onCreated 时是 about:blank），并用 TTL 限制误判。
+ */
+async function runUndoDetect(key) {
+  const state = pendingUndoDetects.get(key);
+  if (!state) {
+    return;
+  }
+  const { tabId, windowId, startedAt } = state;
+  const deadline = startedAt + UNDO_DETECT_WINDOW_MS;
+  try {
+    await ensureClosedGroupsLoaded();
+    const refsUsable = await ensureTabRefsVerified();
+    const stackText = closedTabLog.length > 0
+      ? `关闭记录栈 ${closedTabLog.length} 条（最新 #${closedTabLog[0].tabId}，${Math.round((Date.now() - Number(closedTabLog[0].at || 0)) / 1000)}s 前）`
+      : `关闭记录栈空（已载入=${closedLogLoaded}）`;
+    diag(`判定开始 #${tabId}：会话值可用=${refsUsable}，${stackText}`);
+
+    for (const waitMs of UNDO_DETECT_PROBE_DELAYS) {
+      if (waitMs > 0) {
+        await delay(waitMs);
+      }
+      if (Date.now() > deadline || !pendingUndoDetects.has(key)) {
+        break;
+      }
+      const tab = await getTabInfo(tabId);
+      if (!tab || Number(tab.windowId) !== windowId) {
+        diag(`判定中止 #${tabId}：标签已不存在或已换窗口`);
+        finishUndoDetect(key);
+        return;
+      }
+      // ① 会话值（精确判据）
+      if (refsUsable) {
+        const stored = await getTabValue(tabId, TAB_REF_KEY);
+        if (stored && typeof stored === "object") {
+          const record = takeRecordForTab(tab);
+          diag(
+            `判定命中 #${tabId}：依据=会话值（会话值父=${describeParent(stored.parentId)}，` +
+              `关闭记录=${record ? `#${record.tabId}` : "无"}）`
+          );
+          await applyUndoRestore(tab, record, stored);
+          finishUndoDetect(key);
+          return;
         }
       }
+      // ② 真实 URL（等它就绪）
+      const url = normalizeUrl(tab.url || tab.pendingUrl || "");
+      if (url && !isPlaceholderUrl(url)) {
+        const record = takeRecordForTab(tab, url);
+        if (record) {
+          diag(`判定命中 #${tabId}：依据=URL 记录 #${record.tabId}（真实 URL 已就绪）`);
+          await applyUndoRestore(tab, record, null);
+          finishUndoDetect(key);
+          return;
+        }
+        // URL 已确定且没有任何记录匹配，且页面已经加载完成 → 不必再等到判定窗口结束。
+        if (tab.status === "complete") {
+          diag(`判定结束 #${tabId}：真实 URL 不匹配任何关闭记录（status=complete）→ 保持同步落位`);
+          finishUndoDetect(key);
+          return;
+        }
+        diag(`判定继续 #${tabId}：真实 URL 就绪但不匹配记录（url=${classifyUrl(url)}）`);
+      } else {
+        diag(`判定继续 #${tabId}：URL 仍是占位地址（${classifyUrl(url)}），等待真实 URL / 会话值`);
+      }
     }
-    if (!stored || typeof stored !== "object") {
-      diag(`新建 #${tabId}：会话值始终为空 → 认领作废、记录放回、退回默认规则`);
-      return false;
-    }
-    diag(`新建 #${tabId}：会话值父=${describeParent(stored.parentId)}（记录父=${describeParent(record.parentId)}）`);
-    // 会话值里的父标签比"URL 匹配出来的旧记录"更新（关闭之后又被挂到别处之类的操作会更新它）。
-    // 前后邻居仍以关闭记录为准：那里记录的是关闭那一刻的真实邻居，比防抖写入的会话值更准。
-    if (isFiniteId(stored.parentId)) {
-      record.parentId = Number(stored.parentId);
-    }
+    diag(`判定超时 #${tabId}：判定窗口内未命中 → 保持同步落位`);
+    finishUndoDetect(key);
+  } catch (error) {
+    // 判定是尽力而为：任何异常都不能影响已经完成的落位。
+    diag(`判定异常 #${tabId}：${String(error && error.message ? error.message : error)}`);
+    finishUndoDetect(key);
   }
+}
 
+/** 占位地址（about:blank / 新标签页等）：不能拿它去和关闭记录做 URL 匹配。 */
+function isPlaceholderUrl(url) {
+  return /^(about:(blank|newtab|home|sessionrestore|welcome)|chrome:\/\/(newtab|new-tab-page))/i.test(
+    normalizeUrl(url)
+  );
+}
+
+/**
+ * 从关闭记录栈里取出与这个标签对应的记录（取出即出栈：同一条记录不会被两次撤销复用）。
+ *
+ * 匹配口径：URL 全等 + 未过期。URL 缺省时用标签当前的真实 URL（调用方已确认它不是占位地址）。
+ * @returns {object|null}
+ */
+function takeRecordForTab(tab, url = null) {
+  const target = normalizeUrl(url || tab.url || tab.pendingUrl || "");
+  if (!target || isPlaceholderUrl(target)) {
+    return null;
+  }
+  const now = Date.now();
+  const index = closedTabLog.findIndex(
+    (record) =>
+      record &&
+      record.url &&
+      normalizeUrl(record.url) === target &&
+      now - Number(record.at || 0) <= CLOSED_LOG_TTL_MS
+  );
+  if (index < 0) {
+    return null;
+  }
+  const [record] = closedTabLog.splice(index, 1);
+  persist();
+  return record;
+}
+
+/**
+ * 套用一次撤销恢复：父关系 + 物理位置 + 重挂被提升的子标签。
+ *
+ * @param {object} tab 创建事件里的标签（含 id / windowId / pinned）
+ * @param {object|null} record 关闭记录（可能为空：例如记录已过期，但会话值证明这是撤销恢复）
+ * @param {object|null} stored 每标签会话值（Firefox；可能为空）
+ */
+async function applyUndoRestore(tab, record, stored) {
+  const tabId = Number(tab.id);
+  const windowId = Number(tab.windowId);
+  if (!Number.isFinite(tabId) || !Number.isFinite(windowId)) {
+    return false;
+  }
+  // 父标签：关闭记录是关闭那一刻同步抓取的现场，比防抖写入的会话值更新，因此**记录优先**；
+  // 没有记录（已过期 / 已被消费）时才用会话值里的父把层级救回来。
+  let parentId = record ? record.parentId : null;
+  if (!record && stored && isFiniteId(stored.parentId)) {
+    parentId = Number(stored.parentId);
+  }
   await ensureTreeFor(windowId);
   let indexMap = await refreshTreeIndexes(windowId);
-  applyRestoredParent(windowId, tabId, record.parentId, { childPinned: Boolean(tab.pinned), indexMap });
-  await moveRestoredTabToRecordedPosition(tabId, windowId, record);
-  // 移动之后父标签必须在子标签之前，这一条只能在校验时才知道，因此再套用一次。
-  indexMap = await refreshTreeIndexes(windowId);
-  applyRestoredParent(windowId, tabId, record.parentId, { childPinned: Boolean(tab.pinned), indexMap });
-  diag(`新建 #${tabId}：认领成功，按记录父=${describeParent(record.parentId)} 套用完毕`);
+  applyRestoredParent(windowId, tabId, parentId, { childPinned: Boolean(tab.pinned), indexMap });
+  if (record) {
+    await moveRestoredTabToRecordedPosition(tabId, windowId, record);
+    // 移动之后父标签必须在子标签之前，这一条只能在校验时才知道，因此再套用一次。
+    indexMap = await refreshTreeIndexes(windowId);
+    applyRestoredParent(windowId, tabId, parentId, { childPinned: Boolean(tab.pinned), indexMap });
+    // 重挂"被提升出去、且仍停在提升结果位置"的直属子标签（A - B - C 完整回来）。
+    indexMap = await refreshTreeIndexes(windowId);
+    const result = readoptPromotedChildren(windowId, tabId, record.promotedChildren, { indexMap });
+    if (result.readopted.length > 0) {
+      diag(`重挂子标签 #${tabId}：${result.readopted.map((id) => `#${id}`).join("，")}`);
+    }
+    // 被改过父关系的标签要立刻重写会话值，避免过期值在下一次撤销时把错误父引回来。
+    handleTabStructureChanged(windowId, [tabId, ...result.readopted]);
+  }
   return true;
 }
 
@@ -1198,33 +1361,97 @@ async function removeTabsInBatches(ids) {
   return { removed, skipped };
 }
 
+/**
+ * 写一个每标签会话值（Promise 形式）。
+ *
+ * 不抛错、不 reject：这是一条"尽力而为"的辅助信息，写不进去只影响撤销识别的精确度，
+ * 绝不能让结构事件链路因为一次存储失败而中断（调用方都在 tabs 事件的处理器里）。
+ */
 function setTabValue(tabId, key, value) {
-  return new Promise((resolve) => {
-    try {
-      chrome.sessions.setTabValue(tabId, key, value, () => {
-        const error = chrome.runtime.lastError;
-        // 临时诊断：Firefox 下若这里报错（例如回调形式不被接受），会话值就永远写不进去。
-        if (error) {
-          diag(`写会话值失败 #${tabId}：${String(error.message || error)}`);
-        }
-        resolve();
-      });
-    } catch (error) {
-      resolve();
-    }
-  });
+  const api = sessionsRefApi();
+  if (!api) {
+    return Promise.resolve();
+  }
+  try {
+    return Promise.resolve(api.setTabValue(Number(tabId), key, value)).catch(() => {});
+  } catch (_error) {
+    return Promise.resolve();
+  }
 }
 
+/** 读一个每标签会话值（Promise 形式）；读不到一律返回 null。 */
 function getTabValue(tabId, key) {
-  return new Promise((resolve) => {
-    try {
-      chrome.sessions.getTabValue(tabId, key, (value) => {
-        resolve(chrome.runtime.lastError ? null : value);
-      });
-    } catch (error) {
-      resolve(null);
+  const api = sessionsRefApi();
+  if (!api) {
+    return Promise.resolve(null);
+  }
+  try {
+    return Promise.resolve(api.getTabValue(Number(tabId), key)).then(
+      (value) => (value === undefined ? null : value),
+      () => null
+    );
+  } catch (_error) {
+    return Promise.resolve(null);
+  }
+}
+
+/**
+ * 每标签会话值机制的**写读自检**（每个后台生命周期只做一次）。
+ *
+ * 为什么必须有：这套 API 曾经"看起来能用、实际永远读不到"（回调形式不生效 + 异常被吞），
+ * 而它一旦失效，撤销识别就会静默退回启发式，用户只能看到"层级恢复得时对时错"。
+ * 自检把这件事变成一条明确的判定：写一个探针值再读回，读到才算可用；读不到就永久放弃该机制。
+ *
+ * 探针只写进插件自己的键（`nesoi:tree-ref-probe`），不会污染 `nesoi:tree-ref`；
+ * 拿一个现存标签当载体，失败（比如没有标签）时按"不可用"处理。
+ */
+function ensureTabRefsVerified() {
+  if (tabRefsSelfCheck) {
+    return tabRefsSelfCheck;
+  }
+  tabRefsSelfCheck = (async () => {
+    if (!supportsTabRefs()) {
+      tabRefsVerified = false;
+      return false;
     }
-  });
+    const probeValue = { at: Date.now() };
+    const candidates = await new Promise((resolve) => {
+      try {
+        chrome.tabs.query({}, (list) => resolve(Array.isArray(list) ? list : []));
+      } catch (_error) {
+        resolve([]);
+      }
+    });
+    const probeable = candidates
+      .map((tab) => Number(tab && tab.id))
+      .filter((tabId) => Number.isFinite(tabId))
+      .slice(0, 3);
+    if (probeable.length === 0) {
+      // 没有可探测的标签（典型：后台在窗口恢复之前启动）。这一刻测不出结论，
+      // 因此**不锁定**判定结果，等下次需要时再自检一次。
+      tabRefsSelfCheck = null;
+      diag("会话值自检：暂无可探测的标签 → 稍后重试");
+      return false;
+    }
+    for (const tabId of probeable) {
+      await setTabValue(tabId, TAB_REF_SELF_KEY, probeValue);
+      const readBack = await getTabValue(tabId, TAB_REF_SELF_KEY);
+      if (readBack && typeof readBack === "object" && Number(readBack.at) === probeValue.at) {
+        tabRefsVerified = true;
+        diag("会话值自检：通过（可写入并读回每标签会话值）");
+        return true;
+      }
+    }
+    tabRefsVerified = false;
+    diag("会话值自检：失败 → 本环境放弃每标签会话值，撤销识别退回 URL 启发式");
+    return false;
+  })();
+  return tabRefsSelfCheck;
+}
+
+/** 会话值机制此刻是否可用：自检未完成时按"可试一次"处理，自检失败后一律 false。 */
+function tabRefsUsable() {
+  return supportsTabRefs() && tabRefsVerified !== false;
 }
 
 /** 关闭父标签后，它的子标签会被提升：这些子标签的持久引用需要重写。 */

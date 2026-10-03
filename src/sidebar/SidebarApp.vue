@@ -818,6 +818,28 @@ function bindTabEvents() {
   }
 }
 
+/**
+ * 订阅后台的**结构变更通知**（`storage.session` 的树结构版本号）。
+ *
+ * 为什么不能只靠 tabs 事件：后台会在落盘前做一次静默的不变量纠偏（把"父排在子之后"这类非法关系
+ * 改回顶层），它不产生任何 tabs 事件。只靠事件驱动刷新时，侧边栏会一直显示纠偏前的旧层级，
+ * 用户必须 Reload 扩展才能对齐——"看到的必须等于真实结构"这条要求就是靠这条通知保证的。
+ *
+ * `revision` 由 useTree 在拉取时比对：更旧的结果会被丢弃，避免慢请求把新结构覆盖回旧结构。
+ */
+function bindTreeStructureEvents() {
+  const unsubscribe = tree.onStructureChanged((changedWindowIds) => {
+    const ids = Array.isArray(changedWindowIds) ? changedWindowIds : [];
+    if (ids.length === 0 || ids.includes(Number(windowId.value))) {
+      scheduleRefresh("full");
+      return;
+    }
+    // 只影响其它窗口时，固定标签区是唯一可能受影响的区域。
+    scheduleRefresh("pinned");
+  });
+  cleanups.push(unsubscribe);
+}
+
 // ---------------------------------------------------------------------------
 // 操作
 // ---------------------------------------------------------------------------
@@ -1661,6 +1683,7 @@ onMounted(async () => {
   await refresh();
   bindTabEvents();
   bindTabStateEvents();
+  bindTreeStructureEvents();
   document.addEventListener("visibilitychange", onVisibilityChange);
   cleanups.push(() => document.removeEventListener("visibilitychange", onVisibilityChange));
   // 保存清单打开时用 Escape 关闭（清单盖住整个列表，必须给一个键盘出口）。

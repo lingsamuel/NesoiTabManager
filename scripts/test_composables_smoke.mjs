@@ -9,6 +9,8 @@
 const storageData = { local: {}, session: {} };
 const changeListeners = [];
 const sentMessages = [];
+// 可切换的 getTreeStructure 响应：用于验证"更旧的 structureRevision 不得覆盖新结构"。
+let nextTreeStructureResponse = { ok: true, structures: {}, parents: {} };
 
 function area(name) {
   return {
@@ -43,7 +45,11 @@ globalThis.chrome = {
     sendMessage: (message, callback) => {
       sentMessages.push(message);
       if (callback) {
-        callback({ ok: true, structures: {}, parents: {} });
+        callback(
+          message && message.action === "getTreeStructure"
+            ? nextTreeStructureResponse
+            : { ok: true, structures: {}, parents: {} }
+        );
       }
     },
     onMessage: { addListener() {} },
@@ -94,7 +100,15 @@ async function main() {
     return;
   }
   assert(Boolean(tree), "useTree() 正常返回");
-  for (const name of ["loadPreferences", "loadCollapsed", "setMode", "loadForWindows", "parentsFor", "toggleCollapse"]) {
+  for (const name of [
+    "loadPreferences",
+    "loadCollapsed",
+    "setMode",
+    "loadForWindows",
+    "onStructureChanged",
+    "parentsFor",
+    "toggleCollapse",
+  ]) {
     assert(typeof tree[name] === "function", `暴露了 ${name}()`);
   }
   assert(changeListeners.length > 0, "组装阶段就挂上了 storage 变更监听（跨页面同步折叠状态）");
@@ -120,6 +134,59 @@ async function main() {
     callbackError = error;
   }
   assert(callbackError === null, `变更回调不抛错${callbackError ? `（${callbackError.message}）` : ""}`);
+
+  console.log("场景 3b：结构变更通知（后台改了结构 → 前端必须重拉）");
+  // 订阅回调：后台发布的 treeStructureRevision 到达时，订阅方应当被通知去重拉父子映射。
+  const structureCalls = [];
+  const unsubscribe = tree.onStructureChanged((windowIds) => structureCalls.push(windowIds));
+  assert(typeof unsubscribe === "function", "onStructureChanged 返回取消订阅函数");
+  const emitRevision = (value) =>
+    changeListeners.forEach((listener) => listener({ treeStructureRevision: { newValue: value } }, "session"));
+  // 第一次通知时页面还不知道令牌（等价于"没拉过"）：按变化未知处理 → 空列表 = 全量刷新。
+  emitRevision({ token: "sw-a", revisions: { 1: 3, 2: 1 } });
+  assertEqual(structureCalls.length, 1, "收到结构变更通知 → 通知订阅方一次");
+  assertEqual(structureCalls[0].length, 0, "令牌未知时按变化未知通知（空列表 = 全量刷新）");
+  // 拉一次后页面记下了令牌与版本号。
+  nextTreeStructureResponse = {
+    ok: true,
+    structures: {
+      1: { parents: {}, revision: 3, revisionToken: "sw-a" },
+      2: { parents: {}, revision: 1, revisionToken: "sw-a" },
+    },
+  };
+  await tree.loadForWindows([1, 2]);
+  emitRevision({ token: "sw-a", revisions: { 1: 3, 2: 1 } });
+  assertEqual(structureCalls.length, 1, "同一实例、版本号没前进 → 不重复通知");
+  emitRevision({ token: "sw-a", revisions: { 1: 4, 2: 1 } });
+  assertEqual(structureCalls.length, 2, "版本号前进 → 再次通知");
+  assertEqual(structureCalls[1].join(","), "1", "只通知版本号前进的窗口");
+  // 后台实例重启：版本号从头开始，不能与本地已知值比较，必须按"变化未知"通知一次全量刷新。
+  emitRevision({ token: "sw-b", revisions: { 1: 1 } });
+  assertEqual(structureCalls.length, 3, "后台重启（令牌变化）→ 仍然通知");
+  assertEqual(structureCalls[2].length, 0, "令牌变化时按变化未知通知（空列表 = 全量刷新）");
+
+  console.log("场景 3c：更旧的结构结果不得覆盖新结构");
+  nextTreeStructureResponse = {
+    ok: true,
+    structures: { 1: { parents: { 11: 10 }, revision: 5, revisionToken: "sw-c" } },
+  };
+  await tree.loadForWindows([1]);
+  assertEqual(tree.parentsFor(1)[11], 10, "同一实例内接受更新的结果");
+  nextTreeStructureResponse = {
+    ok: true,
+    structures: { 1: { parents: { 12: 10 }, revision: 4, revisionToken: "sw-c" } },
+  };
+  await tree.loadForWindows([1]);
+  assertEqual(tree.parentsFor(1)[11], 10, "更旧的结果被丢弃（保留新结构）");
+  assertEqual(tree.parentsFor(1)[12], undefined, "旧结果里的父关系没有写入");
+  // 后台重启后令牌不同：即使版本号更小也必须接受，否则界面会永久停在旧结构上。
+  nextTreeStructureResponse = {
+    ok: true,
+    structures: { 1: { parents: { 13: 10 }, revision: 1, revisionToken: "sw-d" } },
+  };
+  await tree.loadForWindows([1]);
+  assertEqual(tree.parentsFor(1)[13], 10, "令牌变化（后台重启）时无条件接受新结果");
+  unsubscribe();
 
   console.log("场景 4：useFilterQuery 与 useTree 使用同一份 storage 封装");
   const { useFilterQuery } = await import("../src/manager/composables/useFilterQuery.js");

@@ -775,8 +775,15 @@ const windowsSync = isOverlay.value
       refresh: refreshWindows,
     });
 
+// 「后台结构变了 → 前端重拉」的取消订阅函数（见下面的注册处）。
+let structureUnsubscribe = null;
+
 if (windowsSync) {
   windowsSync.start();
+  // 后台的**结构变更通知**（storage.session 的树结构版本号）：结构被后台改写后必须重取父子映射，
+  // 尤其是落盘前的静默纠偏——它不产生任何 tabs 事件，只靠事件驱动会让树状视图停在旧层级
+  // （用户必须 Reload 扩展才对齐）。revision 由 useTree 在拉取时比对，丢弃更旧的结果。
+  structureUnsubscribe = tree.onStructureChanged(() => windowsSync.schedule());
   // selfTabId 用于识别"被激活的是管理页自己"（复用入口切回来时补一次刷新）。
   // 查询失败只让这条同步路径失效，不影响其余事件订阅。
   if (typeof chrome.tabs.getCurrent === "function") {
@@ -790,6 +797,10 @@ if (windowsSync) {
 }
 
 onBeforeUnmount(() => {
+  if (structureUnsubscribe) {
+    structureUnsubscribe();
+    structureUnsubscribe = null;
+  }
   if (windowsSync) {
     windowsSync.dispose();
   }

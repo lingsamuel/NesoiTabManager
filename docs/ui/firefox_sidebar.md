@@ -438,10 +438,15 @@ Chrome 侧的右键菜单保持原样、不受影响。网页右键的「保存�
 
 ## 数据流与刷新策略（实时跟随）
 1. 初始化：`chrome.windows.getCurrent()` 得到 `windowId` → 取本窗口标签 `chrome.tabs.query({ windowId })`、跨窗口固定标签 `chrome.tabs.query({ pinned: true })`、窗口列表 `chrome.windows.getAll()` → `getTreeStructure({ windowIds: [windowId] })` 取父子映射 → 读 `treeCollapsed`。
-2. 订阅 `chrome.tabs.onCreated / onRemoved / onMoved / onAttached / onDetached / onUpdated`。
+2. 订阅 `chrome.tabs.onCreated / onRemoved / onMoved / onAttached / onDetached / onUpdated`，
+   以及后台的**结构变更通知**：`chrome.storage.session` 的 `treeStructureRevision`（`{ windowId: revision }`）。
 3. 事件到达后按来源分流，再**防抖 250ms 合并**：
    - `windowId` 等于自身窗口 → 重取第 1 步的全部数据；
    - `windowId` 是其它窗口 → **只重取跨窗口固定标签**（固定标签区是唯一的跨窗口区域，其它窗口的变化只会影响它）；
+   - **结构变更通知**（`storage.session` 的 `treeStructureRevision`）→ 与"本窗口事件"同等对待：重取父子映射。
+     为什么必须有这条：后台会在落盘前做一次**静默的不变量纠偏**（把物理顺序不合法的父关系改回顶层），
+     这类改写不产生任何 `tabs` 事件；只靠事件驱动的刷新会让侧边栏一直显示纠偏前的旧层级，
+     必须 Reload 扩展才对齐。通知里带 `revision`，前端对同一窗口收到比已知值更旧的 `revision` 结果时丢弃，避免慢请求覆盖新结构；
    - 提取函数返回 `undefined` 的事件直接忽略。
 4. 三处针对性优化（10K 标签下差别明显）：
    - `onActivated`（切换标签）**不重取数据**，只在本地改活动标记——把一次"IPC + 整窗序列化"降成一次 O(n) 内存遍历；

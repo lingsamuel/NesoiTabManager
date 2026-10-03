@@ -14,9 +14,11 @@
 // 3. 不拖慢浏览器初始化：启动/会话恢复期进入静默期，不加载快照、不对齐、不写盘。
 
 import {
+  HAS_SESSION_STORAGE,
   TREE_FLUSH_ALARM,
   TREE_INDEX_KEY,
   TREE_KEY_PREFIX,
+  TREE_REVISION_KEY,
   TREE_SESSION_TOKEN_KEY,
 } from "./constants.js";
 import {
@@ -75,6 +77,8 @@ const MOVE_BATCH_SIZE = 100;
 const MOVE_BATCH_GAP_MS = 50;
 // 插件自身发起的 move 在多久内忽略对应的 onMoved 事件（事件是异步派发的）。
 const INTERNAL_MOVE_TTL_MS = 2000;
+// 结构变更通知的合并窗口：批量关闭/恢复会连续改结构，逐次通知等于反复刷前端。
+const TREE_PUSH_THROTTLE_MS = 200;
 
 // ---------------------------------------------------------------------------
 // 模块状态
@@ -99,6 +103,15 @@ const internalMoveIds = new Set();
 const migratingSubtrees = new Map();
 // treeStructureWindows 索引的内存副本。
 let indexCache = null;
+// windowId -> 该窗口内存树的版本号。每次结构变化自增，随通知与 getTreeStructure 一起发给前端，
+// 前端据此丢弃"慢请求先发后到"的旧结果（界面必须等于后台的真实结构）。
+const treeRevisionByWindow = new Map();
+// 版本号只在本后台实例内单调。后台被回收后重建时版本号会从 0 重新开始，
+// 而前端手里的已知版本号还停在旧实例的值上——直接比较会让前端**永久忽略**新结果。
+// 因此每次实例启动带一个随机令牌，令牌变了就表示"这些版本号不可与本地值直接比较"，前端必须无条件接受。
+const treeRevisionToken = `sw-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+// windowId -> 待通知的合并定时器。
+const pushTimers = new Map();
 // windowId -> { at, parentId }[]：记录"由本插件主动创建、且落位已经确定"的创建请求。
 // 后台的默认规则是"无 opener 的新标签挂到创建时刻的活动标签下"（对齐 TST 的 open as child），
 // 而侧边栏底部的 New Tab 按钮要求新标签是**顶层**、外部拖放要求落在某个标签的同级，
@@ -109,25 +122,50 @@ const pendingPlacements = new Map();
 // 标记的有效期：超过这个时间还没被 onCreated 消费就丢弃。
 const PENDING_PLACEMENT_TTL_MS = 3000;
 
-// 「撤销关闭恢复」的判定钩子：由 closed_groups.js 在初始化时注册。
+// 「撤销关闭恢复」的判定钩子与结构变化钩子：都由 closed_groups.js 在初始化时注册。
 //
 // 为什么必须是钩子而不是在本文件里 import：
 // 撤销关闭需要读会话记录、调 sessions API、并在恢复后写回父子关系，属于另一层职责；
-// 而**判定必须发生在 tabs.onCreated 的同步阶段**——否则默认规则（挂到 opener / 活动标签下）
-// 会先把层级定下来，之后再由恢复逻辑改写，会出现可见的层级跳动。
-// 因此这里只暴露一个同步的"认领"入口，真正的判定与套用都在 closed_groups.js 里。
-let restoreCandidateProvider = null;
+// 而本文件是被 closed_groups.js import 的下层模块，反向 import 会成环。
+let undoDetectProvider = null;
+let structureRefsHook = null;
 
 /**
- * 注册「撤销关闭恢复」的判定钩子（只能由 closed_groups.js 调用）。
+ * 注册「撤销关闭判定」钩子（只能由 closed_groups.js 调用）。
  *
- * @param {null|((tab: chrome.tabs.Tab) => null|{record: object|null, apply: () => Promise<boolean>})} provider
- *   provider 返回非空对象表示"这个新建标签是撤销恢复产生的"，其中：
- *   - `apply()` 返回 true 表示已自行处理完父子关系，`onCreated` 不再套用默认规则；
- *   - 返回 false 表示判定失败（其实不是撤销恢复），此时回退到默认规则。
+ * 语义：**新建标签的同步落位已经完成之后**调用，钩子自己在判定窗口内异步决定
+ * "这个标签是不是撤销恢复出来的"，命中就纠正父关系与物理位置。这样：
+ * - 落位永远是同步的、**永远不产生非法父**（不必等落盘时静默纠偏）；
+ * - 判定所需的依据（Firefox 每标签会话值、标签的真实 URL）在 onCreated 这一刻本来就拿不到，
+ *   异步判定才符合 API 的现实。
+ *
+ * @param {null|((tab: chrome.tabs.Tab, windowId: number) => void)} provider
  */
-export function setRestoreCandidateProvider(provider) {
-  restoreCandidateProvider = typeof provider === "function" ? provider : null;
+export function setUndoDetectProvider(provider) {
+  undoDetectProvider = typeof provider === "function" ? provider : null;
+}
+
+/**
+ * 注册「结构变化后需要刷新每标签会话值」的钩子（只能由 closed_groups.js 调用）。
+ * 用途：落盘前的静默纠偏改写了父关系之后，必须把新的父写回会话值，
+ * 否则过期会话值会在下一次撤销时把错误父重新引回来。
+ *
+ * @param {null|((windowId: number, tabIds: number[]|null) => void)} hook
+ */
+export function setStructureRefsHook(hook) {
+  structureRefsHook = typeof hook === "function" ? hook : null;
+}
+
+/** 触发结构变化钩子（尽力而为，绝不因为钩子报错影响事件链路）。 */
+function noteStructureRefsRefresh(windowId, tabIds) {
+  if (!structureRefsHook) {
+    return;
+  }
+  try {
+    structureRefsHook(windowId, tabIds);
+  } catch (_error) {
+    // 会话值只是一条辅助信息，失败不影响树本身。
+  }
 }
 
 let startupActive = false;
@@ -720,38 +758,6 @@ function attachAsRoot(tree, tabId) {
 // ---------------------------------------------------------------------------
 
 /**
- * 把一次「撤销关闭」认领套用到树上（父关系 + 物理位置）。
- *
- * 前置要求：`tree` 已加载、`claim` 来自 `claimRestoreCandidate`（记录已同步出栈）。
- * 套用前先把标签登记为顶层：`apply()` 是异步的（Firefox 还要读每标签会话值），
- * 这段时间不能让默认规则插手；真正的父标签由 closed_groups.js 套用。
- *
- * @returns {Promise<boolean>} true 表示已按关闭记录处理完（调用方不要再套用默认规则）
- */
-async function applyRestoreClaim(tree, tab, claim, windowId) {
-  const createdId = Number(tab.id);
-  // 走 attachAsRoot 而不是直接写父映射：对齐可能刚好把它挂到 opener 之下，
-  // 直接写会把它的 id 留在那个父的 childIdsById 里（见 attachAsRoot 的说明）。
-  attachAsRoot(tree, createdId);
-  const restoredIndex = Number(tab.index);
-  if (Number.isFinite(restoredIndex)) {
-    shiftIndexesForInsert(tree, restoredIndex);
-    tree.indexById.set(createdId, restoredIndex);
-  }
-  markDirty(windowId);
-  let handled = false;
-  try {
-    handled = await claim.apply();
-  } catch (error) {
-    handled = false;
-  }
-  if (handled) {
-    markDirty(windowId);
-  }
-  return handled;
-}
-
-/**
  * 标签刚创建：确定它的初始父标签。
  * 只有这一刻 openerTabId 参与决策；之后父子关系由本插件自己的树数据决定，不再跟随 opener 变化。
  */
@@ -769,22 +775,18 @@ export async function handleTreeTabCreated(tab) {
   const placement = consumePendingPlacement(windowId);
   const tree = trees.get(windowId);
   if (!tree) {
-    // 树还没加载。这时**不能**直接把创建事件扔掉：如果这个标签其实是「撤销关闭」恢复出来的，
-    // 认领机会只有这一次（关闭记录会被后续匹配消费/过期），等树懒加载时它只会按默认规则
-    // （opener / 活动标签）落位——关闭记录里的原父与原物理位置就白丢了，表现为"撤销后位置不对"。
-    // 因此这里同步认领（出栈），等树装好后再套用父关系与位置。
-    if (!placement) {
-      const earlyClaim = restoreCandidateProvider ? restoreCandidateProvider(tab) : null;
-      if (earlyClaim) {
-        const loaded = await ensureTree(windowId);
-        if (loaded) {
-          await applyRestoreClaim(loaded, tab, earlyClaim, windowId);
-          return;
-        }
+    // 树还没加载。此时不能把创建事件扔掉：
+    // 1) 若它其实是「撤销关闭」恢复出来的，判定机会只有这一次（关闭记录会被消费/过期），
+    //    等树懒加载完，标签只会按默认规则（opener / 活动标签）落位，记录里的原父与原位置就白丢了；
+    // 2) 因此这里把判定**登记**给 closed_groups.js（它自己会 ensureTreeFor 把树装载好再套用），
+    //    同时维持原来的"稍后统一对齐"：判定未命中时由对齐完成默认落位。
+    if (!placement && undoDetectProvider) {
+      try {
+        undoDetectProvider(tab, windowId);
+      } catch (_error) {
+        // 判定只是尽力而为，失败不影响"稍后统一对齐"。
       }
     }
-    // 其余情况推迟到稍后统一对齐，避免一次开很多标签时反复做 O(n) 对齐。
-    // "顶层"由对齐时的 opener 兜底自然满足（该标签没有 opener）。
     noteTreeChangeReason(`新建 #${Number(tab.id)}：内存里没有树 → 推迟到统一对齐（父关系由 opener 兜底）`);
     scheduleEnsureTrees([windowId]);
     return;
@@ -811,27 +813,20 @@ export async function handleTreeTabCreated(tab) {
     markDirty(windowId);
     return;
   }
-  // 撤销关闭恢复：必须**在套用默认规则之前同步认领**，否则新标签会先被挂到 opener / 活动标签下，
-  // 之后再被恢复逻辑改写，用户会看到层级跳动。
-  const restoreClaim = restoreCandidateProvider ? restoreCandidateProvider(tab) : null;
-  if (restoreClaim) {
-    const handled = await applyRestoreClaim(tree, tab, restoreClaim, windowId);
-    if (handled) {
-      return;
-    }
-    // 判定失败（例如用户只是手动打开了同一个 URL）：退回默认规则。
-  }
-  const parentId = await pickParentForNewTab(tree, tab);
-  if (parentId != null) {
-    setParent(tree, Number(tab.id), parentId);
-    noteTreeChangeReason(
-      `新建 #${Number(tab.id)}：挂到 #${parentId}（` +
-        (Number(tab.openerTabId) === Number(parentId) ? "合法 openerTabId" : "创建时刻的活动标签") +
-        `）`
-    );
+  // 浏览器创建的新标签：先做**同步的合法落位**（父必须真实存在且物理排在它之前），
+  // 再把"这是不是一次撤销恢复"交给 closed_groups.js 在判定窗口内异步确认。
+  //
+  // 为什么不能像旧实现那样先同步"认领"撤销记录：识别依据（Firefox 每标签会话值、标签真实 URL）
+  // 在 tabs.onCreated 这一刻都拿不到（Firefox 给的是 about:blank），同步判定必然失败并退回默认规则；
+  // 而默认规则若挂到物理上排在新标签之后的"活动标签"下，就会产生非法父，直到落盘前才被静默纠偏——
+  // 这正是"关闭父标签后撤销，两次得到不同结构、界面还停在旧层级"的成因。
+  const picked = await pickParentForNewTab(tree, tab);
+  if (picked.parentId != null) {
+    setParent(tree, Number(tab.id), picked.parentId);
+    noteTreeChangeReason(`新建 #${Number(tab.id)}：挂到 #${picked.parentId}（${picked.source}）`);
   } else if (!tree.parentById.has(Number(tab.id))) {
     tree.parentById.set(Number(tab.id), null);
-    noteTreeChangeReason(`新建 #${Number(tab.id)}：没有可用父标签（opener 与活动标签都不合法）→ 顶层`);
+    noteTreeChangeReason(`新建 #${Number(tab.id)}：没有可用父标签（${picked.reason}）→ 顶层`);
   }
   const atIndex = Number(tab.index);
   if (Number.isFinite(atIndex)) {
@@ -839,35 +834,91 @@ export async function handleTreeTabCreated(tab) {
     tree.indexById.set(Number(tab.id), atIndex);
   }
   markDirty(windowId);
+  if (undoDetectProvider) {
+    try {
+      undoDetectProvider(tab, windowId);
+    } catch (_error) {
+      // 同"树未加载"分支：判定失败不影响已经完成的落位。
+    }
+  }
 }
 
 /**
- * 为新标签挑选父标签。
+ * 为新标签挑选父标签（同步落位用）。
  * 优先级：合法 opener → 创建时刻的活动标签（对应 TST 的"新标签页命令 open as child"）→ 顶层。
  * 固定标签永远是顶层。
+ *
+ * 「合法」= 父标签在同一窗口的树里、不是自身、不是固定标签，且**物理 index 严格小于新标签**。
+ * 物理顺序这一条必须用**真实下标**判断（`chrome.tabs.get`）：内存里的 `indexById` 是"删除不重编号"
+ * 的近似表，用它判断会把本来合法的 opener 误判成非法（或反过来），而这条判断决定了会不会产生非法父。
+ *
+ * @returns {{parentId: number|null, source: string, reason: string}}
+ *   `source` 供日志说明父是哪来的；`reason` 在没有可用父时说明各候选被拒的原因。
  */
 async function pickParentForNewTab(tree, tab) {
   const tabId = Number(tab.id);
-  if (tab.pinned) {
-    return null;
-  }
-  const openerId = Number(tab.openerTabId);
-  if (Number.isFinite(openerId) && openerId !== tabId && tree.parentById.has(openerId)) {
-    return openerId;
-  }
   const windowId = tree.windowId;
+  if (tab.pinned) {
+    return { parentId: null, source: "", reason: "固定标签一律顶层" };
+  }
+  const childIndex = Number(tab.index);
+  const openerId = Number(tab.openerTabId);
+  const rejected = [];
+
+  if (Number.isFinite(openerId) && openerId !== tabId) {
+    if (!tree.parentById.has(openerId)) {
+      rejected.push(`opener #${openerId} 不在树里`);
+    } else {
+      const ok = await isCandidateParentValid(openerId, childIndex);
+      if (ok) {
+        return { parentId: openerId, source: "合法 openerTabId", reason: "" };
+      }
+      rejected.push(`opener #${openerId} 物理顺序不合法或已固定`);
+    }
+  } else {
+    rejected.push("没有 openerTabId");
+  }
+
   let activeId = activeTabByWindow.has(windowId) ? activeTabByWindow.get(windowId) : undefined;
   if (activeId === undefined) {
-    const active = await new Promise((resolve) => {
-      chrome.tabs.query({ windowId, active: true }, (tabs) => resolve(tabs && tabs[0] ? tabs[0].id : null));
+    activeId = await new Promise((resolve) => {
+      chrome.tabs.query({ windowId, active: true }, (list) => resolve(list && list[0] ? list[0].id : null));
     });
-    activeId = active;
-    activeTabByWindow.set(windowId, active);
+    activeTabByWindow.set(windowId, activeId);
   }
-  if (Number.isFinite(activeId) && activeId !== tabId && tree.parentById.has(activeId)) {
-    return activeId;
+  const activeNumeric = Number(activeId);
+  if (!Number.isFinite(activeNumeric) || activeNumeric === tabId) {
+    rejected.push("活动标签不可用");
+  } else if (!tree.parentById.has(activeNumeric)) {
+    rejected.push(`活动标签 #${activeNumeric} 不在树里`);
+  } else if (await isCandidateParentValid(activeNumeric, childIndex)) {
+    return { parentId: activeNumeric, source: "创建时刻的活动标签", reason: "" };
+  } else {
+    rejected.push(`活动标签 #${activeNumeric} 物理顺序不合法或已固定`);
   }
-  return null;
+  return { parentId: null, source: "", reason: rejected.join("；") || "无候选" };
+}
+
+/**
+ * 候选父是否可作为新标签的父：读**真实**标签信息，要求它存在、非固定、且 index 小于新标签。
+ * 读不到真实下标（极少数场景）时不否决，保持旧行为（宁可挂上也不要凭空丢层级）。
+ */
+async function isCandidateParentValid(parentId, childIndex) {
+  const parent = await getTabById(parentId);
+  if (!parent) {
+    return false;
+  }
+  if (parent.pinned) {
+    return false;
+  }
+  if (!Number.isFinite(childIndex)) {
+    return true;
+  }
+  const parentIndex = Number(parent.index);
+  if (!Number.isFinite(parentIndex)) {
+    return true;
+  }
+  return parentIndex < childIndex;
 }
 
 /**
@@ -1175,12 +1226,72 @@ export function handleTreeSuspend() {
 }
 
 // ---------------------------------------------------------------------------
+// 结构变更推送（界面必须始终等于后台真实结构）
+// ---------------------------------------------------------------------------
+
+/** 该窗口当前的结构版本号（供 getTreeStructure 返回给前端）。 */
+export function getTreeRevision(windowId) {
+  return treeRevisionByWindow.get(Number(windowId)) || 0;
+}
+
+/** 本次后台实例的版本号令牌（见 treeRevisionToken 的说明）。 */
+export function getTreeRevisionToken() {
+  return treeRevisionToken;
+}
+
+/** 结构变化：自增版本号并安排一次（合并后的）通知。 */
+function noteTreeStructureChanged(windowId) {
+  const winId = Number(windowId);
+  if (!Number.isFinite(winId)) {
+    return;
+  }
+  treeRevisionByWindow.set(winId, (treeRevisionByWindow.get(winId) || 0) + 1);
+  scheduleTreePush(winId);
+}
+
+/**
+ * 合并通知：同一窗口 200ms 内的连续变化只发一次。
+ *
+ * 为什么必须通知而不是只靠 tabs 事件：落盘前的不变量纠偏（把非法父改回顶层）不产生任何 tabs 事件，
+ * 前端只靠事件驱动的拉取会一直显示纠偏前的旧结构，用户必须 Reload 扩展才能对齐。
+ */
+function scheduleTreePush(windowId) {
+  if (pushTimers.has(windowId)) {
+    return;
+  }
+  pushTimers.set(
+    windowId,
+    setTimeout(() => {
+      pushTimers.delete(windowId);
+      pushTreeStructureChanged(windowId);
+    }, TREE_PUSH_THROTTLE_MS)
+  );
+}
+
+/** 立刻发布一次版本号（不合并）；前端监听 `storage.session` 的该键变化后重拉父子映射。 */
+function pushTreeStructureChanged(windowId) {
+  if (!HAS_SESSION_STORAGE) {
+    // 没有会话存储（极老的环境）：退回"只靠 tabs 事件刷新"，不会因此破坏任何现有行为。
+    return;
+  }
+  const revisions = {};
+  for (const [id, revision] of treeRevisionByWindow) {
+    revisions[id] = revision;
+  }
+  // 写失败无补救价值：前端还有 tabs 事件、页面挂载与重新可见三条拉取路径。
+  Promise.resolve(
+    storageSessionSet({ [TREE_REVISION_KEY]: { token: treeRevisionToken, revisions } })
+  ).catch(() => {});
+}
+
+// ---------------------------------------------------------------------------
 // 落盘
 // ---------------------------------------------------------------------------
 
 function markDirty(windowId) {
   dirtyWindows.add(windowId);
   changesSinceFlush += 1;
+  noteTreeStructureChanged(windowId);
   scheduleFlush();
 }
 
@@ -1275,16 +1386,27 @@ async function flushDirtyWindows() {
           `[落盘前的不变量修正] 窗口 ${windowId} 共 ${flushRepairs.length} 条`,
           flushRepairs.map((item) => `#${item.tabId}：父 ${item.from ?? "顶层"} → ${item.to ?? "顶层"}（${item.reason}）`)
         );
+        // 静默纠偏改写了结构：必须让前端知道（否则界面停在纠偏前的旧层级），
+        // 并把新父写回每标签会话值（否则过期会话值会在下一次撤销时把错误父引回来）。
+        noteTreeStructureChanged(windowId);
+        noteStructureRefsRefresh(
+          windowId,
+          flushRepairs.map((item) => Number(item.tabId)).filter(Number.isFinite)
+        );
       }
       if (!result.payload) {
         logFlow(`落盘窗口 ${windowId}：跳过（快照超出上限，${result.bytes} 字节）`);
         console.warn(`树结构快照超出存储上限，已跳过写入：窗口 ${windowId}`);
+        // 落盘失败也要推送：内存树已经变了，界面必须跟上。
+        pushTreeStructureChanged(windowId);
         continue;
       }
       await storageSet({ [`${TREE_KEY_PREFIX}${windowId}`]: result.payload });
       logFlow(
         `落盘窗口 ${windowId}：写入 ${tabs.length} 项（${result.bytes} 字节${result.degraded ? "，已去掉标题" : ""}）`
       );
+      // 兜底推送：合并推送的定时器可能因为后台被回收而丢失，落盘是可靠的时间点。
+      pushTreeStructureChanged(windowId);
       index[windowId] = Date.now();
       indexChanged = true;
     }
@@ -1341,7 +1463,11 @@ export async function getTreeStructure(windowIds = null) {
   for (const windowId of ids) {
     const tree = await ensureTree(windowId);
     if (tree) {
-      structures[windowId] = { parents: toParentsPayload(tree) };
+      structures[windowId] = {
+        parents: toParentsPayload(tree),
+        revision: getTreeRevision(windowId),
+        revisionToken: treeRevisionToken,
+      };
     }
   }
   return { structures };
@@ -1708,6 +1834,86 @@ export function applyRestoredParent(windowId, tabId, parentId, options = {}) {
   );
   markDirty(windowId);
   return true;
+}
+
+/**
+ * 撤销恢复父标签时，把「被提升出去、且仍停在提升结果位置」的直属子标签重新挂回它下面。
+ *
+ * 场景：A - B - C，关闭 A 时 B 被提升为顶层（C 跟着 B）；原生 Ctrl+Shift+T 只恢复 A 一个标签，
+ * 若不重挂就会得到 `A / B-C` 而不是 `A - B-C`。
+ *
+ * 只处理"登记过、仍存活、且当前父恰好等于提升结果"的子标签——用户后来手动改过父或把它拖走的，
+ * 一律保留用户意图（不覆盖）。所有校验与 `applyRestoredParent` 同一口径（存在 / 非自身后代 / 物理在子前）。
+ *
+ * 副作用：只改父子关系，**不移动物理位置**（插件只为用户显式操作移动标签栏）。
+ *
+ * @param {number} windowId
+ * @param {number} parentId 被恢复的父标签
+ * @param {Array<{tabId: number, parentId: number|null}>} expectations 关闭时记录的"子标签 → 提升后父"
+ * @param {{indexMap?: Map<number, number>}} options indexMap 由 refreshTreeIndexes() 提供的实时下标
+ * @returns {{readopted: number[], skipped: Array<{tabId: number, reason: string}>}}
+ */
+export function readoptPromotedChildren(windowId, parentId, expectations, options = {}) {
+  const tree = trees.get(Number(windowId));
+  const winId = Number(windowId);
+  const parent = Number(parentId);
+  const readopted = [];
+  const skipped = [];
+  if (!tree || !Number.isFinite(winId) || !Number.isFinite(parent) || !Array.isArray(expectations)) {
+    return { readopted, skipped };
+  }
+  if (!tree.parentById.has(parent)) {
+    return { readopted, skipped };
+  }
+  const indexOf = (targetId) => {
+    const map = options.indexMap;
+    if (map && map.has(targetId)) {
+      return map.get(targetId);
+    }
+    return tree.indexById.get(targetId) ?? -1;
+  };
+  for (const item of expectations) {
+    const childId = Number(item && item.tabId);
+    if (!Number.isFinite(childId)) {
+      continue;
+    }
+    if (!tree.parentById.has(childId)) {
+      // 已经被一并关闭、或已不在本窗口：原生撤销只恢复一个标签，插件不会去把它重开。
+      skipped.push({ tabId: childId, reason: "子标签已不在树里" });
+      continue;
+    }
+    const currentParent = tree.parentById.get(childId) ?? null;
+    const expectedParent = item.parentId === null || item.parentId === undefined ? null : Number(item.parentId);
+    if (currentParent !== expectedParent) {
+      skipped.push({ tabId: childId, reason: "父关系已被改动，保留现状" });
+      continue;
+    }
+    if (childId === parent) {
+      continue;
+    }
+    if (isDescendantOf(tree, childId, parent)) {
+      skipped.push({ tabId: childId, reason: "会成环" });
+      continue;
+    }
+    if (indexOf(parent) < 0 || indexOf(childId) < 0 || indexOf(parent) >= indexOf(childId)) {
+      skipped.push({ tabId: childId, reason: "物理顺序不合法（父排在子之后）" });
+      continue;
+    }
+    setParent(tree, childId, parent);
+    readopted.push(childId);
+  }
+  if (readopted.length > 0) {
+    noteTreeChangeReason(
+      `重挂被提升的子标签 → #${parent}：${readopted.map((id) => `#${id}`).join("，")}` +
+        (skipped.length > 0 ? `｜跳过：${skipped.map((item) => `#${item.tabId}（${item.reason}）`).join("，")}` : "")
+    );
+    markDirty(winId);
+  } else if (skipped.length > 0) {
+    noteTreeChangeReason(
+      `重挂被提升的子标签 → #${parent}：全部跳过（${skipped.map((item) => `#${item.tabId}：${item.reason}`).join("；")}）`
+    );
+  }
+  return { readopted, skipped };
 }
 
 /**

@@ -19,6 +19,8 @@ import {
 
 const MODE_STORAGE_KEY = "treeViewMode";
 const COLLAPSED_STORAGE_KEY = "treeCollapsed";
+// 后台写入的树结构版本号（storage.session）：`{ [windowId]: revision }`。
+const REVISION_STORAGE_KEY = "treeStructureRevision";
 const MODE_TREE = "tree";
 const MODE_FLAT = "flat";
 // 折叠切换的写入防抖：连点折叠时只在停下来后写一次。
@@ -28,11 +30,19 @@ function useTree() {
   const mode = ref(true);
   // windowId -> { [childId]: parentId }，只包含"有父标签"的条目，缺省即顶层。
   const parentsByWindow = reactive({});
+  // windowId -> 已应用的结构版本号。后台每次结构变化都会自增该值（并推送变更通知），
+  // 这里记下来用于丢弃"慢请求先发后到"的旧结果——否则界面可能被旧结构覆盖，
+  // 出现"后台已经改了、界面还显示旧层级"。
+  const revisionByWindow = reactive({});
+  // 版本号令牌：后台实例重启后版本号会从头开始，此时不能与本地已知值比较（见下面的 loadForWindows）。
+  let knownRevisionToken = "";
   // windowId -> { [tabId]: true }，折叠的子树根。
   const collapsedByWindow = reactive({});
   const status = reactive({ message: "", type: "" });
 
   let collapsedSaveTimer = null;
+  // 订阅"后台结构变了"的回调（管理页 / 侧边栏各自的刷新队列）。
+  const structureListeners = new Set();
 
   function setStatus(message, type) {
     status.message = message || "";
@@ -60,13 +70,25 @@ function useTree() {
    * 折叠状态放在 storage.session，管理页与 Firefox 侧边栏会用同一份记录，
    * 两边同时打开时需要互相跟随，因此这里监听远端变更。
    * 自己写入的内容也会回流到这里，比较签名后跳过，避免无意义的重新渲染。
+   *
+   * 同一个监听器还负责**结构变更通知**（`treeStructureRevision`）：后台每次改结构（含落盘前的
+   * 静默纠偏——它不产生任何 tabs 事件）都会自增该键，前端据此重拉父子映射。
+   * 这是"界面看到的必须等于后台真实结构"的兜底通道：只靠 tabs 事件会出现
+   * "后台已经纠偏、界面还显示旧层级，必须 Reload 扩展才对齐"。
    */
-  function watchCollapsedChanges() {
+  function watchSessionChanges() {
     if (!HAS_SESSION_STORAGE || typeof chrome.storage.onChanged === "undefined") {
       return;
     }
     chrome.storage.onChanged.addListener((changes, area) => {
-      if (area !== "session" || !changes[COLLAPSED_STORAGE_KEY]) {
+      if (area !== "session") {
+        return;
+      }
+      if (changes[REVISION_STORAGE_KEY]) {
+        const incoming = changes[REVISION_STORAGE_KEY].newValue;
+        notifyStructureChanged(incoming);
+      }
+      if (!changes[COLLAPSED_STORAGE_KEY]) {
         return;
       }
       const incoming = changes[COLLAPSED_STORAGE_KEY].newValue;
@@ -75,6 +97,70 @@ function useTree() {
       }
       applyCollapsed(incoming);
     });
+  }
+
+  /**
+   * 通知订阅者"后台结构变了"。
+   *
+   * @param {object} raw `{ token, revisions: { [windowId]: revision } }`
+   *   `token` 是后台实例的版本号令牌：与本地已知值不同时说明后台重启过（版本号不可比较），
+   *   此时按"变化未知"通知一次全量刷新。
+   */
+  function notifyStructureChanged(raw) {
+    if (structureListeners.size === 0) {
+      return;
+    }
+    const payload = raw && typeof raw === "object" ? raw : {};
+    const incomingToken = String(payload.token || "");
+    const sameInstance = incomingToken !== "" && incomingToken === knownRevisionToken;
+    const revisions = payload.revisions && typeof payload.revisions === "object" ? payload.revisions : null;
+    if (!revisions) {
+      return;
+    }
+    const windowIds = [];
+    for (const [windowId, revision] of Object.entries(revisions)) {
+      const id = Number(windowId);
+      const value = Number(revision);
+      if (!Number.isFinite(id) || !Number.isFinite(value)) {
+        continue;
+      }
+      // 同一实例内只通知"版本号确实前进了"的窗口，避免重复写入造成多余刷新。
+      if (sameInstance && value === Number(revisionByWindow[windowId] || 0)) {
+        continue;
+      }
+      windowIds.push(id);
+    }
+    // 后台重启过：版本号不可比较，按"变化未知"处理（空列表 = 让订阅方做一次全量刷新）。
+    const changed = sameInstance ? windowIds : [];
+    if (incomingToken) {
+      knownRevisionToken = incomingToken;
+    }
+    if (sameInstance && changed.length === 0) {
+      return;
+    }
+    for (const listener of [...structureListeners]) {
+      try {
+        listener(changed);
+      } catch (error) {
+        console.warn(
+          "树结构变更回调失败：",
+          String(error && error.message ? error.message : error)
+        );
+      }
+    }
+  }
+
+  /**
+   * 订阅"后台树结构发生变化"。
+   * @param {(windowIds: number[]) => void} listener
+   * @returns {() => void} 取消订阅
+   */
+  function onStructureChanged(listener) {
+    if (typeof listener !== "function") {
+      return () => {};
+    }
+    structureListeners.add(listener);
+    return () => structureListeners.delete(listener);
   }
 
   function applyCollapsed(raw) {
@@ -101,6 +187,9 @@ function useTree() {
   /**
    * 拉取指定窗口的父子映射。
    * 不传 windowIds 时后台会返回全部窗口；管理页通常传当前实际展示的窗口，避免做无用的对齐。
+   *
+   * 结果自带 `revision`（该窗口内存树的版本号）：比本地已知值更旧的结果直接丢弃，
+   * 避免并发的两次拉取里"慢的那次后到"把新结构覆盖回旧结构。
    */
   async function loadForWindows(windowIds) {
     const payload = Array.isArray(windowIds) && windowIds.length > 0 ? { windowIds } : {};
@@ -110,7 +199,21 @@ function useTree() {
       return false;
     }
     for (const [windowId, data] of Object.entries(response.structures || {})) {
+      const incomingRevision = Number(data && data.revision);
+      const incomingToken = String((data && data.revisionToken) || "");
+      // 只有"同一个后台实例"的版本号之间才能比较大小；令牌不同（后台重启过）时无条件接受。
+      const sameInstance = incomingToken !== "" && incomingToken === knownRevisionToken;
+      const knownRevision = Number(revisionByWindow[windowId] || 0);
+      if (sameInstance && Number.isFinite(incomingRevision) && incomingRevision < knownRevision) {
+        continue;
+      }
       parentsByWindow[windowId] = (data && data.parents) || {};
+      if (Number.isFinite(incomingRevision)) {
+        revisionByWindow[windowId] = incomingRevision;
+      }
+      if (incomingToken) {
+        knownRevisionToken = incomingToken;
+      }
     }
     setStatus("", "");
     return true;
@@ -217,8 +320,9 @@ function useTree() {
     }
   }
 
-  // 组装阶段就挂上远端变更监听：管理页与侧边栏谁先改动，另一边都能跟上。
-  watchCollapsedChanges();
+  // 组装阶段就挂上远端变更监听：管理页与侧边栏谁先改动，另一边都能跟上；
+  // 同一个监听器也承担"后台结构变更 → 前端重拉"的通知通道。
+  watchSessionChanges();
 
   return {
     mode,
@@ -227,6 +331,7 @@ function useTree() {
     loadCollapsed,
     setMode,
     loadForWindows,
+    onStructureChanged,
     parentsFor,
     isCollapsed,
     collapsedSetFor,
