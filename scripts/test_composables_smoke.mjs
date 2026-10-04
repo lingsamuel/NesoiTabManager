@@ -119,7 +119,7 @@ async function main() {
   tree.setMode(false);
   assertEqual(sentMessages.length >= 0, true, "setMode 未抛错");
   const loaded = await tree.loadForWindows([1]);
-  assert(Boolean(loaded), "loadForWindows 正常返回");
+  assertEqual(loaded, false, "loadForWindows 不抛错，但缺少所需窗口结构时不得宣告已对齐");
   // 没有折叠项时约定返回 null（渲染侧按"没有折叠"处理），有折叠项时返回 Set
   assertEqual(tree.collapsedSetFor(1), null, "没有折叠项时 collapsedSetFor 返回 null");
 

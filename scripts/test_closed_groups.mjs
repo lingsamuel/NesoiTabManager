@@ -462,10 +462,12 @@ async function main() {
     closed.handleTabStructureChanged(tab.windowId, [tab.id]);
   });
   chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
-    closed.handleClosedTabRecorded(tabId, removeInfo);
-    closed.handlePromotionAfterClose(tabId, removeInfo.windowId);
+    const recordClosed = closed.prepareClosedTabRecord(tabId, removeInfo);
     recent.handleRecentTabRemoved(tabId);
-    tree.handleTreeTabRemoved(tabId, removeInfo);
+    tree.handleTreeTabRemoved(tabId, removeInfo, () => {
+      recordClosed();
+      closed.handlePromotionAfterClose(tabId, removeInfo.windowId);
+    });
   });
 
   // 先把窗口 1 的树加载出来：真实的浏览器里用户已经操作过，树的懒加载早就完成。
@@ -807,6 +809,11 @@ async function main() {
   const b8 = addTab({ windowId: 8, url: "https://b8.example/", openerTabId: p8.id, title: "B8" });
   // X 由 B 打开（opener=B8）、URL 与刚关闭的记录相同；先加进列表，再让树对齐把它挂到 B8 下
   const x8 = addTab({ windowId: 8, url: claimUrl, openerTabId: b8.id, title: "X8" });
+  // 冷创建现在会立即恢复树，不能再假设此前创建/关闭后窗口仍无缓存。
+  // 暂停撤销识别，先登记 opener 关系；随后重新派发创建来覆盖“已跟踪标签被认领”的回归。
+  tree.setUndoDetectProvider(null);
+  for (const tab of [p8, b8, x8]) await tree.handleTreeTabCreated({ ...tab });
+  await closed.initializeClosedGroups();
   let parents8 = parentsOf(await tree.getTreeStructure([8]), 8);
   assertEqual(parents8[x8.id], b8.id, "前置：X 由对齐按 opener 临时挂到 B8 下");
   // 创建事件随后到达：URL 命中关闭记录 → 走撤销认领路径（先按顶层登记）
@@ -1114,6 +1121,23 @@ async function main() {
   );
 
   console.log("");
+  console.log("场景 22：冷关闭等待快照后记录原父，同时保留已清理的标签内容");
+  windows.push({ id: 24 });
+  const a24 = addTab({ windowId: 24, url: "https://a24.example/", title: "A24" });
+  const b24 = addTab({ windowId: 24, url: "https://b24.example/", title: "B24", openerTabId: a24.id });
+  const c24 = addTab({ windowId: 24, url: "https://c24.example/", title: "C24", openerTabId: b24.id });
+  const { encodeSnapshot, createTreeStateFromParents } = await import('../background/tree_core.js');
+  storageData.local['treeStructure:24'] = encodeSnapshot([a24, b24, c24],
+    createTreeStateFromParents(new Map([[a24.id,null],[b24.id,a24.id],[c24.id,b24.id]])),
+    { sessionToken: storageData.session.treeSessionToken }).payload;
+  for (const tab of [a24, b24, c24]) recent.handleRecentTabCreated(tab);
+  await closeTabs([b24.id]);
+  const record24 = storageData.session.closedTabLog.find(record => record.tabId === b24.id);
+  assertEqual(record24.parentId, a24.id, '22：冷恢复后采集到原父');
+  assertEqual(record24.url, 'https://b24.example/', '22：缓存清理不会丢失关闭内容');
+  assertEqual(record24.promotedChildren[0]?.tabId, c24.id, '22：记录原直属子标签');
+  assertEqual(record24.promotedChildren[0]?.parentId, a24.id, '22：微任务读到提升后的父');
+
   console.log(`共 ${checks} 项断言，失败 ${failures} 项`);
   if (failures > 0) {
     process.exitCode = 1;

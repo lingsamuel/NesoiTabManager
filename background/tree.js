@@ -9,7 +9,7 @@
 // 三条硬性约束（对应需求）：
 // 1. 面向 10K 级标签页：不维护"整窗顺序数组"，不在每次事件做 O(n) 重排；
 //    关闭叶子只维护下标；关闭有后代的标签才计算局部定位，必要时移动后代块，
-//    且启动恢复期会整体跳过；
+//    启动恢复期等待标签列表稳定后再处理；
 // 2. 持久化但控制写入量：结构变化只改内存并置脏，空闲若干秒后只覆盖"变化的窗口"；
 // 3. 不拖慢浏览器初始化：启动/会话恢复期进入静默期，不加载快照、不对齐、不写盘。
 
@@ -114,10 +114,10 @@ const TREE_PUSH_THROTTLE_MS = 200;
 const trees = new Map();
 // 正在加载中的窗口，避免同一窗口被并发重复对齐。
 const loadingTrees = new Map();
-// 启动静默期内观察到结构变化的窗口，静默期结束后统一重建。
-const pendingWindows = new Set();
-// 等待延迟加载的窗口（把短时间内的多次创建合并成一次 O(n) 对齐）。
-const pendingWindowsForEnsure = [];
+// 只记录在途恢复和事件；读请求等待事件落位，不能把已经发布的临时缓存当成最终树。
+const treeLoadContexts = new Map();
+const pendingTreeEvents = new Map();
+const pendingRemovalIds = new Map();
 // 需要落盘的窗口。
 const dirtyWindows = new Set();
 // windowId -> 最近一次活动标签，用于"无 opener 的新标签挂到当前标签下"。
@@ -127,6 +127,9 @@ const internalMoveIds = new Set();
 // tabId -> { fromWindowId, parents: Map<tabId, parentId|null> }
 // 跨窗口迁移时，Chrome 只会移动被拖的那一个标签，子树需要我们自己搬，父子关系也要自己保留。
 const migratingSubtrees = new Map();
+// detach/attach 是两个独立事件；冷恢复时目标窗口必须等待源窗口采集完子树。
+const detachingTabs = new Map();
+const pendingDepartures = new Set();
 // treeStructureWindows 索引的内存副本。
 let indexCache = null;
 // windowId -> 该窗口内存树的版本号。每次结构变化自增，随通知与 getTreeStructure 一起发给前端，
@@ -195,9 +198,10 @@ function noteStructureRefsRefresh(windowId, tabIds) {
 }
 
 let startupActive = false;
+let startupReady = null;
+let resolveStartupReady = null;
 let startupQuietTimer = null;
 let startupMaxTimer = null;
-let ensureTimer = null;
 let flushTimer = null;
 let flushAlarmActive = false;
 let changesSinceFlush = 0;
@@ -270,7 +274,7 @@ export function endTreeCloseDebug(token = activeCloseDebug, details = {}) {
  *
  * @param {{forceStartup?: boolean}} options forceStartup 为 true 表示"浏览器刚启动/刚安装"，
  *   此时进入启动静默期：会话恢复期间会产生上万次 tabs 事件，若逐个处理会退化成 O(n²) 并对磁盘
- *   产生大量写入。静默期内只记录"哪些窗口变了"，等恢复结束再统一重建一次。
+ *   产生大量写入。依赖方等静默期结束后共享一次恢复，再衔接已观测到的结构事件。
  */
 export function initializeTreeSystem(options = {}) {
   if (options.forceStartup) {
@@ -280,6 +284,7 @@ export function initializeTreeSystem(options = {}) {
 
 /** 浏览器启动/安装：进入启动静默期。 */
 function enterStartupPhase() {
+  if (!startupReady) startupReady = new Promise(resolve => { resolveStartupReady = resolve; });
   startupActive = true;
   recentStructuralEvents = [];
   if (startupQuietTimer) {
@@ -495,6 +500,10 @@ function noteStructuralEvent() {
 
 function finishStartupPhase() {
   startupActive = false;
+  const resolve = resolveStartupReady;
+  startupReady = null;
+  resolveStartupReady = null;
+  resolve?.();
   recentStructuralEvents = [];
   if (startupQuietTimer) {
     clearTimeout(startupQuietTimer);
@@ -503,11 +512,6 @@ function finishStartupPhase() {
   if (startupMaxTimer) {
     clearTimeout(startupMaxTimer);
     startupMaxTimer = null;
-  }
-  const windowIds = [...pendingWindows];
-  pendingWindows.clear();
-  if (windowIds.length > 0) {
-    scheduleEnsureTrees(windowIds);
   }
 }
 
@@ -520,23 +524,69 @@ function finishStartupPhase() {
  * 使用场景：管理页请求树数据、任一需要知道父子关系的事件。
  */
 async function ensureTree(windowId) {
-  const cached = trees.get(windowId);
-  if (cached) {
-    return cached;
+  const tree = await loadTreeOnce(windowId);
+  if (!tree) return null;
+  // 等待期间还可能到达下一批事件，必须跟到当前窗口的队尾。
+  while (pendingTreeEvents.has(windowId)) {
+    await pendingTreeEvents.get(windowId);
   }
+  return trees.get(windowId) === tree ? tree : null;
+}
+
+/** 加载内部入口：事件本身不能等待包含自己的事件队列。 */
+function loadTreeOnce(windowId) {
   if (loadingTrees.has(windowId)) {
     return loadingTrees.get(windowId);
   }
-  const promise = loadTree(windowId)
+  const cached = trees.get(windowId);
+  if (cached && !startupActive) return Promise.resolve(cached);
+  const context = { cancelled: false };
+  treeLoadContexts.set(windowId, context);
+  // 静默期也登记取消上下文，避免期间关闭的窗口在静默结束后重新开始加载。
+  const loading = startupActive
+    ? startupReady.then(() => context.cancelled ? null : trees.get(windowId) || loadTree(windowId, context))
+    : loadTree(windowId, context);
+  const promise = loading
     .catch((error) => {
-      console.warn("树结构加载失败：", String(error && error.message ? error.message : error));
-      return null;
+      if (context.cancelled) return null;
+      trees.delete(windowId);
+      recordTreeDiagnostic({ type: 'tree-load-failed', windowId, reason: String(error?.message || error) });
+      throw error;
     })
     .finally(() => {
-      loadingTrees.delete(windowId);
+      if (treeLoadContexts.get(windowId) === context) {
+        loadingTrees.delete(windowId);
+        treeLoadContexts.delete(windowId);
+      }
     });
   loadingTrees.set(windowId, promise);
   return promise;
+}
+
+/**
+ * 冷事件共用一次恢复并依序继续；热缓存的同步动作仍当场执行，保留关闭现场采集约定。
+ * 等待恢复的失败向调用方传递，内部观察 rejection 只用于防止浏览器事件忽略返回值时失控。
+ */
+function withReadyTree(windowId, apply) {
+  const cached = trees.get(windowId);
+  const previous = pendingTreeEvents.get(windowId);
+  let result;
+  if (cached && !startupActive && !loadingTrees.has(windowId) && !previous) {
+    result = apply(cached);
+    if (!result || typeof result.then !== 'function') return result;
+  } else {
+    const loading = loadTreeOnce(windowId);
+    result = Promise.all([loading, previous]).then(([tree]) => {
+      if (!tree || trees.get(windowId) !== tree) return;
+      return apply(tree);
+    });
+  }
+  const pending = Promise.resolve(result).finally(() => {
+    if (pendingTreeEvents.get(windowId) === pending) pendingTreeEvents.delete(windowId);
+  });
+  pendingTreeEvents.set(windowId, pending);
+  pending.catch(error => recordTreeDiagnostic({ type: 'tree-event-failed', windowId, reason: String(error?.message || error) }));
+  return pending;
 }
 
 // 会话令牌的内存缓存：同一次 SW 生命周期里只读/写一次 storage.session。
@@ -571,12 +621,23 @@ function getTreeSessionToken() {
   return sessionTokenPromise;
 }
 
-async function loadTree(windowId) {
-  const [tabs, snapshot, sessionToken] = await Promise.all([
+async function loadTree(windowId, context) {
+  let [tabs, snapshot, sessionToken] = await Promise.all([
     queryWindowTabs(windowId),
-    storageGet(`${TREE_KEY_PREFIX}${windowId}`),
+    storageGet(`${TREE_KEY_PREFIX}${windowId}`, { strict: true }),
     getTreeSessionToken(),
   ]);
+  if (context.cancelled) return null;
+  tabs = includePendingRemovalTabs(tabs, snapshot, sessionToken, pendingRemovalIds.get(windowId), windowId);
+  // detach 到达时浏览器已把根移出源窗口，但它不是关闭。临时放回事件给出的原位置，
+  // 让既有快照对齐保留子树；队列中的 detach 随后会立即摘除它，读请求不会看到此中间态。
+  for (const departure of pendingDepartures) {
+    const id = departure.id;
+    if (departure.windowId !== windowId || tabs.some(tab => Number(tab.id) === id)) continue;
+    const tab = await departure.tab;
+    if (tab) tabs.splice(Math.max(0, Math.min(departure.position, tabs.length)), 0, { ...tab, windowId });
+  }
+  if (context.cancelled) return null;
   const snapshotItems = snapshot && Array.isArray(snapshot.items) ? snapshot.items : [];
   const sidMatches = Boolean(sessionToken) && Boolean(snapshot) && snapshot.sid === sessionToken;
   // 调试：重建来源是排查"层级为何变化"的第一现场，必须说清用了哪条身份依据。
@@ -599,6 +660,7 @@ async function loadTree(windowId) {
     closeOrders.enqueue(windowId, plan);
   }
   await closeOrders.wait(windowId);
+  if (context.cancelled) return null;
   observeTreeDiagnostics(windowId, { type: "load", phase: "complete" });
   logFlow(
     `重建窗口 ${windowId}：标签 ${tabs.length}，` +
@@ -616,6 +678,34 @@ async function loadTree(windowId) {
     markDirty(windowId);
   }
   return state;
+}
+
+/**
+ * 已观测到的关闭要按事件队列执行，不能先在快照对齐中当作未知缺失消去。
+ * 只在同会话且 ID 精确匹配时临时补回快照项；由后继锚点合并，避免逐项插入的平方复杂度。
+ */
+function includePendingRemovalTabs(tabs, snapshot, sessionToken, removedIds, windowId) {
+  if (!removedIds?.size || !sessionToken || snapshot?.sid !== sessionToken) return tabs;
+  const items = snapshot.items || [];
+  const existing = new Set(tabs.map(tab => Number(tab.id)));
+  const before = new Map();
+  let nextId = null;
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    const item = items[i];
+    if (existing.has(item.i)) { nextId = item.i; continue; }
+    if (!Number.isInteger(item.i) || !removedIds.has(item.i)) continue;
+    if (!before.has(nextId)) before.set(nextId, []);
+    before.get(nextId).push({ id: item.i, windowId, url: item.u || '', title: item.t || '', pinned: false });
+  }
+  const result = [];
+  for (const tab of tabs) {
+    const insert = before.get(Number(tab.id));
+    if (insert) result.push(...insert.reverse());
+    result.push(tab);
+  }
+  const tail = before.get(null);
+  if (tail) result.push(...tail.reverse());
+  return result;
 }
 
 /** 用一次实际的标签序列重建下标表。 */
@@ -712,28 +802,12 @@ function sortChildrenByIndex(tree, parentId) {
   return children;
 }
 
-/** 延迟批量加载：避免一次创建几十个标签时反复触发对齐。 */
-function scheduleEnsureTrees(windowIds) {
-  pendingWindowsForEnsure.push(...windowIds);
-  if (ensureTimer) {
-    clearTimeout(ensureTimer);
-  }
-  ensureTimer = setTimeout(async () => {
-    ensureTimer = null;
-    const unique = [...new Set(pendingWindowsForEnsure)];
-    pendingWindowsForEnsure.length = 0;
-    for (const windowId of unique) {
-      await ensureTree(windowId);
-    }
-  }, 500);
-}
-
 function forgetWindow(windowId) {
+  const context = treeLoadContexts.get(windowId);
+  if (context) context.cancelled = true;
   closeOrders.forget(windowId);
   forgetTreeDiagnostics(windowId);
   trees.delete(windowId);
-  loadingTrees.delete(windowId);
-  pendingWindows.delete(windowId);
   dirtyWindows.delete(windowId);
   activeTabByWindow.delete(windowId);
 }
@@ -741,8 +815,12 @@ function forgetWindow(windowId) {
 /** 读取窗口内所有标签并按 index 升序排列。 */
 function queryWindowTabs(windowId) {
   const queryEpoch = treeDiagnosticEpoch(windowId);
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     chrome.tabs.query({ windowId }, (tabs) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message || '读取窗口标签失败'));
+        return;
+      }
       const list = Array.isArray(tabs) ? tabs.slice() : [];
       list.sort((a, b) => (a.index || 0) - (b.index || 0));
       observeTreePhysicalTabs(windowId, list, queryEpoch);
@@ -753,6 +831,12 @@ function queryWindowTabs(windowId) {
 
 /** 关闭定位查询期间若发生新结构事件，旧列表不得覆盖当前下标表。 */
 async function queryCloseOrderTabs(windowId) {
+  // 同一轮冷恢复的关闭先按事件顺序继承，再开始查询/移动。
+  // 否则浏览器已经关闭的后续父项会被提前从下标表抹掉，改变后续“第一子项”的选择。
+  // loadTree 自身的快照定位属于恢复阶段，不能反过来等待依赖它完成的事件。
+  if (!loadingTrees.has(windowId)) {
+    while (pendingTreeEvents.has(windowId)) await pendingTreeEvents.get(windowId);
+  }
   while (true) {
     const revision = getTreeRevision(windowId);
     const tabs = await queryWindowTabs(windowId);
@@ -826,30 +910,28 @@ async function handleTreeTabCreatedImpl(tab) {
   }
   const windowId = Number(tab.windowId);
   noteStructuralEvent();
-  if (startupActive) {
-    pendingWindows.add(windowId);
-    return;
-  }
-  // 先消费标记：即便这一轮因为树未加载而提前返回，标记也不会泄漏到后续的创建事件上。
+  const restoring = startupActive;
+  // 在任何 await 之前消费插件落位标记并保留创建时的活动标签，不能用恢复后的激活状态。
   const placement = consumePendingPlacement(windowId);
-  const tree = trees.get(windowId);
-  if (!tree) {
-    // 树还没加载。此时不能把创建事件扔掉：
-    // 1) 若它其实是「撤销关闭」恢复出来的，判定机会只有这一次（关闭记录会被消费/过期），
-    //    等树懒加载完，标签只会按默认规则（opener / 活动标签）落位，记录里的原父与原位置就白丢了；
-    // 2) 因此这里把判定**登记**给 closed_groups.js（它自己会 ensureTreeFor 把树装载好再套用），
-    //    同时维持原来的"稍后统一对齐"：判定未命中时由对齐完成默认落位。
-    if (!placement && undoDetectProvider) {
-      try {
-        undoDetectProvider(tab, windowId);
-      } catch (_error) {
-        // 判定只是尽力而为，失败不影响"稍后统一对齐"。
-      }
-    }
-    noteTreeChangeReason(`新建 #${Number(tab.id)}：内存里没有树 → 推迟到统一对齐（父关系由 opener 兜底）`);
-    scheduleEnsureTrees([windowId]);
-    return;
-  }
+  const activeAtCreation = restoring ? null : activeTabByWindow.has(windowId)
+    ? activeTabByWindow.get(windowId)
+    : new Promise(resolve => chrome.tabs.query({ windowId, active: true }, list => resolve(list?.[0]?.id ?? null)));
+  const waited = !trees.has(windowId) || loadingTrees.has(windowId) || pendingTreeEvents.has(windowId);
+  return withReadyTree(windowId, async tree => {
+    // 会话恢复中已对齐的标签保留快照父关系；风暴前已有缓存时，仍要补齐后续创建。
+    // 插件明确指定的落位不能被恢复查询包含该标签这一事实吞掉。
+    if (restoring && !placement && tree.parentById.has(Number(tab.id))) return;
+    const current = waited ? await getTabById(Number(tab.id)) : tab;
+    // 创建后又关闭的父项仍可能有存活子项；只为已排队的关闭保留临时现场，随后按序消去。
+    const pendingRemoval = pendingRemovalIds.get(windowId)?.has(Number(tab.id));
+    if ((!current && !pendingRemoval) || (current && Number(current.windowId) !== windowId)) return;
+    return applyCreatedTab(tree, { ...(current || tab), index: tab.index, openerTabId: tab.openerTabId }, placement, activeAtCreation);
+  });
+}
+
+/** 恢复查询可能已经包含新标签；挂载仍执行创建规则，下标插入则只能执行一次。 */
+async function applyCreatedTab(tree, tab, placement, activeAtCreation) {
+  const windowId = tree.windowId;
   if (placement) {
     // 本插件主动创建、且落位已定：不套用"挂到活动标签下"的规则。
     // 这里**不能有 await**（见 pendingPlacements 的说明）：否则默认规则可能在这之后才跑完并把层级改回去。
@@ -866,8 +948,8 @@ async function handleTreeTabCreatedImpl(tab) {
     }
     const forcedIndex = Number(tab.index);
     if (Number.isFinite(forcedIndex)) {
-      shiftIndexesForInsert(tree, forcedIndex);
-      tree.indexById.set(createdId, forcedIndex);
+      if (!tree.indexById.has(createdId)) shiftIndexesForInsert(tree, forcedIndex);
+      if (!tree.indexById.has(createdId)) tree.indexById.set(createdId, forcedIndex);
     }
     markDirty(windowId);
     return;
@@ -879,7 +961,11 @@ async function handleTreeTabCreatedImpl(tab) {
   // 在 tabs.onCreated 这一刻都拿不到（Firefox 给的是 about:blank），同步判定必然失败并退回默认规则；
   // 而默认规则若挂到物理上排在新标签之后的"活动标签"下，就会产生非法父，直到落盘前才被静默纠偏——
   // 这正是"关闭父标签后撤销，两次得到不同结构、界面还停在旧层级"的成因。
-  const picked = await pickParentForNewTab(tree, tab);
+  const picked = await pickParentForNewTab(tree, tab, activeAtCreation);
+  // 浏览器继续派发事件；候选查询返回时标签可能已经关闭/移出，不能把它重新插入树。
+  const current = await getTabById(Number(tab.id));
+  const pendingRemoval = pendingRemovalIds.get(windowId)?.has(Number(tab.id));
+  if ((!current && !pendingRemoval) || (current && Number(current.windowId) !== windowId) || trees.get(windowId) !== tree) return;
   if (picked.parentId != null) {
     setParent(tree, Number(tab.id), picked.parentId);
     noteTreeChangeReason(`新建 #${Number(tab.id)}：挂到 #${picked.parentId}（${picked.source}）`);
@@ -889,11 +975,11 @@ async function handleTreeTabCreatedImpl(tab) {
   }
   const atIndex = Number(tab.index);
   if (Number.isFinite(atIndex)) {
-    shiftIndexesForInsert(tree, atIndex);
-    tree.indexById.set(Number(tab.id), atIndex);
+    if (!tree.indexById.has(Number(tab.id))) shiftIndexesForInsert(tree, atIndex);
+    if (!tree.indexById.has(Number(tab.id))) tree.indexById.set(Number(tab.id), atIndex);
   }
   markDirty(windowId);
-  if (undoDetectProvider) {
+  if (current && undoDetectProvider) {
     try {
       undoDetectProvider(tab, windowId);
     } catch (_error) {
@@ -918,7 +1004,7 @@ async function handleTreeTabCreatedImpl(tab) {
  * @returns {{parentId: number|null, source: string, reason: string}}
  *   `source` 供日志说明父是哪来的；`reason` 在没有可用父时说明各候选被拒的原因。
  */
-async function pickParentForNewTab(tree, tab) {
+async function pickParentForNewTab(tree, tab, activeAtCreation) {
   const tabId = Number(tab.id);
   const windowId = tree.windowId;
   if (tab.pinned) {
@@ -938,13 +1024,7 @@ async function pickParentForNewTab(tree, tab) {
     rejected.push("没有 openerTabId");
   }
 
-  let activeId = activeTabByWindow.has(windowId) ? activeTabByWindow.get(windowId) : undefined;
-  if (activeId === undefined) {
-    activeId = await new Promise((resolve) => {
-      chrome.tabs.query({ windowId, active: true }, (list) => resolve(list && list[0] ? list[0].id : null));
-    });
-    activeTabByWindow.set(windowId, activeId);
-  }
+  const activeId = await activeAtCreation;
   const activeNumeric = Number(activeId);
   if (!Number.isFinite(activeNumeric) || activeNumeric === tabId) {
     rejected.push("活动标签不可用");
@@ -967,6 +1047,12 @@ async function pickParentForNewTab(tree, tab) {
  * @returns {{ok: boolean, reason: string}}
  */
 async function checkCandidateParent(tree, parentId, childIndex) {
+  // 创建先到、关闭后到：浏览器已完成关闭，但队列里的树仍处在创建时刻。
+  // 只有确实排在后续关闭队列中的父项才允许用该现场，随后共用关闭规则完成继承。
+  if (pendingRemovalIds.get(tree.windowId)?.has(parentId) && tree.parentById.has(parentId)) {
+    const parentIndex = tree.indexById.get(parentId);
+    if (Number.isFinite(parentIndex) && parentIndex < childIndex) return { ok: true, reason: '' };
+  }
   const parent = await getTabById(parentId);
   if (!parent) {
     return { ok: false, reason: "已不存在" };
@@ -993,8 +1079,9 @@ async function checkCandidateParent(tree, parentId, childIndex) {
 /**
  * 标签被关闭：按 promote intelligently 修正树。
  * 整窗关闭时直接丢弃该窗口的树与快照。
+ * beforeRemove 在树就绪后、提升前同步执行，用于采集撤销记录；不得等待其落盘。
  */
-export function handleTreeTabRemoved(tabId, removeInfo = {}) {
+export function handleTreeTabRemoved(tabId, removeInfo = {}, beforeRemove = null) {
   const windowId = Number(removeInfo.windowId);
   if (removeInfo.isWindowClosing) {
     if (Number.isFinite(windowId)) {
@@ -1007,47 +1094,30 @@ export function handleTreeTabRemoved(tabId, removeInfo = {}) {
   if (!Number.isFinite(windowId)) {
     return;
   }
-  if (startupActive) {
-    pendingWindows.add(windowId);
-    noteTreeChangeReason(`关闭 #${tabId}：处于启动静默期 → 本次结构变化推迟到静默期结束后整体重建`);
-    return;
+  const deferredCorrelationId = activeCloseDebug?.correlationId;
+  const cold = startupActive || !trees.has(windowId) || loadingTrees.has(windowId) || pendingTreeEvents.has(windowId);
+  if (!cold) {
+    beforeRemove?.();
+    return applyRemovalToTree(trees.get(windowId), tabId, windowId);
   }
-  const tree = trees.get(windowId);
-  if (!tree) {
-    // 树还没进内存：这次关闭不能就这么丢掉。
-    // loadTree 的标签列表是「先 queryWindowTabs、再 await storageGet」拿到的——若关闭恰好落在
-    // 这个空档里，装好的树里会留下一个"幽灵父标签"（该标签已关闭，却仍作为子标签的父）；
-    // 之后任何一次落盘都会触发不变量校验，把它的子标签抬成顶层，并把损坏写进快照。
-    // 因此这里挂到正在进行的加载上，等树装好后再补做一次提升，语义与关闭时就地提升完全一致。
-    const loading = loadingTrees.get(windowId);
-    if (loading) {
-      const deferredCorrelationId = activeCloseDebug?.correlationId;
-      noteTreeChangeReason(`关闭 #${tabId}：内存里没有树，但有一次加载正在进行 → 挂到它上面，装好后补做提升`);
-      loading.then(
-        () => {
-          const loaded = trees.get(windowId);
-          if (loaded) {
-            const token = beginTreeDiagnosticOperation('close', windowId, [Number(tabId)], { correlationId: deferredCorrelationId });
-            try {
-              applyRemovalToTree(loaded, tabId, windowId, token);
-            } finally {
-              endTreeDiagnosticOperation(token, { reason: 'deferred-until-tree-loaded' });
-            }
-          }
-        },
-        () => {}
-      );
-    } else {
-      // 当前没有可修改的树；快照对齐会用正常关闭共用的规则消去缺失节点。
-      // 多个缺失节点没有完整时间线时按逆快照顺序处理，不能声称重放了真实事件顺序。
-      noteTreeChangeReason(
-        `关闭 #${tabId}：内存里没有树、也没有进行中的加载 → 跳过就地修改；` +
-          `下一次快照重建按关闭规则补齐继承（多个缺失节点按逆快照顺序处理）`
-      );
+  if (!pendingRemovalIds.has(windowId)) pendingRemovalIds.set(windowId, new Set());
+  const removals = pendingRemovalIds.get(windowId);
+  removals.add(Number(tabId));
+  const pending = withReadyTree(windowId, tree => {
+    beforeRemove?.();
+    const token = beginTreeDiagnosticOperation('close', windowId, [Number(tabId)], { correlationId: deferredCorrelationId });
+    try {
+      applyRemovalToTree(tree, tabId, windowId, token);
+      // 冷恢复可能已经消去了关闭项；刷新存活项，避免旧父引用留到撤销恢复中。
+      noteStructureRefsRefresh(windowId, null);
+    } finally {
+      endTreeDiagnosticOperation(token, { reason: 'waited-for-tree' });
     }
-    return;
-  }
-  applyRemovalToTree(tree, tabId, windowId);
+  });
+  return Promise.resolve(pending).finally(() => {
+    removals.delete(Number(tabId));
+    if (!removals.size && pendingRemovalIds.get(windowId) === removals) pendingRemovalIds.delete(windowId);
+  });
 }
 
 /**
@@ -1133,19 +1203,19 @@ async function handleTreeTabMovedImpl(tabId, moveInfo = {}) {
     return;
   }
   noteStructuralEvent();
-  if (startupActive) {
-    pendingWindows.add(windowId);
-    return;
-  }
-  const tree = trees.get(windowId);
-  if (!tree) {
-    scheduleEnsureTrees([windowId]);
-    return;
-  }
+  if (startupActive && !trees.has(windowId)) return ensureTree(windowId);
+  return withReadyTree(windowId, tree => applyMovedTab(tree, tabId, moveInfo));
+}
+
+/** 查询已包含移动后的顺序时不得再次平移整个下标表。 */
+async function applyMovedTab(tree, tabId, moveInfo) {
+  const windowId = tree.windowId;
+  const live = await getTabById(Number(tabId));
+  if (!live || Number(live.windowId) !== windowId) return;
   const toIndex = Number(moveInfo.toIndex);
   const fromIndex = Number(moveInfo.fromIndex);
   // 位置变了就要同步下标表（哪怕父子关系最终不变）。
-  applyIndexMove(tree, Number(tabId), fromIndex, toIndex);
+  if (tree.indexById.get(Number(tabId)) === fromIndex) applyIndexMove(tree, Number(tabId), fromIndex, toIndex);
   const [prevTab, nextTab] = await Promise.all([
     queryTabAtIndex(windowId, toIndex - 1),
     queryTabAtIndex(windowId, toIndex + 1),
@@ -1181,13 +1251,13 @@ async function handleTreeTabMovedImpl(tabId, moveInfo = {}) {
  * Chrome 只会移动被拖的那一个标签，因此这里先记录下整棵子树的父子关系，再把它从原窗口树上摘除；
  * 真正的物理搬运放到 onAttached 里进行（那时才知道目标窗口）。
  */
-export function handleTreeTabDetached(tabId, info = {}) {
+export async function handleTreeTabDetached(tabId, info = {}) {
   const windowId = Number(info.oldWindowId);
   const correlationId = recordBrowserTreeEvent('detached', windowId, [Number(tabId)], { internal: internalMoveIds.has(Number(tabId)), fromIndex: info.fromIndex, toIndex: info.toIndex });
   const token = beginTreeDiagnosticOperation('detached', windowId, [Number(tabId)], { correlationId, registered: false });
   let failed = false;
   try {
-    return handleTreeTabDetachedImpl(tabId, info);
+    return await handleTreeTabDetachedImpl(tabId, info);
   } catch (error) {
     failed = true;
     throw error;
@@ -1206,10 +1276,21 @@ function handleTreeTabDetachedImpl(tabId, detachInfo = {}) {
     return;
   }
   noteStructuralEvent();
-  const tree = trees.get(windowId);
-  if (!tree) {
-    return;
-  }
+  const departure = { id, windowId, position: Number(detachInfo.oldPosition) || 0, tab: getTabById(id), done: null };
+  detachingTabs.set(id, departure);
+  // 同一标签可以在源树恢复前往返多次；每个源窗口都需要自己的移出现场。
+  pendingDepartures.add(departure);
+  const done = withReadyTree(windowId, tree => applyDetachedTab(tree, id));
+  departure.done = Promise.resolve(done).finally(() => {
+    pendingDepartures.delete(departure);
+    if (detachingTabs.get(id) === departure) detachingTabs.delete(id);
+  });
+  return departure.done;
+}
+
+/** 树准备好后一次采集并摘除子树，供目标窗口沿用原父关系。 */
+function applyDetachedTab(tree, id) {
+  const windowId = tree.windowId;
   const subtreeIds = collectSubtreeIds(tree, id);
   const parents = new Map();
   for (const subtreeId of subtreeIds) {
@@ -1271,6 +1352,17 @@ async function handleTreeTabAttachedImpl(tabId, attachInfo = {}) {
     return;
   }
   noteStructuralEvent();
+  // 先占住目标窗口的事件队列，使读请求不能越过尚未完成的源窗口恢复。
+  const departure = detachingTabs.get(id);
+  return withReadyTree(newWindowId, async tree => {
+    // 必须捕获事件到达时的那次 detach；回调执行时可能已经开始下一次迁移。
+    await departure?.done;
+    return applyAttachedTab(tree, id, attachInfo);
+  });
+}
+
+async function applyAttachedTab(tree, id, attachInfo) {
+  const newWindowId = tree.windowId;
   const record = migratingSubtrees.get(id);
   migratingSubtrees.delete(id);
   const parents = record ? record.parents : new Map([[id, null]]);
@@ -1288,14 +1380,6 @@ async function handleTreeTabAttachedImpl(tabId, attachInfo = {}) {
     );
   }
 
-  if (startupActive) {
-    pendingWindows.add(newWindowId);
-    return;
-  }
-  const tree = await ensureTree(newWindowId);
-  if (!tree) {
-    return;
-  }
   for (const [subtreeId, parentId] of parents) {
     if (subtreeId === id) {
       continue;
@@ -1495,7 +1579,7 @@ async function flushDirtyWindows() {
     const sessionToken = await getTreeSessionToken();
     let indexChanged = false;
     for (const windowId of targets) {
-      const tree = trees.get(windowId);
+      const tree = await ensureTree(windowId);
       if (!tree) {
         continue;
       }
@@ -1568,6 +1652,12 @@ async function flushDirtyWindows() {
       indexCache = index;
       await storageSet({ [TREE_INDEX_KEY]: index });
     }
+  } catch (error) {
+    // 查询/恢复失败不能消耗脏标记；保留仍存在的窗口，由现有落盘调度重试。
+    for (const windowId of targets) {
+      if (trees.has(windowId) || loadingTrees.has(windowId)) dirtyWindows.add(windowId);
+    }
+    recordTreeDiagnostic({ type: 'tree-flush-failed', reason: String(error?.message || error) });
   } finally {
     flushInProgress = false;
     if (dirtyWindows.size > 0) {
@@ -1617,6 +1707,7 @@ export async function getTreeStructure(windowIds = null, diagnosticRequestId = n
   for (const windowId of ids) {
     const tree = await ensureTree(windowId);
     await closeOrders.wait(windowId);
+    if (!tree) throw new Error("树结构恢复未完成或窗口已关闭");
     if (tree) {
       observeTreeDiagnostics(windowId, { type: 'structure-response', correlationId: diagnosticRequestId, phase: 'complete' });
       recordTreeDiagnostic({ type: 'structure-response', windowId, correlationId: diagnosticRequestId,
@@ -1914,7 +2005,8 @@ export async function ensureTreeFor(windowId) {
  * 取一个标签的结构快照，用于"关闭前"记录现场。
  *
  * **必须在 handleTreeTabRemoved 之前调用**：提交流程一旦执行，父标签信息就被改写了。
- * 树未加载时返回 null（此时本来也没有可信的父子关系可用）。
+ * 同步读接口：调用方须先 await ensureTreeFor，或在 handleTreeTabRemoved 的 beforeRemove 中使用。
+ * 未加载时返回 null，不将未知结构解释为顶层。
  *
  * 前后邻居是**物理下标**上的邻居，而不是同一父下的兄弟：恢复时按它们定位可以容忍
  * 「这期间又开了别的标签」带来的下标漂移。
@@ -2103,8 +2195,9 @@ export async function refreshTreeIndexes(windowId) {
   if (!Number.isFinite(winId)) {
     return new Map();
   }
+  const tree = await ensureTree(winId);
+  if (!tree) return new Map();
   const tabs = await queryWindowTabs(winId);
-  const tree = trees.get(winId);
   if (tree) {
     rebuildIndexes(tree, tabs);
   }
@@ -2137,7 +2230,8 @@ export async function moveTabsInternallyTo(windowId, orderedTabIds, startIndex) 
   if (!Number.isFinite(winId) || ids.length === 0) {
     return { moved: 0, skipped: 0 };
   }
-  const tree = trees.get(winId);
+  const tree = await ensureTree(winId);
+  if (!tree) return { moved: 0, skipped: ids.length };
   const position = Number.isFinite(startIndex) ? Math.max(0, Math.floor(startIndex)) : -1;
   const result = await moveTabsInternally(ids, winId, position);
   if (tree && position >= 0) {
@@ -2167,7 +2261,7 @@ export async function waitUntilTabsTracked(windowId, tabIds, timeoutMs = 2000) {
   }
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const tree = trees.get(winId);
+    const tree = await ensureTree(winId);
     if (tree && ids.every((id) => tree.indexById.has(id))) {
       return true;
     }

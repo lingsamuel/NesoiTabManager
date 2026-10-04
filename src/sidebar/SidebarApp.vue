@@ -684,24 +684,37 @@ async function refresh() {
     return;
   }
   if (diagnosticQuery) {
-    diagnosticAligned = queryEpoch === diagnosticEpoch;
+    diagnosticAligned = false;
     observeDiagnosticPhysical(id, list, false);
   }
-  tabs.value = list;
-  // 折叠状态是与管理页共用的会话级记录，标签关闭后要顺手裁掉无效条目，避免越积越多。
-  tree.pruneCollapsed(new Set(list.map((tab) => String(tab.id))));
   // 父子映射仍由后台提供：树是后台维护的唯一真相，前端不再自行推断。
   const ok = await tree.loadForWindows([id]);
+  if (diagnosticQuery) diagnosticQueries -= 1;
+  // 等待结构期间仍可能关闭、移动标签或启动新查询；过期刷新不能发布旧列表和错误状态。
+  if (refreshId !== refreshGeneration || structureEpoch !== tabStructureEpoch) {
+    if (refreshId === refreshGeneration) scheduleRefresh("full");
+    return;
+  }
+  if (!ok) {
+    if (diagnosticQuery) {
+      diagnosticAligned = false;
+      observeDiagnosticPhysical(id, list, false);
+      observeDiagnosticRows();
+    }
+    setStatus(tree.status.message || "树状结构加载失败。", "error");
+    return;
+  }
+  // 新列表与已采用的父关系一起显示，避免恢复尚未完成的新标签先短暂出现在顶层。
+  tabs.value = list;
+  // 折叠状态是与管理页共用的会话级记录，只裁剪已确认列表里的无效条目。
+  tree.pruneCollapsed(new Set(list.map((tab) => String(tab.id))));
   if (diagnosticQuery) {
-    diagnosticQueries -= 1;
-    diagnosticAligned = ok && queryEpoch === diagnosticEpoch;
+    diagnosticAligned = queryEpoch === diagnosticEpoch;
     observeDiagnosticPhysical(id, list, diagnosticAligned);
     observeDiagnosticRows();
   }
-  if (!ok) {
-    setStatus(tree.status.message || "树状结构加载失败。", "error");
-  }
   await refreshPinned();
+  if (refreshId !== refreshGeneration || structureEpoch !== tabStructureEpoch) return;
   // 标签被关闭/移出后选中项与锚点都可能已不存在：一起剪掉，避免留下幽灵选中项，
   // 也避免下一次 Shift 区间从一个已经消失的锚点算起。
   selectionAnchor.value = pruneSelection(selectedTabIds, knownTabIds.value, selectionAnchor.value);

@@ -200,6 +200,7 @@ const WINDOW_ID = 1;
 const createdTabId = 999;
 let browserTabs = [];
 const listeners = { created: [], activated: [], updated: [], removed: [], moved: [] };
+const storageListeners = [];
 // tabs.update 的调用记录（展示态场景用它验证"点击喇叭 = 一次 tabs.update"）。
 const updateCalls = [];
 // 发往后台的消息动作（展示态场景用它验证"点喇叭不会走 activateTab"）。
@@ -276,7 +277,7 @@ globalThis.chrome = {
   storage: {
     local: { get: (key, cb) => cb(diagnosticMode && key === 'treeDebugConfig' ? { treeDebugConfig: { enabled: true, printTree: true } } : {}), set: (_obj, cb) => cb && cb() },
     session: { get: (_key, cb) => cb({}), set: (_obj, cb) => cb && cb() },
-    onChanged: makeEvent([]),
+    onChanged: makeEvent(storageListeners),
   },
   tabs: {
     query(info, callback) {
@@ -919,8 +920,8 @@ if (diagnosticMode) {
   for (const listener of listeners.removed) listener(102, { windowId: WINDOW_ID, isWindowClosing: false });
   await sleep(350);
   await client.flush();
-  check(heldStructureResponses.length > 0, '实际标签查询已应用，结构响应确实被暂停');
-  check(diagnosticMessages.some(item => item.payload.classification === 'pending'), '真实 watcher 观察到处理中悬空父');
+  check(heldStructureResponses.length > 0, '实际标签查询已完成，结构响应确实被暂停');
+  check(Boolean(rowNodeOfTitle('诊断样本 102')), '父关系响应前保留旧列表，不制造处理中悬空父');
   check(!diagnosticMessages.some(item => item.kind === 'incident'), '处理中暂态没有累计异常包');
   diagnosticStructure = { parents: { 103: 101 }, revision: 3, revisionToken: 'test-ui',
     diagnosticContext: { revision: 3, pending: false, operations: [{ type: 'close', correlationId: 'close-102',
@@ -982,6 +983,102 @@ console.log('关闭定位场景：迟到的标签查询不得覆盖移动后的�
   for(const callback of delayed) callback();
   await sleep(350);
   check(order()==='布局样本 304,布局样本 302,布局样本 303','旧查询迟到不能还原已关闭父项或旧顺序');
+}
+
+console.log('树恢复等待场景：新列表与父关系一起采用，失败和过期刷新保留当前界面');
+{
+  const observations = [];
+  const client = diagnosticMode ? (await import('../src/manager/utils/tree_diagnostics.js')).getTreeDiagnostics() : null;
+  const originalObserve = client?.observe;
+  if (client) client.observe = (snapshot, context) => {
+    observations.push({ source: snapshot.source, aligned: context?.aligned });
+    originalObserve(snapshot, context);
+  };
+  const makeTab = (id, index) => ({ id, index, windowId: WINDOW_ID,
+    title: `等待样本 ${id}`, url: `https://example.com/${id}`, active: index === 0, pinned: false });
+  const emitCreated = tab => listeners.created.forEach(listener => listener(tab));
+  const respond = (callbacks, response) => callbacks.forEach(callback => callback(response));
+  const shown = () => collect('sb-title').map(nodeText).filter(text => String(text).startsWith('等待样本')).join(',');
+  browserTabs = [makeTab(401, 0)];
+  diagnosticStructure = { parents: {}, revision: 1, revisionToken: 'waiting-ui' };
+  emitCreated(browserTabs[0]);
+  await sleep(350);
+  check(shown() === '等待样本 401', '已显示初始列表');
+  observations.length = 0;
+  heldStructureResponses = [];
+  browserTabs.push(makeTab(402, 1));
+  emitCreated(browserTabs[1]);
+  await sleep(350);
+  check(heldStructureResponses.length === 1, '新标签查询完成，结构请求被明确暂停');
+  check(shown() === '等待样本 401', '结构恢复前保留旧列表，新标签不会先显示成顶层', shown());
+  if (client) check(observations.length > 0 && observations.every(item => !item.aligned),
+    '实际诊断采样在结构等待期间不会标为已对齐');
+  diagnosticStructure = { parents: { 402: 401 }, revision: 2, revisionToken: 'waiting-ui' };
+  let callbacks = heldStructureResponses;
+  heldStructureResponses = null;
+  respond(callbacks, { ok: true, structures: { [WINDOW_ID]: diagnosticStructure } });
+  await sleep(50);
+  check(shown() === '等待样本 401,等待样本 402', '父关系采用后才发布新列表', shown());
+  const child = rowNodeOfTitle('等待样本 402');
+  check(Number.parseFloat(find('sb-indent', child)?.props.style?.width) > 0, '新标签首次显示即带正确子级缩进');
+  if (client) check(observations.some(item => item.source === 'rows' && item.aligned),
+    '父映射和列表都采用后才完成行模型对齐');
+
+  observations.length = 0;
+  heldStructureResponses = [];
+  browserTabs.push(makeTab(403, 2));
+  emitCreated(browserTabs[2]);
+  await sleep(350);
+  callbacks = heldStructureResponses;
+  heldStructureResponses = null;
+  respond(callbacks, { ok: false, error: '测试结构恢复失败' });
+  await sleep(50);
+  check(shown() === '等待样本 401,等待样本 402', '加载失败不发布未经对齐的新列表', shown());
+  check(nodeText(find('sb-status')) === '测试结构恢复失败', '加载失败提供具体提示');
+  if (client) check(observations.length > 0 && observations.every(item => !item.aligned),
+    '实际诊断采样在结构失败后仍未对齐');
+  const failedQueries = queryCount;
+  await sleep(350);
+  check(queryCount === failedQueries, '加载失败不会无条件无限重试');
+
+  // 新刷新完成后，前一次在途失败不能再写回旧错误或更改列表。
+  heldStructureResponses = [];
+  emitCreated(browserTabs[2]);
+  await sleep(350);
+  const obsolete = heldStructureResponses;
+  heldStructureResponses = null;
+  browserTabs.push(makeTab(404, 3));
+  diagnosticStructure = { parents: { 402: 401, 403: 401, 404: 401 }, revision: 4, revisionToken: 'waiting-ui' };
+  emitCreated(browserTabs[3]);
+  await sleep(350);
+  const currentStatus = nodeText(find('sb-status'));
+  check(shown().endsWith('等待样本 403,等待样本 404'), '更新请求可以采用完整新列表');
+  respond(obsolete, { ok: false, error: '不应显示的迟到错误' });
+  await sleep(50);
+  check(nodeText(find('sb-status')) === currentStatus, '过期刷新不得覆盖更新请求的状态');
+
+  // 通知在请求期间到达会作废该次列表，但响应采用后重复通知应被版本去重。
+  heldStructureResponses = [];
+  browserTabs.push(makeTab(405, 4));
+  emitCreated(browserTabs[4]);
+  await sleep(350);
+  diagnosticStructure = { parents: { ...diagnosticStructure.parents, 405: 401 }, revision: 5, revisionToken: 'waiting-ui' };
+  const emitStructure = () => storageListeners.forEach(listener => listener({ treeStructureRevision: {
+    newValue: { token: 'waiting-ui', revisions: { [WINDOW_ID]: 5 } },
+  } }, 'session'));
+  emitStructure();
+  callbacks = heldStructureResponses;
+  heldStructureResponses = null;
+  respond(callbacks, { ok: true, structures: { [WINDOW_ID]: diagnosticStructure } });
+  await sleep(50);
+  check(!shown().includes('等待样本 405'), '等待期间的结构通知使旧列表失效，不能提前采用');
+  await sleep(350);
+  check(shown().endsWith('等待样本 405'), '结构通知补刷后采用完整列表');
+  const settledQueries = queryCount;
+  emitStructure();
+  await sleep(350);
+  check(queryCount === settledQueries, '相同结构通知不会造成永久刷新循环');
+  if (client) client.observe = originalObserve;
 }
 
 console.log("场景 9：管理页「打开的窗口」跳转模式下输入关键词 → 同样要跳转");

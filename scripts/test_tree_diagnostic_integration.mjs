@@ -13,7 +13,10 @@ let tabs = [
 globalThis.chrome = {
   runtime: { lastError: null, getManifest: () => ({ version: 'test' }) },
   storage: { local: area('local'), session: area('session') },
-  tabs: { query: (query, cb) => cb(tabs.filter(t => (query.windowId == null || t.windowId === query.windowId) && (query.index == null || t.index === query.index))) },
+  tabs: {
+    query: (query, cb) => cb(tabs.filter(t => (query.windowId == null || t.windowId === query.windowId) && (query.index == null || t.index === query.index))),
+    get: (id, cb) => cb(tabs.find(tab => tab.id === id)),
+  },
   alarms: { create() {}, clear() {} },
   windows: { getAll: cb => cb([{ id: 1 }]) },
 };

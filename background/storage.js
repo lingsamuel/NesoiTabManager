@@ -1,8 +1,15 @@
 import { HAS_SESSION_STORAGE } from "./constants.js";
 
-export function storageGet(key) {
-  return new Promise((resolve) => {
-    chrome.storage.local.get(key, (result) => resolve(result[key]));
+// 树恢复等不能把读取失败当作“没有快照”的调用方，显式要求错误向上传递。
+export function storageGet(key, { strict = false } = {}) {
+  return new Promise((resolve, reject) => {
+    chrome.storage.local.get(key, (result) => {
+      if (strict && chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message || '读取本地存储失败'));
+        return;
+      }
+      resolve(result?.[key]);
+    });
   });
 }
 

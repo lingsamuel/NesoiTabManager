@@ -285,16 +285,29 @@ export function initializeClosedGroups() {
 // ---------------------------------------------------------------------------
 
 /**
- * 记录一次标签关闭的现场。
- *
- * **现场必须在函数返回前同步抓完**（因此本函数虽然有异步的持久化，但抓取部分是同步的）：
- * 调用方在 `tabs.onRemoved` 里紧接着就会执行"关闭提升"改写树、并删除 recent_tabs 的标签缓存，
- * 只要中间插入一个 await，父标签与 url/标题就可能已经取不到了。
- *
- * @param {number} tabId
- * @param {{windowId: number, isWindowClosing?: boolean}} removeInfo
+ * 在浏览器关闭事件到达时保留即将被缓存清理的内容与关闭组身份。
+ * 返回的记录动作必须在树恢复后、关闭提升前同步调用；不能等待记录落盘后才提升。
  */
-export function handleClosedTabRecorded(tabId, removeInfo = {}) {
+export function prepareClosedTabRecord(tabId, removeInfo = {}) {
+  const context = captureClosedEventContext(Number(tabId));
+  return () => handleClosedTabRecorded(tabId, removeInfo, context);
+}
+
+function captureClosedEventContext(tabId) {
+  const cached = getCachedTabInfo(tabId);
+  return {
+    cached: cached ? { url: cached.url || '', title: cached.title || '', pinned: Boolean(cached.pinned) } : null,
+    fallback: getCachedTabNeighbors(tabId),
+    at: Date.now(),
+    groupId: pendingGroupClose?.tabIds.has(tabId) ? pendingGroupClose.groupId : null,
+  };
+}
+
+/**
+ * 树已就绪时同步采集关闭前的父子关系，再异步持久化。
+ * 冷恢复调用方须通过 prepareClosedTabRecord 提前保留内容，且不能等待落盘后才执行提升。
+ */
+export function handleClosedTabRecorded(tabId, removeInfo = {}, eventContext = null) {
   // 整窗关闭不做记录：窗口都没了，撤销没有意义（与树快照的清理口径一致）。
   if (removeInfo.isWindowClosing) {
     return Promise.resolve();
@@ -306,11 +319,12 @@ export function handleClosedTabRecorded(tabId, removeInfo = {}) {
   }
 
   const info = getTabStructureInfo(id, windowId);
-  const cached = getCachedTabInfo(id);
+  const context = eventContext || captureClosedEventContext(id);
+  const cached = context.cached;
   // 树没进内存时（后台刚被回收，或本轮事件早于懒加载）拿不到结构现场。
   // 此时用全量标签缓存兜底出下标与前后邻居：原生撤销关闭才能把标签放回原位，
   // 否则记录里是 index = -1、邻居全空，恢复出来的位置只能听天由命。
-  const fallback = info ? null : getCachedTabNeighbors(id);
+  const fallback = info ? null : context.fallback;
   // 关闭的是父标签时，记下它的直属子标签：撤销恢复它时要把"仍停在提升结果位置"的子标签重挂回去
   // （否则 `A - B - C` 撤销后只会得到 `A / B-C`）。
   // 注意：**提升还没发生**（调用方紧接着才执行提升），因此这里只记 id，
@@ -326,8 +340,8 @@ export function handleClosedTabRecorded(tabId, removeInfo = {}) {
     pinned: cached ? Boolean(cached.pinned) : false,
     url: cached ? cached.url || "" : "",
     title: cached ? cached.title || "" : "",
-    at: Date.now(),
-    groupId: pendingGroupClose && pendingGroupClose.tabIds.has(id) ? pendingGroupClose.groupId : null,
+    at: context.at,
+    groupId: context.groupId,
     // 直属子标签在"promote intelligently"之后各自被挂到哪里（null = 被提升为顶层）。
     promotedChildren: childIds.map((childId) => ({ tabId: childId, parentId: null })),
   };

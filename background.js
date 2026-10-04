@@ -51,7 +51,7 @@ import {
 import { aiGroupTabs, getAiConfig, setAiConfig } from "./background/ai.js";
 import {
   closeTabsAsGroup,
-  handleClosedTabRecorded,
+  prepareClosedTabRecord,
   handlePromotionAfterClose,
   handleTabStructureChanged,
   hasRestorableGroup,
@@ -288,10 +288,15 @@ chrome.windows.onCreated.addListener(() => {
   handleWindowsChanged();
 });
 
+/** 浏览器事件不等待返回的 Promise；统一接住恢复失败，详细原因同时由树诊断记录。 */
+function observeTreeEventCompletion(result) {
+  Promise.resolve(result).catch(error => console.warn('树事件处理失败：', String(error?.message || error)));
+}
+
 chrome.tabs.onCreated.addListener((tab) => {
   handleTabCreated(tab);
   handleRecentTabCreated(tab);
-  handleTreeTabCreated(tab);
+  observeTreeEventCompletion(handleTreeTabCreated(tab));
   // Firefox 的每标签会话值：新标签先登记一份父标签引用，之后被撤销关闭时才认得出来。
   if (tab && Number.isFinite(Number(tab.windowId)) && Number.isFinite(Number(tab.id))) {
     handleTabStructureChanged(Number(tab.windowId), [Number(tab.id)]);
@@ -300,24 +305,24 @@ chrome.tabs.onCreated.addListener((tab) => {
 
 chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
   // 顺序很重要：
-  // 1. 撤销关闭必须在树执行"关闭提升"**之前**抓取父标签/前后邻居/物理下标，
-  //    且 url 与标题来自 recent_tabs 的标签缓存（它在下面这一步就被删掉了）；
-  // 2. 被关闭标签的子标签会被提升，它们的父标签引用要在树改写前把 id 取出来。
+  // 内容和关闭组身份先同步采集；父关系在树准备好后、执行提升前采集。
+  // 热缓存仍同步提升；冷恢复期间不能先把未知父关系当作顶层写入撤销记录。
   //
   // 诊断必须完整覆盖处理链；任何步骤失败也记录结束边界。
   const debugToken = beginTreeCloseDebug(tabId, removeInfo);
   let stage = 'closed-record';
   let failed = false;
   try {
-    handleClosedTabRecorded(tabId, removeInfo);
-    stage = 'promotion-record';
-    handlePromotionAfterClose(tabId, removeInfo.windowId);
+    const recordClosed = prepareClosedTabRecord(tabId, removeInfo);
     stage = 'discard-cache';
     handleTabRemoved(tabId);
     stage = 'recent-cache';
     handleRecentTabRemoved(tabId);
     stage = 'tree-remove';
-    handleTreeTabRemoved(tabId, removeInfo);
+    observeTreeEventCompletion(handleTreeTabRemoved(tabId, removeInfo, () => {
+      observeTreeEventCompletion(recordClosed());
+      handlePromotionAfterClose(tabId, removeInfo.windowId);
+    }));
   } catch (error) {
     failed = true;
     throw error;
@@ -327,18 +332,18 @@ chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
 });
 
 chrome.tabs.onMoved.addListener((tabId, moveInfo) => {
-  handleTreeTabMoved(tabId, moveInfo);
+  observeTreeEventCompletion(handleTreeTabMoved(tabId, moveInfo));
   // 原生拖动会按新位置重新推断父标签，因此这里要刷新该标签的持久引用。
   handleTabStructureChanged(moveInfo.windowId, [Number(tabId)]);
 });
 
 chrome.tabs.onDetached.addListener((tabId, detachInfo) => {
-  handleTreeTabDetached(tabId, detachInfo);
+  observeTreeEventCompletion(handleTreeTabDetached(tabId, detachInfo));
   handleTabStructureChanged(detachInfo.oldWindowId, [Number(tabId)]);
 });
 
 chrome.tabs.onAttached.addListener((tabId, attachInfo) => {
-  handleTreeTabAttached(tabId, attachInfo);
+  observeTreeEventCompletion(handleTreeTabAttached(tabId, attachInfo));
   handleTabStructureChanged(attachInfo.newWindowId, [Number(tabId)]);
 });
 

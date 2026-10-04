@@ -43,6 +43,9 @@ function useTree() {
   const revisionByWindow = reactive({});
   // 版本号令牌：后台实例重启后版本号会从头开始，此时不能与本地已知值比较（见下面的 loadForWindows）。
   let knownRevisionToken = "";
+  // 通知只说明后台来源变化；窗口版本号必须与真正采用该结构时的来源配对。
+  const appliedTokenByWindow = new Map();
+  const retiredRevisionTokens = new Set();
   // windowId -> { [tabId]: true }，折叠的子树根。
   const collapsedByWindow = reactive({});
   const status = reactive({ message: "", type: "" });
@@ -114,11 +117,9 @@ function useTree() {
    *   此时按"变化未知"通知一次全量刷新。
    */
   function notifyStructureChanged(raw) {
-    if (structureListeners.size === 0) {
-      return;
-    }
     const payload = raw && typeof raw === "object" ? raw : {};
     const incomingToken = String(payload.token || "");
+    if (retiredRevisionTokens.has(incomingToken)) return;
     const sameInstance = incomingToken !== "" && incomingToken === knownRevisionToken;
     const revisions = payload.revisions && typeof payload.revisions === "object" ? payload.revisions : null;
     if (!revisions) {
@@ -132,16 +133,15 @@ function useTree() {
         continue;
       }
       // 同一实例内只通知"版本号确实前进了"的窗口，避免重复写入造成多余刷新。
-      if (sameInstance && value === Number(revisionByWindow[windowId] || 0)) {
+      if (sameInstance && appliedTokenByWindow.get(windowId) === incomingToken &&
+          value <= Number(revisionByWindow[windowId] || 0)) {
         continue;
       }
       windowIds.push(id);
     }
     // 后台重启过：版本号不可比较，按"变化未知"处理（空列表 = 让订阅方做一次全量刷新）。
     const changed = sameInstance ? windowIds : [];
-    if (incomingToken) {
-      knownRevisionToken = incomingToken;
-    }
+    rememberRevisionToken(incomingToken);
     if (sameInstance && changed.length === 0) {
       return;
     }
@@ -155,6 +155,13 @@ function useTree() {
         );
       }
     }
+  }
+
+  /** 只记录实例边界，不挪用任何窗口的已采用版本；旧实例不能再次成为当前来源。 */
+  function rememberRevisionToken(token) {
+    if (!token || token === knownRevisionToken) return;
+    if (knownRevisionToken) retiredRevisionTokens.add(knownRevisionToken);
+    knownRevisionToken = token;
   }
 
   /**
@@ -200,6 +207,7 @@ function useTree() {
    */
   async function loadForWindows(windowIds) {
     const payload = Array.isArray(windowIds) && windowIds.length > 0 ? { windowIds } : {};
+    const requestedToken = knownRevisionToken;
     const correlationId = diagnostics.correlationId();
     if (diagnosticGeneration !== diagnostics.state.generation) {
       diagnosticAppliedByWindow.clear();
@@ -220,19 +228,25 @@ function useTree() {
       setStatus((response && response.error) || "树状结构加载失败。", "error");
       return false;
     }
+    const appliedWindows = new Set();
+    let discarded = false;
     for (const [windowId, data] of Object.entries(response.structures || {})) {
       const incomingRevision = Number(data && data.revision);
       const incomingToken = String((data && data.revisionToken) || "");
-      // 只有"同一个后台实例"的版本号之间才能比较大小；令牌不同（后台重启过）时无条件接受。
-      const sameInstance = incomingToken !== "" && incomingToken === knownRevisionToken;
+      // 全局可能已收到新实例通知，但这个窗口仍持有旧实例结构，不能跨实例比较版本。
+      const sameInstance = incomingToken !== "" && incomingToken === appliedTokenByWindow.get(windowId);
       const knownRevision = Number(revisionByWindow[windowId] || 0);
       const diagnosticContext = correlationId ? {
         source: "frontend-structure", windowId: Number(windowId), correlationId,
         incomingRevision, incomingToken, knownRevision, knownToken: knownRevisionToken, sameInstance,
       } : null;
-      if (sameInstance && Number.isFinite(incomingRevision) && incomingRevision < knownRevision) {
+      // 请求跨过实例边界后，只允许当前已确认来源的结果，避免首次加载的未知旧响应回退。
+      const staleInstance = retiredRevisionTokens.has(incomingToken) ||
+        (requestedToken !== knownRevisionToken && incomingToken !== knownRevisionToken);
+      if (staleInstance || (sameInstance && Number.isFinite(incomingRevision) && incomingRevision < knownRevision)) {
         if (diagnosticContext) diagnostics.record({ ...diagnosticContext,
-          type: "response-discarded", phase: "discarded", reason: "stale-revision" });
+          type: "response-discarded", phase: "discarded", reason: staleInstance ? "stale-instance" : "stale-revision" });
+        discarded = true;
         continue;
       }
       const lastApplied = diagnosticAppliedByWindow.get(String(windowId));
@@ -276,9 +290,9 @@ function useTree() {
       if (Number.isFinite(incomingRevision)) {
         revisionByWindow[windowId] = incomingRevision;
       }
-      if (incomingToken) {
-        knownRevisionToken = incomingToken;
-      }
+      rememberRevisionToken(incomingToken);
+      appliedTokenByWindow.set(windowId, incomingToken);
+      appliedWindows.add(windowId);
       if (diagnosticContext) {
         if (!data?.diagnosticContext?.pending) {
           diagnosticAppliedByWindow.set(String(windowId), {
@@ -296,6 +310,11 @@ function useTree() {
         diagnostics.record({ ...diagnosticContext, type: "response-applied", phase: "applied",
           parentCount: Object.keys(parentsByWindow[windowId]).length });
       }
+    }
+    // HTTP/IPC 成功不代表界面已经采用所需结构，缺失或丢弃都不能宣告已对齐。
+    if (discarded || payload.windowIds?.some(windowId => !appliedWindows.has(String(windowId)))) {
+      setStatus("树状结构尚未同步，请稍后重试。", "error");
+      return false;
     }
     setStatus("", "");
     return true;
@@ -420,10 +439,11 @@ function useTree() {
       const requestId = diagnosticRequestByWindow.get(String(windowId)) || null;
       const operation = diagnosticOperationByWindow.get(String(windowId));
       const revision = Number(revisionByWindow[windowId] || 0);
-      const validOperation = operation?.sourceToken === knownRevisionToken && operation.revision === revision;
+      const sourceToken = appliedTokenByWindow.get(String(windowId)) || "";
+      const validOperation = operation?.sourceToken === sourceToken && operation.revision === revision;
       return { ...(validOperation ? operation : {}),
         correlationId: requestId, requestId,
-        sourceToken: knownRevisionToken, revision };
+        sourceToken, revision };
     },
     isCollapsed,
     collapsedSetFor,
