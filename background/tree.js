@@ -8,7 +8,7 @@
 //
 // 三条硬性约束（对应需求）：
 // 1. 面向 10K 级标签页：不维护"整窗顺序数组"，不在每次事件做 O(n) 重排；
-//    关闭标签是 O(1)（下标天然保持相对有序），只有创建/移动这类低频操作才会 O(n) 刷新下标表，
+//    关闭叶子只维护下标；关闭有后代的标签才计算局部定位，必要时移动后代块，
 //    且启动恢复期会整体跳过；
 // 2. 持久化但控制写入量：结构变化只改内存并置脏，空闲若干秒后只覆盖"变化的窗口"；
 // 3. 不拖慢浏览器初始化：启动/会话恢复期进入静默期，不加载快照、不对齐、不写盘。
@@ -54,6 +54,30 @@ import {
   toParentsPayload,
   validateNewParent,
 } from "./tree_core.js";
+
+import { planCloseOrder, needsCloseOrder, planSnapshotCloseOrder, createCloseOrderScheduler } from "./tree_close_order.js";
+
+// 关闭继承先同步改父，物理移动单独串行；不能阻塞最近关闭记录的同步采集约定。
+const closeMovingIds = new Map();
+const closeOrders = createCloseOrderScheduler({
+  query: queryCloseOrderTabs,
+  async move(windowId, ids, index) {
+    // onMoved 可能晚于 API 回调；直到最终查询校准前都保留关闭移动标记。
+    ids.forEach(id => closeMovingIds.set(id, windowId));
+    await moveTabsInternally(ids, windowId, index, { strictTarget: true });
+  },
+  settled: (windowId) => {
+    for (const [id, owner] of closeMovingIds) if (owner === windowId) closeMovingIds.delete(id);
+  },
+  begin: (windowId, ids, expectedParents) => beginTreeDiagnosticOperation('move', windowId, ids, { reason: 'close-order', expectedParents }),
+  finish: (token, { expectedOrderIds, ...details }) => {
+    // 完整目标序列仅参与精确解释，普通日志不再倾倒整窗 id。
+    if (token && expectedOrderIds) token.expectedOrderIds = expectedOrderIds;
+    endTreeDiagnosticOperation(token, details);
+  },
+  sync: (windowId, tabs) => { const tree = trees.get(windowId); if (tree) rebuildIndexes(tree, tabs); },
+  changed: (windowId) => { if (trees.has(windowId)) markDirty(windowId); },
+});
 
 // ---------------------------------------------------------------------------
 // 调参常量
@@ -571,6 +595,10 @@ async function loadTree(windowId) {
   };
   rebuildIndexes(state, tabs);
   trees.set(windowId, state);
+  for (const plan of planSnapshotCloseOrder(tabs, snapshot, sessionToken, state.parentById)) {
+    closeOrders.enqueue(windowId, plan);
+  }
+  await closeOrders.wait(windowId);
   observeTreeDiagnostics(windowId, { type: "load", phase: "complete" });
   logFlow(
     `重建窗口 ${windowId}：标签 ${tabs.length}，` +
@@ -701,6 +729,7 @@ function scheduleEnsureTrees(windowIds) {
 }
 
 function forgetWindow(windowId) {
+  closeOrders.forget(windowId);
   forgetTreeDiagnostics(windowId);
   trees.delete(windowId);
   loadingTrees.delete(windowId);
@@ -720,6 +749,15 @@ function queryWindowTabs(windowId) {
       resolve(list);
     });
   });
+}
+
+/** 关闭定位查询期间若发生新结构事件，旧列表不得覆盖当前下标表。 */
+async function queryCloseOrderTabs(windowId) {
+  while (true) {
+    const revision = getTreeRevision(windowId);
+    const tabs = await queryWindowTabs(windowId);
+    if (revision === getTreeRevision(windowId)) return tabs;
+  }
 }
 
 /** 按 index 精确取一个标签。用 query 的 index 过滤，避免为此维护整窗下标表。 */
@@ -1024,12 +1062,20 @@ function applyRemovalToTree(tree, tabId, windowId, diagnosticToken = activeClose
     noteTreeChangeReason(`关闭 #${id}：它已经不在内存树里（多半是加载发生在关闭之后）→ 无需提升`);
     return;
   }
+  const hasChildren = (tree.childIdsById.get(id) || []).some(child => tree.parentById.get(child) === id);
+  const physicalIds = hasChildren ? [...tree.indexById].sort((a,b) => a[1] - b[1]).map(([tabId]) => tabId) : [];
+  const orderedIds = hasChildren ? closeOrders.orderFor(windowId, physicalIds) : [];
+  const plan = hasChildren ? planCloseOrder(tree, orderedIds, id) : null;
   const removedIndex = tree.indexById.get(id);
   tree.indexById.delete(id);
   renumberIndexesAfterRemovals(tree, [removedIndex]);
   // 提升"第一个子标签"前先按物理顺序排序，保证结果确定且符合直觉。
-  sortChildrenByIndex(tree, id);
+  if (plan) {
+    const positions = new Map(orderedIds.map((tabId, index) => [tabId, index]));
+    tree.childIdsById.get(id)?.sort((a,b) => positions.get(a) - positions.get(b));
+  } else sortChildrenByIndex(tree, id);
   applyRemovePromotion(tree, id, (info) => {
+    if (plan) plan.expectedParents = info.assignments;
     if (diagnosticToken) diagnosticToken.expectedParents = info.assignments;
     recordTreeDiagnostic({ type: 'promotion-decision', windowId,
       correlationId: diagnosticToken?.correlationId, tabId: id, ...info });
@@ -1047,6 +1093,7 @@ function applyRemovalToTree(tree, tabId, windowId, diagnosticToken = activeClose
         `同父其他子标签数=${info.siblingCountBefore}｜规则：${ruleText}｜结果：${assignmentText}`
     );
   });
+  if (needsCloseOrder(plan, tree.parentById)) closeOrders.enqueue(windowId, plan);
   markDirty(windowId);
 }
 
@@ -1071,6 +1118,14 @@ export async function handleTreeTabMoved(tabId, info = {}) {
 
 async function handleTreeTabMovedImpl(tabId, moveInfo = {}) {
   if (internalMoveIds.has(Number(tabId))) {
+    // 关闭定位期间仍可能继续关闭标签；撤销记录必须读取当时的真实下标。
+    if (closeMovingIds.has(Number(tabId))) {
+      const tree = trees.get(Number(moveInfo.windowId));
+      if (tree && tree.indexById.get(Number(tabId)) === Number(moveInfo.fromIndex)) {
+        applyIndexMove(tree, Number(tabId), Number(moveInfo.fromIndex), Number(moveInfo.toIndex));
+        noteTreeStructureChanged(Number(moveInfo.windowId));
+      }
+    }
     return;
   }
   const windowId = Number(moveInfo.windowId);
@@ -1444,7 +1499,15 @@ async function flushDirtyWindows() {
       if (!tree) {
         continue;
       }
+      await closeOrders.wait(windowId);
+      const revisionBeforeQuery = getTreeRevision(windowId);
       const tabs = await queryWindowTabs(windowId);
+      if (closeOrders.pending(windowId) || revisionBeforeQuery !== getTreeRevision(windowId)) {
+        // 查询期间又发生关闭/移动，旧列表不能纠偏当前树；保留脏标记交给下次落盘。
+        dirtyWindows.add(windowId);
+        scheduleFlush();
+        continue;
+      }
       if (tabs.length === 0) {
         if (index[windowId]) {
           delete index[windowId];
@@ -1553,6 +1616,7 @@ export async function getTreeStructure(windowIds = null, diagnosticRequestId = n
   const structures = {};
   for (const windowId of ids) {
     const tree = await ensureTree(windowId);
+    await closeOrders.wait(windowId);
     if (tree) {
       observeTreeDiagnostics(windowId, { type: 'structure-response', correlationId: diagnosticRequestId, phase: 'complete' });
       recordTreeDiagnostic({ type: 'structure-response', windowId, correlationId: diagnosticRequestId,
@@ -1772,7 +1836,7 @@ function orderSubtreeByWindow(tabs, tree, rootId) {
  * 参与移动的 tabId 会被登记到 internalMoveIds，使随后异步派发的 onMoved / onDetached / onAttached
  * 不会把刚设好的结构再推断一遍（否则会形成"移动→推断→再移动"的震荡）。
  */
-async function moveTabsInternally(tabIds, windowId, index) {
+async function moveTabsInternally(tabIds, windowId, index, { strictTarget = false } = {}) {
   let moved = 0;
   let skipped = 0;
   for (let offset = 0; offset < tabIds.length; offset += MOVE_BATCH_SIZE) {
@@ -1791,6 +1855,8 @@ async function moveTabsInternally(tabIds, windowId, index) {
       });
       moved += batch.length;
     } catch (error) {
+      // 关闭定位不能把失败的标签丢到末尾；保留失败现场，由调用方重新查询实际顺序。
+      if (strictTarget) throw error;
       // 整批失败时逐个重试：个别标签（例如已被关闭）失败不应拖累其余标签。
       for (const tabId of batch) {
         try {

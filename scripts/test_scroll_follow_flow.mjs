@@ -128,6 +128,11 @@ function createEl(tag) {
 
 const nodeOps = {
   insert(child, parent, anchor) {
+    // DOM insertBefore 移动已有节点，不会把同一个节点复制一份。
+    if (child.parent) {
+      const previous = child.parent.children.indexOf(child);
+      if (previous >= 0) child.parent.children.splice(previous, 1);
+    }
     child.parent = parent;
     const index = anchor ? parent.children.indexOf(anchor) : -1;
     if (index >= 0) parent.children.splice(index, 0, child);
@@ -194,7 +199,7 @@ const nodeOps = {
 const WINDOW_ID = 1;
 const createdTabId = 999;
 let browserTabs = [];
-const listeners = { created: [], activated: [], updated: [], removed: [] };
+const listeners = { created: [], activated: [], updated: [], removed: [], moved: [] };
 // tabs.update 的调用记录（展示态场景用它验证"点击喇叭 = 一次 tabs.update"）。
 const updateCalls = [];
 // 发往后台的消息动作（展示态场景用它验证"点喇叭不会走 activateTab"）。
@@ -203,6 +208,7 @@ const diagnosticMode = process.argv.includes('--diagnostics');
 const diagnosticMessages = [];
 let diagnosticStructure = { parents: {}, revision: 1, revisionToken: 'test-ui' };
 let heldStructureResponses = null;
+let heldTabQueries = null;
 // 整窗查询次数：展示态变化只要走了"整窗重查"这条错路，计数就会露馅。
 let queryCount = 0;
 
@@ -280,7 +286,9 @@ globalThis.chrome = {
         if (info && info.windowId !== undefined && tab.windowId !== info.windowId) return false;
         return true;
       });
-      callback(list);
+      if (heldTabQueries && info?.windowId === WINDOW_ID && !info.pinned) {
+        heldTabQueries.push(() => callback(list));
+      } else callback(list);
     },
     create() {},
     remove() {},
@@ -296,7 +304,7 @@ globalThis.chrome = {
     onActivated: makeEvent(listeners.activated),
     onUpdated: makeEvent(listeners.updated),
     onRemoved: makeEvent(listeners.removed),
-    onMoved: makeEvent([]),
+    onMoved: makeEvent(listeners.moved),
     onAttached: makeEvent([]),
     onDetached: makeEvent([]),
   },
@@ -949,6 +957,31 @@ if (diagnosticMode) {
   check(!diagnosticMessages.some(item=>item.kind==='incident'),'跨实例正常关闭不会积累异常包');
   check(diagnosticMessages.some(item=>item.payload.observation?.operations?.some(
     operation=>operation.explanation==='observed-removal')),'实际侧边栏使用完整物理序列与真实关闭事件解释继承');
+}
+
+console.log('关闭定位场景：迟到的标签查询不得覆盖移动后的最新列表');
+{
+  browserTabs=[301,302,303,304].map((id,index)=>({id,index,windowId:WINDOW_ID,
+    title:`布局样本 ${id}`,url:`https://example.com/${id}`,active:index===0,pinned:false}));
+  diagnosticStructure={parents:{304:301},revision:1,revisionToken:'order-ui'};
+  for(const listener of listeners.created) listener(browserTabs[0]);
+  await sleep(350);
+  heldTabQueries=[];
+  for(const listener of listeners.updated) listener(302,{title:'trigger'},browserTabs[1]);
+  await sleep(350);
+  const delayed=heldTabQueries;
+  heldTabQueries=null;
+  check(delayed.length>0,'确实保存了关闭前发起的旧标签查询');
+  browserTabs=[browserTabs[3],browserTabs[1],browserTabs[2]].map((tab,index)=>({...tab,index}));
+  diagnosticStructure={parents:{},revision:2,revisionToken:'order-ui'};
+  for(const listener of listeners.removed) listener(301,{windowId:WINDOW_ID,isWindowClosing:false});
+  for(const listener of listeners.moved) listener(304,{windowId:WINDOW_ID,fromIndex:2,toIndex:0});
+  await sleep(350);
+  const order=()=>collect('sb-title').map(nodeText).filter(text=>String(text).startsWith('布局样本')).join(',');
+  check(order()==='布局样本 304,布局样本 302,布局样本 303','子项移动后视图保持接替位置',order());
+  for(const callback of delayed) callback();
+  await sleep(350);
+  check(order()==='布局样本 304,布局样本 302,布局样本 303','旧查询迟到不能还原已关闭父项或旧顺序');
 }
 
 console.log("场景 9：管理页「打开的窗口」跳转模式下输入关键词 → 同样要跳转");

@@ -67,6 +67,8 @@ const tree = useTree();
 const diagnostics = getTreeDiagnostics();
 const diagnosticState = diagnostics.state;
 let diagnosticEpoch = 0;
+let tabStructureEpoch = 0;
+let refreshGeneration = 0;
 let diagnosticQueries = 0;
 let diagnosticAligned = false;
 const diagnosticRevisions = new Map();
@@ -669,10 +671,18 @@ async function refresh() {
   if (id === null) {
     return;
   }
+  const refreshId = ++refreshGeneration;
+  const structureEpoch = tabStructureEpoch;
   const diagnosticQuery = diagnosticState.enabled;
   const queryEpoch = diagnosticEpoch;
   if (diagnosticQuery) diagnosticQueries += 1;
   const list = await queryWindowTabs(id);
+  // 关闭定位会产生原生移动事件；迟到的旧 query 不能覆盖新列表或复活已关闭项。
+  if (refreshId !== refreshGeneration || structureEpoch !== tabStructureEpoch) {
+    if (diagnosticQuery) diagnosticQueries -= 1;
+    if (refreshId === refreshGeneration) scheduleRefresh("full");
+    return;
+  }
   if (diagnosticQuery) {
     diagnosticAligned = queryEpoch === diagnosticEpoch;
     observeDiagnosticPhysical(id, list, false);
@@ -899,6 +909,7 @@ function bindTabEvents() {
       if (!Number.isFinite(eventWindowId)) {
         return;
       }
+      if (eventWindowId === Number(windowId.value)) tabStructureEpoch += 1;
       if (diagnosticState.enabled && eventWindowId === Number(windowId.value)) {
         diagnosticEpoch += 1;
         diagnosticAligned = false;
@@ -941,6 +952,7 @@ function bindTreeStructureEvents() {
   const unsubscribe = tree.onStructureChanged((changedWindowIds) => {
     const ids = Array.isArray(changedWindowIds) ? changedWindowIds : [];
     if (ids.length === 0 || ids.includes(Number(windowId.value))) {
+      tabStructureEpoch += 1;
       if (diagnosticState.enabled) {
         diagnosticEpoch += 1;
         diagnosticAligned = false;

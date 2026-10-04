@@ -25,6 +25,10 @@ let nextTabId = 1000;
 const storageData = { local: {}, session: {} };
 const alarmsCreated = [];
 const createdTabOptions = [];
+const closeOrderMoves = [];
+let closeMoveDelay = 0;
+let rejectCloseMove = false;
+let beforeCloseMove = null;
 
 function makeEvent(bucket) {
   return { addListener: (fn) => bucket.push(fn) };
@@ -179,7 +183,27 @@ function setupChromeMock() {
         emitAsync(listeners.created, snapshotTab);
         return snapshotTab;
       },
-      move: (tabIds, info, callback) => moveTabsMock(tabIds, info, callback),
+      move: (tabIds, info, callback) => {
+        closeOrderMoves.push({ ids: Array.isArray(tabIds) ? [...tabIds] : [tabIds], ...info });
+        const run = () => {
+          const hook = beforeCloseMove;
+          beforeCloseMove = null;
+          hook?.();
+          const ids = Array.isArray(tabIds) ? tabIds : [tabIds];
+          if (ids.some(id => !tabs.some(tab => tab.id === id))) {
+            runtime.lastError = { message: "No tab with given id" };
+            callback([]);
+            runtime.lastError = null;
+            return;
+          }
+          if (rejectCloseMove) {
+            runtime.lastError = { message: "test move rejected" };
+            callback([]);
+            runtime.lastError = null;
+          } else moveTabsMock(tabIds, info, callback);
+        };
+        if (closeMoveDelay) setTimeout(run, closeMoveDelay); else run();
+      },
       remove: (ids, callback) => {
         const list = (Array.isArray(ids) ? ids : [ids]).map(Number);
         tabs = tabs.filter((tab) => !list.includes(tab.id));
@@ -796,6 +820,69 @@ async function main() {
   await tick(10);
   const reloaded19 = await import("../background/tree.js?cold-reload-19");
   assertDeepEqual((await reloaded19.getTreeStructure([30])).structures[30].parents, rebuilt19, "19：落盘后再次加载保持修复结果");
+
+  console.log("场景 20：关闭不连续子树时，整块继承原显示位置");
+  const { buildTreeRows } = await import("../background/tree_core.js");
+  async function closeOrderCase(winId, pairs, closed, { cold = false, delayed = false, fail = false, duringMove = false, loading = false } = {}) {
+    const owner = await import(`../background/tree.js?close-order-setup-${winId}`);
+    windows.push({ id: winId });
+    const actual = new Map();
+    for (const [id] of pairs) actual.set(id, addTab({ windowId: winId, url: `https://close-order.invalid/${winId}/${id}`, pinned: id === 99 }));
+    await owner.getTreeStructure([winId]);
+    for (const [id, parent] of pairs) {
+      owner.applyRestoredParent(winId, actual.get(id).id, parent == null ? null : actual.get(parent).id);
+    }
+    const beforeTabs = tabs.filter(tab => tab.windowId === winId);
+    const parents = new Map(pairs.map(([id,p]) => [actual.get(id).id, p == null ? null : actual.get(p).id]));
+    const expected = buildTreeRows(beforeTabs, parents).map(row => row.id).filter(id => !closed.some(key => actual.get(key).id === id));
+    let module = owner;
+    if (cold) {
+      owner.handleTreeSuspend();
+      await tick(20);
+      module = await import(`../background/tree.js?close-order-${winId}`);
+    }
+    mockStorageDelayMs = loading ? 25 : 0;
+    const pendingStructure = loading ? module.getTreeStructure([winId]) : null;
+    const startMoves = closeOrderMoves.length;
+    closeMoveDelay = delayed ? 30 : 0;
+    rejectCloseMove = fail;
+    const closeOne = (id) => {
+      const tabId = actual.get(id).id;
+      tabs = tabs.filter(tab => tab.id !== tabId);
+      reindex();
+      module.handleTreeTabRemoved(tabId, { windowId: winId, isWindowClosing: false });
+    };
+    if (duringMove) beforeCloseMove = () => closeOne(closed[1]);
+    for (const id of duringMove ? closed.slice(0,1) : closed) closeOne(id);
+    const result = (await (pendingStructure || module.getTreeStructure([winId]))).structures[winId].parents;
+    mockStorageDelayMs = 0;
+    const finalTabs = tabs.filter(tab => tab.windowId === winId);
+    const rows = buildTreeRows(finalTabs, new Map(finalTabs.map(tab => [tab.id,result[tab.id] ?? null]))).map(row=>row.id);
+    if (!fail) assertDeepEqual(rows, expected, `20：窗口 ${winId} 关闭后存活行次序不变`);
+    else assertEqual(closeOrderMoves.slice(startMoves).every(move=>move.index>=0), true, "20：移动失败不得退到末尾");
+    closeMoveDelay = 0;
+    rejectCloseMove = false;
+    return { actual, moves: closeOrderMoves.slice(startMoves), finalTabs, module, result };
+  }
+  // 与日志相同：根的子项在物理顺序中远离父项。
+  const simple20 = await closeOrderCase(40, [[1,null],[2,null],[3,null],[4,1]], [1]);
+  assertDeepEqual(simple20.moves.flatMap(move=>move.ids), [simple20.actual.get(4).id], "20：只移动受影响子项");
+  await closeOrderCase(41, [[1,null],[2,1],[3,1],[4,2],[5,3],[6,null],[7,4]], [2]);
+  await closeOrderCase(42, [[99,null],[1,null],[2,null],[3,1],[4,1],[5,3],[6,4]], [1]);
+  const contiguous20 = await closeOrderCase(43, [[1,null],[2,1],[3,2],[4,1],[5,null]], [1]);
+  assertEqual(contiguous20.moves.length, 0, "20：本已连续的子树不调用移动 API");
+  const leaf20 = await closeOrderCase(44, [[1,null],[2,null]], [1]);
+  assertEqual(leaf20.moves.length, 0, "20：关闭叶子不调用移动 API");
+  await closeOrderCase(45, [[1,null],[2,null],[3,1],[4,3],[5,1],[6,null]], [1,3], { delayed:true });
+  const cold20 = await closeOrderCase(46, [[1,null],[2,null],[3,1],[4,3]], [1], { cold:true });
+  cold20.module.handleTreeSuspend();
+  await tick(20);
+  const coldReload20 = await import("../background/tree.js?close-order-reload-46");
+  assertDeepEqual((await coldReload20.getTreeStructure([46])).structures[46].parents, cold20.result, "20：重新落盘与加载不拆层");
+  await closeOrderCase(48, [[1,null],[2,null],[3,1],[4,1]], [1,3], { delayed:true, duringMove:true });
+  await closeOrderCase(50, [[1,null],[2,null],[3,1],[4,3]], [1], { cold:true, loading:true });
+  const failed20 = await closeOrderCase(47, [[1,null],[2,null],[3,1]], [1], { fail:true });
+  assertEqual(failed20.moves.length > 0, true, "20：失败场景确实尝试定位");
 
   console.log(`共 ${checks} 项断言，失败 ${failures} 项`);
   if (failures > 0) {
