@@ -1,4 +1,5 @@
-import { compareTreeSnapshots } from './tree_diagnostics.js';
+import { compareTreeSnapshots, compareTreeOrder } from './tree_diagnostics.js';
+import { explainedPinIds } from './tree_diagnostic_pins.js';
 import { diagnosticParents as snapshotParents, diagnosticDepths, observedCloseOperations } from './tree_diagnostic_closures.js';
 import { incidentReportKey } from './tree_diagnostic_reporting.js';
 
@@ -136,11 +137,17 @@ function groupIssues(issues) {
   return grouped;
 }
 
+function unexplainedOrderIds(previous, current, context) {
+  if (explainedOrder(context, current)) return [];
+  return compareTreeOrder(previous, current, explainedPinIds(previous, current)).map(change => change.id);
+}
+
 function restoredOrder(active, current) {
-  const currentIds = new Set(current.entries.map((entry) => entry.id));
-  const expected = active.originalIds.filter((id) => currentIds.has(id));
+  const ignored = explainedPinIds(active.previous, current);
+  const currentIds = new Set(current.entries.map(entry => entry.id));
+  const expected = active.originalIds.filter(id => currentIds.has(id) && !ignored.has(id));
   const originalIds = new Set(expected);
-  const observed = current.entries.filter((entry) => originalIds.has(entry.id)).map((entry) => entry.id);
+  const observed = current.entries.filter(entry => originalIds.has(entry.id)).map(entry => entry.id);
   return expected.every((id, index) => observed[index] === id);
 }
 
@@ -275,7 +282,7 @@ export function createTreeDiagnosticMonitor({ emit = () => {}, incident = () => 
     };
     if (context.aligned === true) context = closureContext(comparisonPrevious);
     const changedParents = unexplainedParents(comparisonEvidence, context, comparisonPrevious, snapshot);
-    const changedOrder = explainedOrder(context, snapshot) ? [] : comparisonEvidence.orderChanges.map((change) => change.id);
+    const changedOrder = unexplainedOrderIds(comparisonPrevious, snapshot, context);
     const confirmedIds = new Map([
       ['parent-change', new Set(changedParents)],
       ['order-change', new Set(changedOrder)],

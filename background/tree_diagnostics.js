@@ -137,9 +137,9 @@ function safeState(data, id) {
   };
 }
 
-function compareOrder(before, after) {
-  const beforeIds = [...before.byId.keys()].filter((id) => after.byId.has(id));
-  const afterIds = [...after.byId.keys()].filter((id) => before.byId.has(id));
+function compareOrder(before, after, ignoredIds = new Set()) {
+  const beforeIds = [...before.byId.keys()].filter((id) => after.byId.has(id) && !ignoredIds.has(id));
+  const afterIds = [...after.byId.keys()].filter((id) => before.byId.has(id) && !ignoredIds.has(id));
   const beforePosition = new Map(beforeIds.map((id, index) => [id, index]));
   const changes = [];
   for (let index = 0; index < afterIds.length; index += 1) {
@@ -152,6 +152,13 @@ function compareOrder(before, after) {
     changes.push({ id, before: neighbors(beforeIds, previousIndex), after: neighbors(afterIds, index) });
   }
   return changes;
+}
+
+/** 仅比较共同存活身份的相对顺序；已证实的单标签移动不能豁免其余标签的换位。 */
+export function compareTreeOrder(before, after, ignoredIds = new Set()) {
+  if (!before) return [];
+  const data = snapshot => ({ byId: new Map((snapshot?.entries || []).map(entry => [entry.id, entry])) });
+  return compareOrder(data(before), data(after), ignoredIds);
 }
 
 /**

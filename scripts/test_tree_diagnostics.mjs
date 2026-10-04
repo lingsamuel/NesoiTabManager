@@ -385,6 +385,62 @@ test('处理中真实存活标签换位仍需确认，并保留首次换位现�
   assert.equal(incidents[0].evidence.firstEvidence.orderChanges.find((entry) => entry.id === 1).before.nextId, 2);
 });
 
+test('后续独立换位不能阻止原异常身份恢复相对顺序', () => {
+  const incidents = [];
+  const monitor = createTreeDiagnosticMonitor({ incident: record => incidents.push(record) });
+  monitor.observe(snapshot([{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }]), { aligned: true });
+  monitor.observe(snapshot([{ id: 2 }, { id: 1 }, { id: 3 }, { id: 4 }]), { aligned: true });
+  const first = incidents[0].signature;
+  monitor.observe(snapshot([{ id: 1 }, { id: 3 }, { id: 2 }, { id: 4 }]), { aligned: true });
+  assert.ok(incidents.some(record => record.signature === first && record.status === 'recovered'));
+  assert.ok(incidents.some(record => record.signature !== first && record.status === 'active'));
+});
+
+test('pin 和 unpin 的边界移动不误报，跨后台实例也能解释', () => {
+  const incidents = [];
+  const monitor = createTreeDiagnosticMonitor({ incident: record => incidents.push(record), preserveBaselineOnSourceChange: true });
+  const before = snapshot([{ id: 1, pinned: true }, { id: 2, pinned: false }, { id: 3, pinned: false }, { id: 4, pinned: false }], { sourceToken: 'a' });
+  const pinned = snapshot([{ id: 1, pinned: true }, { id: 4, pinned: true }, { id: 2, pinned: false }, { id: 3, pinned: false }], { sourceToken: 'b' });
+  monitor.observe(before, { aligned: true });
+  monitor.observe(pinned, { aligned: false });
+  monitor.observe(pinned, { aligned: true });
+  assert.equal(incidents.length, 0, '正常固定移动不能创建异常包');
+  monitor.observe(snapshot([{ id: 4, pinned: true }, { id: 1, pinned: false }, { id: 2, pinned: false }, { id: 3, pinned: false }], { sourceToken: 'b' }), { aligned: true });
+  assert.equal(incidents.length, 0, '正常取消固定不能创建异常包');
+});
+
+test('pin 同时发生其他标签换位，仍检测其余存活身份的相对顺序', () => {
+  const incidents = [];
+  const monitor = createTreeDiagnosticMonitor({ incident: record => incidents.push(record) });
+  monitor.observe(snapshot([{ id: 1, pinned: true }, { id: 2, pinned: false }, { id: 3, pinned: false }, { id: 4, pinned: false }]), { aligned: true });
+  monitor.observe(snapshot([{ id: 1, pinned: true }, { id: 4, pinned: true }, { id: 3, pinned: false }, { id: 2, pinned: false }]), { aligned: true });
+  const incident = incidents.find(record => record.type === 'order-change' && record.status === 'active');
+  assert.ok(incident);
+  assert.deepEqual(new Set(incident.ids), new Set([2, 3]));
+});
+
+test('批量 pin/unpin 保持其余标签顺序，固定后另一次未知换位仍报警', () => {
+  const incidents = [];
+  const monitor = createTreeDiagnosticMonitor({ incident: record => incidents.push(record) });
+  monitor.observe(snapshot([{ id: 1, pinned: true }, { id: 2, pinned: false }, { id: 3, pinned: false }, { id: 4, pinned: false }, { id: 5, pinned: false }]), { aligned: true });
+  monitor.observe(snapshot([{ id: 1, pinned: true }, { id: 5, pinned: true }, { id: 4, pinned: true }, { id: 2, pinned: false }, { id: 3, pinned: false }]), { aligned: true });
+  assert.equal(incidents.length, 0);
+  monitor.observe(snapshot([{ id: 1, pinned: true }, { id: 4, pinned: false }, { id: 5, pinned: false }, { id: 2, pinned: false }, { id: 3, pinned: false }]), { aligned: true });
+  assert.equal(incidents.length, 0);
+  monitor.observe(snapshot([{ id: 1, pinned: true }, { id: 5, pinned: false }, { id: 4, pinned: false }, { id: 2, pinned: false }, { id: 3, pinned: false }]), { aligned: true });
+  assert.ok(incidents.some(record => record.type === 'order-change' && record.status === 'active'));
+});
+
+test('固定状态缺失或落在错误区域时不能作为移动解释', () => {
+  for (const pinned of [undefined, false]) {
+    const incidents = [];
+    const monitor = createTreeDiagnosticMonitor({ incident: record => incidents.push(record) });
+    monitor.observe(snapshot([{ id: 1, pinned: true }, { id: 2, pinned }, { id: 3, pinned: false }]), { aligned: true });
+    monitor.observe(snapshot([{ id: 1, pinned: true }, { id: 3, pinned: false }, { id: 2, pinned: true }]), { aligned: true });
+    assert.ok(incidents.some(record => record.type === 'order-change' && record.status === 'active'));
+  }
+});
+
 let failed = 0;
 for (const { name, run } of tests) {
   try {

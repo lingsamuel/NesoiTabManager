@@ -113,7 +113,7 @@ import {
   saveTreeDebugConfig,
 } from "./background/tree_debug.js";
 
-import { configureTreeDiagnostics, resetTreeDiagnosticBaselines } from './background/tree_diagnostic_runtime.js';
+import { configureTreeDiagnostics, recordBrowserPinEvent, resetTreeDiagnosticBaselines } from './background/tree_diagnostic_runtime.js';
 import { createDiagnosticReceiver } from './background/tree_diagnostic_receiver.js';
 
 configureTreeDiagnostics({ metadataProvider: getCachedTabInfo });
@@ -353,6 +353,7 @@ chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  recordBrowserPinEvent(tabId, changeInfo, tab);
   handleRecentTabUpdated(tabId, changeInfo, tab);
 });
 

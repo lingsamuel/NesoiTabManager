@@ -38,7 +38,7 @@ import {
 import {
   configureTreeDiagnostics, getTreeDiagnosticContent, recordBrowserTreeEvent,
   beginTreeDiagnosticOperation, endTreeDiagnosticOperation, observeTreeDiagnostics,
-  observeTreePhysicalTabs, treeDiagnosticEpoch, forgetTreeDiagnostics, getTreeDiagnosticOperations,
+  observeTreePhysicalTabs, observeMovedTab, treeDiagnosticEpoch, forgetTreeDiagnostics, getTreeDiagnosticOperations,
 } from "./tree_diagnostic_runtime.js";
 import {
   alignSnapshotToTabs,
@@ -1212,6 +1212,7 @@ async function applyMovedTab(tree, tabId, moveInfo) {
   const windowId = tree.windowId;
   const live = await getTabById(Number(tabId));
   if (!live || Number(live.windowId) !== windowId) return;
+  observeMovedTab(windowId, tabId, live);
   const toIndex = Number(moveInfo.toIndex);
   const fromIndex = Number(moveInfo.fromIndex);
   // 位置变了就要同步下标表（哪怕父子关系最终不变）。

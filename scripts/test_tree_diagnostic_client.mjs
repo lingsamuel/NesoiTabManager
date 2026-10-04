@@ -68,6 +68,22 @@ client.observe(removalSnapshot([[10,null],[12,10],[13,12],[14,10]], 'b'), {align
 await client.flush();
 assert.ok(!sent.some(batch => batch.events?.some(event => event.kind === 'incident' && event.payload.windowId === 22)),
   '真实前端收到关闭事件后，应解释跨后台正常继承');
+const pinBefore = Array.from({ length: 2012 }, (_, id) => ({ id, parentId: null, index: id, pinned: id < 3 }));
+const pinAfter = [pinBefore[0], pinBefore[1], pinBefore[2], { ...pinBefore[2011], pinned: true },
+  ...pinBefore.slice(3, 2011)].map((entry, index) => ({ ...entry, index }));
+client.observe({ windowId: 24, source: 'physical', sourceToken: 'before-restart', entries: pinBefore }, { aligned: true });
+client.observe({ windowId: 24, source: 'physical', sourceToken: 'after-restart', entries: pinAfter }, { aligned: false });
+client.observe({ windowId: 24, source: 'physical', sourceToken: 'after-restart', entries: pinAfter }, { aligned: true });
+await client.flush();
+assert.ok(!sent.some(batch => batch.events?.some(event => event.kind === 'incident' && event.payload.windowId === 24)),
+  '2012 标签原日志的 pin 边界移动在跨实例后不应产生前端异常包');
+const withSwap = pinAfter.map(entry => ({ ...entry }));
+[withSwap[500], withSwap[501]] = [withSwap[501], withSwap[500]];
+client.observe({ windowId: 24, source: 'physical', sourceToken: 'after-restart',
+  entries: withSwap.map((entry, index) => ({ ...entry, index })) }, { aligned: true });
+await client.flush();
+assert.ok(sent.some(batch => batch.events?.some(event => event.kind === 'incident' && event.payload.windowId === 24)),
+  '实际前端客户端仍须发送固定之后发生的双标签换位');
 configListener({ enabled: false });
 assert.equal(removedListeners.size, 0, '关闭诊断立即移除监听');
 const previous = sent.length;

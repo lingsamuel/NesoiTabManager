@@ -1,5 +1,6 @@
 // 后台诊断的观测边界。所有采样均由已有事件驱动，不查询标签、不修改业务树。
 import { createTreeDiagnosticMonitor } from './tree_diagnostic_monitor.js';
+import { matchesPinMove } from './tree_diagnostic_pins.js';
 import {
   isTreeDebugEnabled, isTreeDebugPrintEnabled, recordTreeDiagnostic, recordTreeIncident,
 } from './tree_debug.js';
@@ -15,6 +16,7 @@ const epochs = new Map();
 const operations = new Map();
 const unregisteredMoves = new Map();
 const physicalBaselines = new Map();
+const pinEvents = new Map();
 const monitor = createTreeDiagnosticMonitor({
   emit: event => {
     // 普通差异在详细开关下输出；异常证据始终交给独立预留区。
@@ -40,7 +42,7 @@ export function getTreeDiagnosticContent(id) {
   if (!isTreeDebugEnabled() || !metadataProvider) return {};
   try {
     const tab = metadataProvider(id);
-    return tab ? { title: tab.title, url: tab.url } : {};
+    return tab ? { title: tab.title, url: tab.url, pinned: Boolean(tab.pinned) } : {};
   } catch (_) {
     return {};
   }
@@ -54,6 +56,7 @@ function ready() {
     completedOperations.clear();
     unregisteredMoves.clear();
     physicalBaselines.clear();
+    pinEvents.clear();
     epochs.clear();
     enabled = current;
     if (current) recordTreeDiagnostic({ type: 'monitor-gap', reason: 'enabled-or-background-restarted', source: 'backend' });
@@ -68,6 +71,7 @@ export function resetTreeDiagnosticBaselines(reason = 'configuration-changed') {
   completedOperations.clear();
   unregisteredMoves.clear();
   physicalBaselines.clear();
+  pinEvents.clear();
   epochs.clear();
   enabled = isTreeDebugEnabled();
   if (enabled) recordTreeDiagnostic({ type: 'monitor-gap', source: 'backend', reason });
@@ -84,28 +88,99 @@ export function recordBrowserTreeEvent(type, windowId, ids = [], details = {}) {
   epochs.set(id, treeDiagnosticEpoch(id) + 1);
   const correlationId = `${instanceId}:${++sequence}`;
   recordTreeDiagnostic({ type: `browser-${type}`, windowId: id, correlationId, ids, epoch: treeDiagnosticEpoch(id), ...details });
+  const key = `${id}:${ids[0]}`;
+  const pin = pinEvents.get(key);
+  // 一份固定现场只解释它紧接着的同标签移动；后续拖动不得复用旧标记。
+  if (type !== 'pin') pinEvents.delete(key);
+  const explainedPinMove = type === 'moved' && matchesPinMove(pin, details);
+  if (type !== 'pin' && !explainedPinMove) {
+    // 其他结构事件可能平移固定现场的下标；未知移动不能借用已过期的边界位置。
+    for (const [pinKey, pending] of pinEvents) {
+      if (pending.windowId === id) pinEvents.delete(pinKey);
+    }
+  }
   if (type === 'moved' && !details.internal) {
-    const key = `${id}:${ids[0]}`;
+    if (explainedPinMove) {
+      recordTreeDiagnostic({ type: 'pin-move-explained', windowId: id, ids, correlationId, pinned: pin.pinned,
+        fromIndex: details.fromIndex, toIndex: details.toIndex, reason: 'observed-pin-transition' });
+      return correlationId;
+    }
     const previous = unregisteredMoves.get(key);
     const tracking = previous || {
       signature: `${instanceId}:${id}:unregistered-move:${ids.join(',')}:${sequence}`,
       windowId: id, type: 'unregistered-browser-move', ids,
       originalIndex: details.fromIndex,
       originalOrder: physicalBaselines.get(id) || null,
+      moveCount: 0,
+      reported: false,
     };
     if (!previous && unregisteredMoves.size >= 128) {
       unregisteredMoves.delete(unregisteredMoves.keys().next().value);
       recordTreeDiagnostic({ type: 'monitor-gap', windowId: id, reason: 'raw-move-tracking-limit' });
     }
     unregisteredMoves.set(key, tracking);
-    const { originalOrder, ...identity } = tracking;
-    recordTreeIncident({ ...identity, status: 'active', evidence: {
-      missingBefore: !originalOrder,
-      correlationId, fromIndex: details.fromIndex, toIndex: details.toIndex,
-      reason: '已观察到来源未知的移动；尚不能确认用户意图', classification: 'suspect',
-    } });
+    Object.assign(tracking, { correlationId, fromIndex: details.fromIndex, toIndex: details.toIndex });
+    tracking.moveCount += 1;
   }
   return correlationId;
+}
+
+function moveIdentity(tracking) {
+  return { signature: tracking.signature, windowId: tracking.windowId, type: tracking.type, ids: tracking.ids };
+}
+
+function reportUnregisteredMove(tracking) {
+  if (tracking.reported) return;
+  tracking.reported = true;
+  recordTreeIncident({ ...moveIdentity(tracking), status: 'active', evidence: {
+    missingBefore: !tracking.originalOrder, correlationId: tracking.correlationId,
+    fromIndex: tracking.fromIndex, toIndex: tracking.toIndex,
+    reason: '已观察到来源未知的移动；尚不能确认用户意图', classification: 'suspect',
+  } });
+}
+
+/** 只接受真实 onUpdated 的固定变化，关联同标签移动，不查询浏览器或改写树。 */
+export function recordBrowserPinEvent(tabId, changeInfo, tab) {
+  if (!ready() || typeof changeInfo?.pinned !== 'boolean' || !Number.isInteger(tab?.windowId) ||
+      !Number.isInteger(tab?.index)) return;
+  const windowId = tab.windowId;
+  const id = Number(tabId);
+  if (!Number.isInteger(id)) return;
+  const pin = { windowId, index: tab.index, pinned: changeInfo.pinned };
+  const key = `${windowId}:${id}`;
+  const correlationId = recordBrowserTreeEvent('pin', windowId, [id], { pinned: pin.pinned, index: pin.index });
+  const tracking = unregisteredMoves.get(key);
+  if (tracking && matchesPinMove(pin, tracking)) {
+    // 多次未知移动不能被一个迟到的固定事件整体抹掉。
+    const observed = tracking.tabAtMove;
+    const eligible = observed
+      ? observed.pinned === pin.pinned && observed.index === tracking.toIndex
+      : !tracking.reported;
+    if (tracking.moveCount === 1 && eligible) {
+      if (tracking.reported) recordTreeIncident({ ...moveIdentity(tracking), status: 'recovered', evidence: {
+        correlationId, reason: 'observed-pin-transition', pinned: pin.pinned, index: pin.index,
+      } });
+      unregisteredMoves.delete(key);
+      recordTreeDiagnostic({ type: 'pin-move-explained', windowId, ids: [id], correlationId,
+        pinned: pin.pinned, fromIndex: tracking.fromIndex, toIndex: tracking.toIndex });
+    }
+    pinEvents.delete(key);
+    return;
+  }
+  if (!pinEvents.has(key) && pinEvents.size >= 128) {
+    pinEvents.delete(pinEvents.keys().next().value);
+    recordTreeDiagnostic({ type: 'monitor-gap', windowId, reason: 'pin-event-tracking-limit' });
+  }
+  pinEvents.set(key, pin);
+}
+
+/** 复用移动处理已有的 get 结果；迟到固定不能解释移动当时尚未固定的普通拖动。 */
+export function observeMovedTab(windowId, tabId, tab) {
+  if (!ready()) return;
+  const tracking = unregisteredMoves.get(`${Number(windowId)}:${Number(tabId)}`);
+  if (tracking && tab && Number(tab.windowId) === Number(windowId)) {
+    tracking.tabAtMove = { index: tab.index, pinned: Boolean(tab.pinned) };
+  }
 }
 
 /** 捕获同一来源的连续观测。异步操作尚未结束时仅记处理中证据。 */
@@ -145,6 +220,10 @@ export function endTreeDiagnosticOperation(token, details = {}) {
   operations.get(token.windowId)?.delete(token);
   recordTreeDiagnostic({ type: `${token.type}-end`, windowId: token.windowId, correlationId: token.correlationId, ...details });
   const completed = { ...token, ...details, phase: 'complete', aligned: !details.failed, revision: readRevision(token.windowId) };
+  if (token.type === 'moved') {
+    const tracking = unregisteredMoves.get(`${token.windowId}:${token.focusIds[0]}`);
+    if (tracking?.correlationId === token.correlationId) reportUnregisteredMove(tracking);
+  }
   if (completed.registered && !details.failed && ['close', 'move'].includes(token.type)) {
     const history = completedOperations.get(token.windowId) || [];
     const { reasons, ...context } = completed;
@@ -165,11 +244,13 @@ export function observeTreePhysicalTabs(windowId, tabs, queryEpoch) {
       if (tracking.windowId !== Number(windowId)) continue;
       const index = positions.get(tracking.ids[0]);
       // 插删会改变数值下标；只有共同存活身份的相对次序恢复才可结束疑点。
-      const { originalOrder, ...identity } = tracking;
+      const { originalOrder } = tracking;
+      const identity = moveIdentity(tracking);
       const originalIds = new Set(originalOrder || []);
       const expected = originalOrder?.filter(id => positions.has(id));
       const actual = tabs.filter(tab => originalIds.has(Number(tab.id))).map(tab => Number(tab.id));
       const recovered = index === undefined || Boolean(expected && expected.every((id, offset) => actual[offset] === id));
+      if (!recovered) reportUnregisteredMove(tracking);
       recordTreeIncident({ ...identity, status: recovered ? 'recovered' : 'active', evidence: {
         type: 'raw-move-observed-result', queryEpoch, currentEpoch, index: index ?? null,
         missingBefore: !originalOrder, commonCount: expected?.length ?? 0,
@@ -182,7 +263,7 @@ export function observeTreePhysicalTabs(windowId, tabs, queryEpoch) {
   try {
     monitor.observe({
       windowId, source: 'browser-physical', sourceId: instanceId, sourceToken: instanceId,
-      entries: tabs.map(tab => ({ id: Number(tab.id), parentId: null, index: tab.index, title: tab.title, url: tab.url })),
+      entries: tabs.map(tab => ({ id: Number(tab.id), parentId: null, index: tab.index, pinned: Boolean(tab.pinned), title: tab.title, url: tab.url })),
     }, { type: 'query', phase: 'complete', queryEpoch, currentEpoch,
       operations: completedOperations.get(Number(windowId)) || [],
       aligned });
@@ -197,6 +278,9 @@ export function forgetTreeDiagnostics(windowId) {
   operations.delete(Number(windowId));
   completedOperations.delete(Number(windowId));
   physicalBaselines.delete(Number(windowId));
+  for (const [key, pin] of pinEvents) {
+    if (pin.windowId === Number(windowId)) pinEvents.delete(key);
+  }
   for (const [key, item] of unregisteredMoves) {
     if (item.windowId === Number(windowId)) unregisteredMoves.delete(key);
   }

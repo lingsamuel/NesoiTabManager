@@ -1,7 +1,7 @@
 {
   "name": "nesoi-tab-manager",
   "private": true,
-  "version": "0.2.42",
+  "version": "0.2.43",
   "license": "MIT",
   "type": "module",
   "scripts": {
@@ -14,7 +14,7 @@
     "bench:tree": "node scripts/bench_tree.mjs",
     "test:tree": "node scripts/test_tree_readiness.mjs && node scripts/test_tree_instance_sync.mjs && node scripts/test_tree_close_order.mjs && node scripts/test_tree_close_order_events.mjs && node scripts/test_tree_snapshot_recovery.mjs && node scripts/test_tree.mjs && node scripts/test_tree_ui.mjs && node scripts/test_sidebar_pinned.mjs && node scripts/test_audio_state.mjs && node scripts/test_sidebar_manager.mjs && node scripts/test_scroll_follow_flow.mjs && node scripts/test_context_menu.mjs && node scripts/test_discard.mjs && node scripts/test_dropped_data.mjs && node scripts/test_dropped_item.mjs && node scripts/test_scroll_markers.mjs && node scripts/test_virtual_range.mjs && node scripts/test_filter_mode.mjs && node scripts/test_selection_range.mjs && node scripts/test_composables_smoke.mjs && node scripts/test_list_target_memory.mjs && node scripts/test_manager_sync.mjs && node scripts/test_closed_groups.mjs && node scripts/test_favicons.mjs",
     "preview": "vite preview --config vite.config.js",
-    "test:diagnostics": "node scripts/test_tree_diagnostic_lifecycle.mjs && node scripts/test_tree_diagnostics.mjs && node scripts/test_tree_debug_buffer.mjs && node scripts/test_tree_diagnostic_client.mjs && node scripts/test_tree_diagnostic_receiver.mjs && node scripts/test_tree_diagnostic_integration.mjs && node scripts/test_scroll_follow_flow.mjs --diagnostics"
+    "test:diagnostics": "node scripts/test_tree_diagnostic_pins.mjs && node scripts/test_tree_diagnostic_lifecycle.mjs && node scripts/test_tree_diagnostics.mjs && node scripts/test_tree_debug_buffer.mjs && node scripts/test_tree_diagnostic_client.mjs && node scripts/test_tree_diagnostic_receiver.mjs && node scripts/test_tree_diagnostic_integration.mjs && node scripts/test_scroll_follow_flow.mjs --diagnostics"
   },
   "dependencies": {
     "vue": "^3.4.31"
